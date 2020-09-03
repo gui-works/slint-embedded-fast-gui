@@ -461,7 +461,6 @@ impl TypeRegister {
         insert_type(Type::Length);
         insert_type(Type::LogicalLength);
         insert_type(Type::Color);
-        insert_type(Type::Duration);
         insert_type(Type::Resource);
         insert_type(Type::Bool);
         insert_type(Type::Model);

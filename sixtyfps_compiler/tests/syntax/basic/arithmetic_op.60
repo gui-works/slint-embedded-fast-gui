@@ -8,17 +8,12 @@
     Please contact info@sixtyfps.io for more information.
 LICENSE END */
 SuperSimple := Rectangle {
-    property<duration> p1: 3s + 1ms;
     property<int> p2: 3s + 1;
 //                        ^error{Cannot convert float to duration}
     property<int> p3: 3s - 1;
 //                        ^error{Cannot convert float to duration}
     property<int> p4: 3 / 1ms;
 //                       ^error{Cannot convert duration to float}
-
-    property<duration> p5: 3ms * 1;
-    property<duration> p6: 3ms * 1s;
-//                         ^error{Cannot convert duration to float}
 
     property<int> p7: "hello" * 1;
 //                    ^error{Cannot convert string to float}
