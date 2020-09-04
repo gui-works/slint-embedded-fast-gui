@@ -33,3 +33,7 @@ glow = { version = "0.5.0", features = ["web-sys"], default-features = false }
 winit = "0.22.1"
 glutin = { version = "0.24" }
 glow = { version = "0.5.0", default-features = false }
+
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = { git = "https://github.com/servo/core-foundation-rs", branch = "master" }
