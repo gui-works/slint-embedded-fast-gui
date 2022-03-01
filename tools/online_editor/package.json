@@ -1,0 +1,23 @@
+{
+  "name": "slint-online-editor",
+  "version": "0.2.1",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "rimraf dist && wasm-pack build --target web ../../api/wasm-interpreter && vite --open",
+    "build": "rimraf dist pkg && npx vite build"
+  },
+  "keywords": [],
+  "author": "",
+  "dependencies": {
+    "@types/jquery": "^3.5.4",
+    "install": "^0.13.0",
+    "monaco-editor": "^0.21.3",
+    "npm": "^6.14.8"
+  },
+  "devDependencies": {
+    "rimraf": "^3.0.2",
+    "typescript": "^4.0.3",
+    "vite": "^2.7.10"
+  }
+}

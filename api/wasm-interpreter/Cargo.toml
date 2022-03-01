@@ -1,0 +1,40 @@
+# Copyright © SixtyFPS GmbH <info@slint-ui.com>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+[package]
+name = "slint-wasm-interpreter"
+version = "0.2.1"
+authors = ["Slint Developers <info@slint-ui.com>"]
+edition = "2021"
+license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
+publish = false
+description = "Slint wasm glue"
+repository = "https://github.com/slint-ui/slint"
+homepage = "https://slint-ui.com"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+slint-interpreter = { path = "../../internal/interpreter" }
+
+vtable = { version = "0.1.6", path="../../helper_crates/vtable" }
+
+console_error_panic_hook = { version = "0.1.6", optional = true }
+js-sys = "0.3.44"
+wasm-bindgen-futures = { version = "0.4.18" }
+wasm-bindgen = { version = "0.2.66" }
+wee_alloc = { version = "0.4.5", optional = true }
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+  'Request',
+  'RequestInit',
+  'RequestMode',
+  'Response',
+  'Window',
+]
+
+#[dev-dependencies]
+#wasm-bindgen-test = "0.3.13"

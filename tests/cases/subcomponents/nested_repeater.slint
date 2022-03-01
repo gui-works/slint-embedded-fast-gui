@@ -1,0 +1,25 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+// Verify that we can instantiate sub-components in nested repeaters
+// and succeed in generating code that determines the root correctly,
+// to access global singletons.
+
+Label := Text {
+
+}
+
+SubCompo := Rectangle {
+    for x in 1: Rectangle {
+        for y in 1: Label {
+            for z in 1: Label {
+            }
+        }
+    }
+}
+
+TestCase := Rectangle {
+    width: 300phx;
+    height: 300phx;
+    SubCompo {}
+}

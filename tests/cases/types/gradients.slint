@@ -1,0 +1,16 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+// Verify that this compiles with all generators
+
+Test := Rectangle {
+    background: @linear-gradient(45deg, #ff9a9e 0%, #fad0c4 99%, #fad0c4 100%);
+    property <color> foo: #a23;
+    property <brush> bar: @linear-gradient(1.2rad, foo.darker(0.5), foo.brighter(0.5), );
+
+    for data in [{xx: #b56}] : Rectangle {
+        background: @linear-gradient(1.2rad, data.xx, blue);
+    }
+
+    property <color> c: @linear-gradient(90deg,#e2e1e1,#c5c5c5);
+}

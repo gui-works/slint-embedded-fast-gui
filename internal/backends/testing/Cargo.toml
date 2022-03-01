@@ -1,0 +1,21 @@
+# Copyright © SixtyFPS GmbH <info@slint-ui.com>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+[package]
+name = "i-slint-backend-testing"
+version = "0.2.1"
+authors = ["Slint Developers <info@slint-ui.com>"]
+edition = "2021"
+license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
+description = "OpenGL rendering backend for Slint"
+repository = "https://github.com/slint-ui/slint"
+homepage = "https://slint-ui.com"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+i-slint-core = { version = "=0.2.1", path = "../../../internal/core" }
+
+image = { version = "0.24.0", default-features = false, features = ["png", "jpeg"] }

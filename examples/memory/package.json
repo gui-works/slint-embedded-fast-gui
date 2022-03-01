@@ -1,0 +1,11 @@
+{
+    "name": "memory",
+    "version": "0.2.1",
+    "main": "main.js",
+    "dependencies": {
+        "slint-ui": "../../api/node"
+    },
+    "scripts": {
+        "start": "node ."
+    }
+}

@@ -1,22 +1,13 @@
-# SixtyFPS
+# ![Slint](./logo/slint-logo-full-light.svg)
 
-[![Build Status](https://github.com/sixtyfpsui/sixtyfps/workflows/CI/badge.svg)](https://github.com/sixtyfpsui/sixtyfps/actions)
+<table border="0" style="border:none"><tr><td valign="center">Formerly known as </td><td><img height="40" src="https://slint-ui.com/resources/logo.drawio.svg" style="vertical-alignment: middle"></td></tr></table>
 
-This is the repository of the SixtyFPS project.
+[![Build Status](https://github.com/slint-ui/slint/workflows/CI/badge.svg)](https://github.com/slint-ui/slint/actions)
+[![REUSE status](https://api.reuse.software/badge/github.com/slint-ui/slint)](https://api.reuse.software/info/github.com/slint-ui/slint)
+[![Discussions](https://img.shields.io/github/discussions/slint-ui/slint)](https://github.com/slint-ui/slint/discussions)
 
-## Warning: Pre-Alpha
-
-SixtyFPS is still in the early stages of development: APIs will change and important features are still being developed. **Do not use this yet in production**.
-
-At the moment, it's possible to create user interfaces from C++, Rust, and NodeJS. These can be compiled and shown on Linux, macOS, Windows and in Web Browsers (using WebAssembly).
-
-We aim to support the development of this project through commercial licensing and services.
-We would love to get feedback from potential future customers or users.
-
-## What is SixtyFPS
-
-SixtyFPS is a toolkit to efficiently develop fluid graphical user interfaces for any display: embedded devices and desktop applications. We
-support multiple programming languages, such as Rust, C++ or JavaScript.
+Slint is a toolkit to efficiently develop fluid graphical user interfaces for any display: embedded devices and desktop applications. We support multiple programming languages, such as
+Rust, C++, and JavaScript.
 
 Our design goals are:
 
@@ -24,50 +15,63 @@ Our design goals are:
  - **Straightforward**: Programmers and designers should feel productive and be able to enjoy the design and development process.
    The APIs should be consistent, easy to use, and intuitive, no matter the target language. High-quality documentation
    should describe the APIs, teach concepts and how to use them.
- - **Native**: We support many different target platforms, from embedded devices, to desktops, including mobile and web. You should feel at
-   home on each platform; both the user and the developer. The look and feel and experience should match what users expect of an
-   application built for a specific platform.
+ - **Native**: We support many different target platforms, from embedded devices to desktops including mobile and web. Both the user and the developer should feel at
+   home on each platform. The look and feel and experience should match the users' expectations of a
+   native application.
 
-### Demos running in WebAssembly Simulation
+## Current Status
 
-| Printer Demo | Widget Gallery |
-|--------------|----------------|
-| [![Screenshot of the Printer Demo](resources/printerdemo_screenshot.png "Printer Demo")](https://www.sixtyfps.io/demos/printerdemo/) | [![Screenshot of the Gallery Demo](resources/gallery_screenshot.png "Gallery Demo")](https://www.sixtyfps.io/demos/gallery/) |
+Slint is in active development. Its state of development depends on the kind of application.
 
-### Desktop native controls
-
-| Windows | macOs | Linux |
-|---------|-------|-------|
-| TODO: Screenshot    | TODO: Screenshot  | TODO: Screenshot  |
-
-## Architecture
-
-An application is composed of the business logic written in Rust, C++, or JavaScript and the `.60` user interface design markup, which
-is compiled to native code.
-
-![Architecture Overview](resources/architecture.drawio.svg)
+ - **Embedded**: *Ready!* Slint is already happily used by customers on embedded devices
+   (running on an Arm processor with Linux). We are also looking into supporting microcontrollers.
+ - **Desktop**: *In Progress*. Slint is usable on Windows, Linux and Mac. We plan on building
+    up the desktop support in subsequent releases to reach the level of integration we're aiming for.
+ - **Mobile** (Android/iOS): *Todo*. We haven't started supporting mobile platforms yet, but it
+   is our intention to do so in the future.
+ - **Web**: Our focus is on Embedded and Desktop applications. We do not intend to compete in
+   the web space as a primary platform. That said, Slint can compile to WebAssembly and the
+   demos are running in a web browser. But the web support is currently limited to demo purposes.
 
 ## Documentation
 
-SixtyFPS can be used from different frontend languages. Refer to the README of these directories for reference documentation.
+Refer to the README of each language directory in the `api` sub-folder:
 
-The docs folder contains [build instructions](docs/building.md) and [internal developer docs](docs/development.md).
+ * [C++](api/cpp) ([Documentation](https://slint-ui.com/docs/cpp) | [Tutorial](https://slint-ui.com/docs/tutorial/cpp) | [Tutorial Video](https://youtu.be/_-Hxr6ZrHyo) | [Getting Started Template](https://github.com/slint-ui/slint-cpp-template))
+ * [Rust](api/rs/slint) [![Crates.io](https://img.shields.io/crates/v/slint)](https://crates.io/crates/slint) ([Documentation](https://slint-ui.com/docs/rust/slint/) | [Tutorial](https://slint-ui.com/docs/tutorial/rust) | [Tutorial Video](https://youtu.be/_-Hxr6ZrHyo) | [Getting Started Template](https://github.com/slint-ui/slint-rust-template))
+ * [JavaScript/NodeJS](api/node) [![npm](https://img.shields.io/npm/v/slint-ui)](https://www.npmjs.com/package/sixtyfps) ([Documentation](https://slint-ui.com/docs/node))
 
-## Supported integration languages
+The [examples](/examples) folder contains examples and demos. The `docs` folder contains [build instructions](docs/building.md) and [internal developer docs](docs/development.md).
 
- * [SixtyFps-cpp](api/sixtyfps-cpp) ([Documentation](https://www.sixtyfps.io/docs/cpp))
- * [SixtyFps-rs](api/sixtyfps-rs) ([Documentation](https://www.sixtyfps.io/docs/rust/sixtyfps/))
- * [SixtyFps-node](api/sixtyfps-node)
 
-## The .60 Language
+## Demos running in WebAssembly Simulation
 
-SixtyFPS comes with a mark-up language that is specifically designed for user interfaces: It provides a powerful way to
-describe graphical elements, their placement and the flow of data through the different states. At the heart of it are a familar syntax to describe the hierarchy of elements and property bindings. Here's the obligatory "Hello World":
+Click on the screenshots to run the WebAssembly simulation
 
-```60
+| Printer Demo | Slide Puzzle | Todo | Widget Gallery |
+|--------------|----------------|----------------|----------------|
+| [![Screenshot of the Printer Demo](https://slint-ui.com/resources/printerdemo_screenshot.png "Printer Demo")](https://slint-ui.com/demos/printerdemo/) | [![Screenshot of the Slide Puzzle](https://slint-ui.com/resources/puzzle_screenshot.png "Slide Puzzle")](https://slint-ui.com/demos/slide_puzzle/) | [![Screenshot of the Todo Demo](https://slint-ui.com/resources/todo_screenshot.png "Todo Demo")](https://slint-ui.com/demos/todo/) | [![Screenshot of the Gallery Demo](https://slint-ui.com/resources/gallery_screenshot.png "Gallery Demo")](https://slint-ui.com/demos/gallery/) |
+
+## Desktop Native Widgets
+
+| Windows | macOS | Linux |
+|---------|-------|-------|
+| ![Screenshot of the Gallery on Windows](https://slint-ui.com/resources/gallery_win_screenshot.png "Gallery") | ![Screenshot of the Gallery on macOS](https://slint-ui.com/resources/gallery_mac_screenshot.png "Gallery") | ![Screenshot of the Gallery on Linux](https://slint-ui.com/resources/gallery_linux_screenshot.png "Gallery") |
+
+## The .slint Markup Language
+
+Slint comes with a markup language that is specifically designed for user interfaces. This language provides a
+powerful way to describe graphical elements, their placement, and the flow of data through the different states. It is a familiar syntax to describe the hierarchy of elements and property bindings. Here's the obligatory "Hello World":
+
+```slint
 HelloWorld := Window {
+    width: 400px;
+    height: 400px;
+
     Text {
-       text: "Hello, world"
+       y: parent.width / 2;
+       x: parent.x + 200px;
+       text: "Hello, world";
        color: blue;
     }
 }
@@ -75,26 +79,86 @@ HelloWorld := Window {
 
 Check out the [language reference](docs/langref.md) for more details.
 
-## Examples / Demo
+## Architecture
 
-All examples and demos are located in the [examples](/examples) folder.
+An application is composed of the business logic written in Rust, C++, or JavaScript and the `.slint` user interface design markup, which
+is compiled to native code.
+
+![Architecture Overview](https://slint-ui.com/resources/architecture.drawio.svg)
+
+### Compiler
+
+The `.slint` files are compiled ahead of time. The expressions in the `.slint` are pure functions that the
+compiler can optimize. For example, the compiler could choose to "inline" properties and remove those
+that are constant or unchanged. In the future we hope to improve rendering time on low end devices by
+pre-processing images and text. The compiler could determine that a `Text` or an `Image` element is
+always on top of another `Image` in the same location. Consequently both elements could be rendered ahead
+of time into a single element, thus cutting down on rendering time.
+
+The compiler uses the typical compiler phases of lexing, parsing, optimization, and finally code
+generation. It provides different back-ends for code generation in the target language. The C++ code
+generator produces a C++ header file, the Rust generator produces Rust code, and so on. An interpreter
+for dynamic languages is also included.
+
+### Runtime
+
+The runtime library consists of an engine that supports properties declared in the `.slint` language.
+Components with their elements, items, and properties are laid out in a single memory region, to reduce
+memory allocations.
+
+Rendering backends and styles are configurable at compile time. Current there are two back-ends:
+
+ * The `gl` backend uses OpenGL ES 2.0 for rendering.
+ * The `qt` backend uses Qt's QStyle to achieve native looking widgets. In the future it could also use
+   QPainter.
+
+### Tooling
+
+We have a few tools to help with the development of .slint files:
+ - A [**LSP Server**](./tools/lsp) that adds things like auto-complete and live preview of the .slint files to many editors
+ - It is bundled in a [**Visual Studio Code Extension**](./vscode_extension) accessible from the market place
+ - A [**slint-viewer**](./tools/viewer) tool which display the .slint files. With the `--auto-reload` argument, makes it easy to preview
+   your UI as you are working it (when using the LSP preview is not possible)
+ - An [**online editor**](https://slint-ui.com/editor) to try out .slint syntax without installing anything ([sources](./tools/online_editor))
+ - An [**updater**](./tools/syntax_updater) to convert the .slint files from previous version to the newer version
+ - An experimental [**Figma importer**](./tools/figma_import)
 
 ## Contributions
 
-Contributions are welcome, in the form of code, bug reports or feedback. As an example
-we track issues where we specifically seek feedback with an [RFC tag](https://github.com/sixtyfpsui/sixtyfps/labels/rfc).
-To contribute, please see [CONTRIBUTING.md](CONTRIBUTING.md).
-Due to the dual-licensing nature, contributions require agreeing to a CLA.
+We welcome your contributions: in the form of code, bug reports or feedback.
+
+ * If you see an [RFC tag](https://github.com/slint-ui/slint/labels/rfc) on an issue, feel free to
+   chime in.
+ * For contribution guidelines see [CONTRIBUTING.md](CONTRIBUTING.md). The dual-licensing requires the
+   contributor to accept a CLA.
 
 ## License
 
-The software is provided under a dual licensing scheme
+This software is provided under a dual licensing scheme:
 
  - **GNU GPLv3**: Open source license ideal for free software.
- - **Commercial SixtyFps license**: more details to come.
+ - **Commercial Slint license**: <https://slint-ui.com/#offering>
+
+See also the [Licensing FAQ](FAQ.md#licensing)
+
+## Frequently Asked Questions
+
+Please see our separate [FAQ](FAQ.md).
+
+## About us
+
+Olivier and Simon started their open source journey in the KDE project, the popular Open Source Desktop Environment
+for Linux. Later they met while working together in a small company in Norway called Trolltech, on the Qt C++ toolkit.
+Here, they gained valuable experience in API design, cross-platform software development and user interface components.
+Simon continued in the Qt Company as one lead developer and maintainer of the QtQml engine, while Olivier
+co-founded [Woboq](https://woboq.com), a software consulting company. Years later, and now based in Berlin, they are starting a
+new project. With Slint they aim to make developing user interfaces fun for everyone: from JavaScript, C++, or
+Rust developers all the way to UI/UX designers.
 
 ## Contact us
 
-[Github issues](https://github.com/sixtyfpsui/sixtyfps/issues) can be used to report public suggestions or bugs.
+Feel free to join [Github discussions](https://github.com/slint-ui/slint/discussions) for general chat or questions. Use [Github issues](https://github.com/slint-ui/slint/issues) to report public suggestions or bugs.
 
-You can also contact us privately by sending email to info@sixtyfps.io
+To contact us privately send an email to info@slint-ui.com
+
+For chat, we also have [our Mattermost instance](https://chat.slint-ui.com)

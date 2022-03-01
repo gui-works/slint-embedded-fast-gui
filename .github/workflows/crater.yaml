@@ -1,0 +1,61 @@
+# Copyright © SixtyFPS GmbH <info@slint-ui.com>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+# This workflow checks out and build a bunch of crates that uses Slint,
+# with the current branch
+
+name: Crater
+
+on:
+  workflow_dispatch:
+
+jobs:
+  crater:
+    env:
+      SLINT_NO_QT: 1
+      CARGO_INCREMENTAL: false
+      RUST_BACKTRACE: 1
+    strategy:
+      fail-fast: false
+      matrix:
+        git_url:
+          - "https://github.com/slint-ui/cargo-ui"
+          - "https://github.com/Futsch1/image-sieve"
+          - "https://github.com/samyak-jain/nitroshot"
+          - "https://github.com/lukas-jung/sixty-mines"
+          - "https://github.com/getsentry/hackweek-rust-gui"
+          - "https://github.com/Vuenc/SixtyFPS-Str8ts"
+          - "https://github.com/jturcotte/chiptrack"
+          - "https://github.com/jrmoulton/apple-music-player"
+          - "https://github.com/Kirottu/SteamRunner"
+          - "https://codeberg.org/Be.ing/moire"
+    runs-on: ubuntu-20.04
+    steps:
+    - uses: actions/checkout@v2
+    - name: Install Linux Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libpango1.0-dev libatk1.0-dev libgtk-3-dev alsa-utils libasound2-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libjack-jackd2-dev
+    - name: Install latest stable
+      uses: actions-rs/toolchain@v1
+      with:
+          toolchain: stable
+          profile: minimal
+    - uses: Swatinem/rust-cache@v1
+    - name: setup patch
+      run: |
+          echo "" >> ~/.cargo/config
+          echo [patch.crates-io] >> ~/.cargo/config
+          echo slint = { path = \"$GITHUB_WORKSPACE/api/rs/slint\" } >> ~/.cargo/config
+          echo slint-build = { path = \"$GITHUB_WORKSPACE/api/rs/build\" }  >> ~/.cargo/config
+    - name: Checkout the repo
+      run: |
+          cd $HOME
+          git clone ${{ matrix.git_url }}  the_repo --depth 1
+          cd the_repo
+          git submodule update --init
+    - name: build
+      run: |
+        cd $HOME/the_repo
+        cargo update
+        cargo build

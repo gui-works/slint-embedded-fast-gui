@@ -1,17 +1,24 @@
+# Copyright © SixtyFPS GmbH <info@slint-ui.com>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
 [package]
-name = "sixtyfps-compiler"
-version = "0.0.1"
-authors = ["Sixty FPS <info@sixtyfps.io>"]
-edition = "2018"
-license = "GPL-3.0-only"
-description = "SixtyFPS compiler binary"
-repository = "https://github.com/sixtyfpsui/sixtyfps"
-homepage = "https://sixtyfps.io"
+name = "slint-compiler"
+version = "0.2.1"
+authors = ["Slint Developers <info@slint-ui.com>"]
+edition = "2021"
+license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
+description = "Slint compiler binary"
+repository = "https://github.com/slint-ui/slint"
+homepage = "https://slint-ui.com"
+publish = false
 
 [[bin]]
-name = "sixtyfps_compiler"
+name = "slint-compiler"
 path = "main.rs"
 
 [dependencies]
-sixtyfps-compilerlib = { version = "=0.0.1", path = "../../sixtyfps_compiler", features = ["display-diagnostics", "cpp", "rust"]}
-structopt = "0.3.14"
+i-slint-compiler = { version = "=0.2.1", path = "../../internal/compiler", features = ["display-diagnostics", "cpp", "rust"]}
+
+clap = { version = "3.0.5", features=["derive", "wrap_help"] }
+proc-macro2 = "1.0.11"
+spin_on = "0.1"

@@ -1,0 +1,49 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+Btn := Rectangle {
+    property<string> button_text;
+    callback clicked;
+    width: 100phx;
+    height: 75phx;
+    TouchArea {
+        width: 100phx;
+        height: 75phx;
+        clicked => { root.clicked() }
+    }
+    Text {
+        x: 50phx;
+        y: 10phx;
+        text: button_text;
+        color: black;
+    }
+}
+
+PlusMinus := Rectangle {
+    width: 100phx;
+    height: 300phx;
+    background: white;
+
+    property<int> counter;
+
+    GridLayout {
+        Row {
+            Btn {
+                clicked => { counter -= 1 }
+                button_text: "-";
+            }
+        }
+        Row {
+            Text {
+                text: counter;
+                color: black;
+            }
+        }
+        Row {
+            Btn {
+                clicked => { counter += 1 }
+                button_text: "+";
+            }
+        }
+    }
+}

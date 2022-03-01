@@ -1,12 +1,12 @@
-/* LICENSE BEGIN
-    This file is part of the SixtyFPS Project -- https://sixtyfps.io
-    Copyright (c) 2020 Olivier Goffart <olivier.goffart@sixtyfps.io>
-    Copyright (c) 2020 Simon Hausmann <simon.hausmann@sixtyfps.io>
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
-    SPDX-License-Identifier: GPL-3.0-only
-    This file is also available under commercial licensing terms.
-    Please contact info@sixtyfps.io for more information.
-LICENSE END */
+#![no_std]
+extern crate alloc;
+use crate::alloc::borrow::ToOwned;
+use alloc::boxed::Box;
+use alloc::string::String;
+
 use core::pin::Pin;
 use vtable::*;
 #[vtable]
@@ -16,6 +16,7 @@ struct HelloVTable {
     foo_mut: fn(VRefMut<'_, HelloVTable>, u32) -> u32,
     construct: fn(*const HelloVTable, u32) -> VBox<HelloVTable>,
     assoc: fn(*const HelloVTable) -> isize,
+    with_lifetime: fn(VRef<'_, HelloVTable>) -> &'_ u32,
 
     drop: fn(VRefMut<'_, HelloVTable>),
 
@@ -47,6 +48,10 @@ impl Hello for SomeStruct {
 
     fn assoc() -> isize {
         32
+    }
+
+    fn with_lifetime(&self) -> &u32 {
+        &self.x
     }
 }
 impl HelloConsts for SomeStruct {
@@ -85,6 +90,10 @@ impl Hello for AnotherStruct {
 
     fn assoc() -> isize {
         999
+    }
+
+    fn with_lifetime(&self) -> &u32 {
+        &self.foo
     }
 }
 impl HelloConsts for AnotherStruct {
@@ -154,7 +163,7 @@ fn test3() {
     struct Plop(i32);
     impl Xxx for Plop {
         fn ret_int(&self) -> i32 {
-            return self.0;
+            self.0
         }
     }
 
@@ -172,11 +181,11 @@ fn pin() {
     #[vtable]
     struct PinnedVTable {
         my_func: fn(core::pin::Pin<VRef<PinnedVTable>>, u32) -> u32,
-        my_func2: fn(std::pin::Pin<VRef<'_, PinnedVTable>>) -> u32,
+        my_func2: fn(::core::pin::Pin<VRef<'_, PinnedVTable>>) -> u32,
         my_func3: fn(Pin<VRefMut<PinnedVTable>>, u32) -> u32,
     }
 
-    struct P(String, std::marker::PhantomPinned);
+    struct P(String, core::marker::PhantomPinned);
     impl Pinned for P {
         fn my_func(self: Pin<&Self>, p: u32) -> u32 {
             self.0.len() as u32 + p
@@ -190,7 +199,7 @@ fn pin() {
     }
     PinnedVTable_static!(static PVT for P);
 
-    let b = Box::pin(P("hello".to_owned(), std::marker::PhantomPinned));
+    let b = Box::pin(P("hello".to_owned(), core::marker::PhantomPinned));
     let r = VRef::new_pin(b.as_ref());
     assert_eq!(r.as_ref().my_func(44), 44 + 5);
     assert_eq!(r.as_ref().my_func2(), 5);

@@ -1,0 +1,27 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+// comment
+
+// line comment
+SuperSimple := Rectangle {
+    /* block comment */
+    background: green;
+
+    //comment
+
+    /* block comment
+       on several
+       lines
+    */
+    background: /* . */ blue;
+//  ^error{Duplicated property}
+}
+
+/* another comment
+    /* even with some /*nesting*/*/
+
+plop
+*/
+
+// this is a comment

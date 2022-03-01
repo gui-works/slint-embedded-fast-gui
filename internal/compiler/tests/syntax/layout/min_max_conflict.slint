@@ -1,0 +1,22 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+Test := Rectangle {
+
+    GridLayout {
+        Rectangle {
+            height: 42px;
+//                 ^error{Cannot specify both 'height' and 'min-height'}
+            min-height: 42px;
+            max-width: 42px;
+        }
+        Rectangle {
+            width: 42px;
+//                ^error{Cannot specify both 'width' and 'max-width'}
+            min-height: 42px;
+            max-width: 42px;
+        }
+    }
+
+
+}

@@ -1,0 +1,24 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+Test := Rectangle {
+    property <bool> condition;
+
+    GridLayout {
+        Row {
+            if (condition): Text {
+//                          ^error{'if' or 'for' expressions are not currently supported in grid layouts}
+            }
+        }
+
+        if (condition): Text {
+//                      ^error{'if' or 'for' expressions are not currently supported in grid layouts}
+
+        }
+
+        for x in 5: Text {
+//                  ^error{'if' or 'for' expressions are not currently supported in grid layouts}
+
+         }
+    }
+}

@@ -1,45 +1,54 @@
-/* LICENSE BEGIN
-    This file is part of the SixtyFPS Project -- https://sixtyfps.io
-    Copyright (c) 2020 Olivier Goffart <olivier.goffart@sixtyfps.io>
-    Copyright (c) 2020 Simon Hausmann <simon.hausmann@sixtyfps.io>
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
-    SPDX-License-Identifier: GPL-3.0-only
-    This file is also available under commercial licensing terms.
-    Please contact info@sixtyfps.io for more information.
-LICENSE END */
 use anyhow::Context;
+use clap::Parser;
 use std::error::Error;
 use std::path::PathBuf;
-use structopt::StructOpt;
 
-mod cmake;
 mod cppdocs;
 mod license_headers_check;
+mod nodepackage;
+mod reuse_compliance_check;
 
-#[derive(Debug, StructOpt)]
+#[derive(Debug, clap::Parser)]
 pub enum TaskCommand {
-    #[structopt(name = "cmake")]
-    CMake(cmake::CMakeCommand),
-    #[structopt(name = "check_license_headers")]
+    #[clap(name = "check_license_headers")]
     CheckLicenseHeaders(license_headers_check::LicenseHeaderCheck),
-    #[structopt(name = "cppdocs")]
-    CppDocs,
+    #[clap(name = "cppdocs")]
+    CppDocs(CppDocsCommand),
+    #[clap(name = "node_package")]
+    NodePackage,
+    #[clap(name = "check_reuse_compliance")]
+    ReuseComplianceCheck(reuse_compliance_check::ReuseComplianceCheck),
 }
 
-#[derive(Debug, StructOpt)]
-#[structopt(name = "xtask")]
+#[derive(Debug, clap::Parser)]
+#[clap(name = "xtask")]
 pub struct ApplicationArguments {
-    #[structopt(subcommand)]
+    #[clap(subcommand)]
     pub command: TaskCommand,
 }
 
-pub fn root_dir() -> anyhow::Result<PathBuf> {
-    let mut root = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").ok_or_else(|| anyhow::anyhow!("Cannot determine root directory - CARGO_MANIFEST_DIR is not set -- you can only run xtask via cargo"))?);
-    root.pop(); // $root/xtask -> $root
-    Ok(root)
+#[derive(Debug, clap::Parser)]
+pub struct CppDocsCommand {
+    #[clap(long)]
+    show_warnings: bool,
 }
 
-fn run_command<I, K, V>(program: &str, args: &[&str], env: I) -> anyhow::Result<Vec<u8>>
+/// The root dir of the git repository
+fn root_dir() -> PathBuf {
+    let mut root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    root.pop(); // $root/xtask -> $root
+    root
+}
+
+struct CommandOutput {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+fn run_command<I, K, V>(program: &str, args: &[&str], env: I) -> anyhow::Result<CommandOutput>
 where
     I: IntoIterator<Item = (K, V)>,
     K: AsRef<std::ffi::OsStr>,
@@ -48,12 +57,14 @@ where
     let cmdline = || format!("{} {}", program, args.join(" "));
     let output = std::process::Command::new(program)
         .args(args)
-        .current_dir(root_dir()?)
+        .current_dir(root_dir())
         .envs(env)
         .output()
         .with_context(|| format!("Error launching {}", cmdline()))?;
-    let code =
-        output.status.code().with_context(|| format!("Command received signal: {}", cmdline()))?;
+    let code = output
+        .status
+        .code()
+        .with_context(|| format!("Command received callback: {}", cmdline()))?;
     if code != 0 {
         Err(anyhow::anyhow!(
             "Command {} exited with non-zero status: {}\nstdout: {}\nstderr: {}",
@@ -63,15 +74,16 @@ where
             String::from_utf8_lossy(&output.stderr)
         ))
     } else {
-        Ok(output.stdout)
+        Ok(CommandOutput { stderr: output.stderr, stdout: output.stdout })
     }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    match ApplicationArguments::from_args().command {
-        TaskCommand::CMake(cmd) => cmd.build_cmake()?,
+    match ApplicationArguments::parse().command {
         TaskCommand::CheckLicenseHeaders(cmd) => cmd.check_license_headers()?,
-        TaskCommand::CppDocs => cppdocs::generate()?,
+        TaskCommand::CppDocs(cmd) => cppdocs::generate(cmd.show_warnings)?,
+        TaskCommand::NodePackage => nodepackage::generate()?,
+        TaskCommand::ReuseComplianceCheck(cmd) => cmd.check_reuse_compliance()?,
     };
 
     Ok(())

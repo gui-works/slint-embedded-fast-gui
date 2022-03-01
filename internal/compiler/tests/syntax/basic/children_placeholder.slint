@@ -1,0 +1,23 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+TestBox := Rectangle {
+    @children
+    @children
+//  ^error{The @children placeholder can only appear once in an element}
+}
+
+TestBox2 := Rectangle {
+    Rectangle {
+        @children
+    }
+    @children
+//  ^error{The @children placeholder can only appear once in an element hierarchy}
+}
+
+Final := TestBox {
+    Rectangle {
+        @children
+//      ^error{children placeholder not allowed in the final component}
+    }
+}

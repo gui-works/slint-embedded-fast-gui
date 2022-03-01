@@ -1,0 +1,30 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+SuperSimple := Rectangle {
+    TouchArea {
+        clicked => { root.x = 1phx; }
+    }
+    TouchArea {
+        clicked => { x = 1phx; }
+    }
+    TouchArea {
+        clicked => { 12 = 1; }
+//                   ^error{Assignment needs to be done on a property}
+    }
+    TouchArea {
+        clicked => { x = "string"; }
+//                      ^error{Cannot convert string to length}
+    }
+
+    TouchArea {
+        clicked => { doesnotexist = 24; }
+//                   ^error{Unknown unqualified identifier 'doesnotexist'}
+    }
+
+
+    property <string> plop;
+    TouchArea {
+        clicked => { plop = "string"; }
+    }
+}

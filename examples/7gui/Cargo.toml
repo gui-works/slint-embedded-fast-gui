@@ -1,0 +1,18 @@
+# Copyright © SixtyFPS GmbH <info@slint-ui.com>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+[package]
+name = "_7gui"
+version = "0.2.1"
+authors = ["Slint Developers <info@slint-ui.com>"]
+edition = "2021"
+publish = false
+license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
+
+[[bin]]
+path = "booker.rs"
+name = "booker"
+
+[dependencies]
+slint = { path = "../../api/rs/slint" }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"]}

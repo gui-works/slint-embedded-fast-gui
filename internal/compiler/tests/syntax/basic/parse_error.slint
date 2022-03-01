@@ -1,0 +1,24 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+SuperSimple := Rectangle {
+    88;
+//  ^error{Parse error}
+    * / - + // no error there as this is already reported in the previous line
+    foo := Rectangle {
+        background: blue + 3
+        x: 45phx;
+//      ^error{Syntax error: expected ';'}
+// FIXME: would be nice if the smeicolon error was on the previous line
+    }
+
+    there was already parse error in this scope, so no more
+
+    property <string> xyz = 425;
+                      //  ^error{Syntax error: expected ';'}
+
+    Image {
+        * .
+//      ^error{Parse error}
+    }
+}

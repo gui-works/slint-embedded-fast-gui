@@ -1,0 +1,24 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+Foo := Rectangle {
+    width: 30%;
+
+    Rectangle {
+        height: 111%;
+    }
+
+    x: 30%;
+//    ^error{conversion from percentage to length is only possible for the properties width and height}
+}
+
+X := Rectangle {
+    height: 30%;
+//         ^error{Cannot find parent property to apply relative length}
+    Foo {
+        background: 30%;
+//                 ^error{Cannot convert percent to brush}
+        y: 30%;
+//        ^error{conversion from percentage to length is only possible for the properties width and height}
+    }
+}

@@ -1,0 +1,35 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+Combo := Rectangle {
+    property <color> inner_color;
+    my_popup := PopupWindow {
+        Rectangle {
+            background: root.inner_color;
+            insidelayout := VerticalLayout {
+                spacing: 3px;
+                for aa in [1, 2]: Text { text: aa; }
+            }
+        }
+    }
+    TouchArea {
+        clicked => { my_popup.show(); }
+    }
+}
+
+TestCase := Rectangle {
+    for x in [1, 2] :  Combo { }
+}
+
+ComplexTestCase := Window {
+    TestCase {
+        cob := Combo {
+            PopupWindow {
+                width: root.width * 0.5;
+                height: parent.height;
+                x: 20px + cob.height;
+            }
+        }
+    }
+    TestCase {  }
+}

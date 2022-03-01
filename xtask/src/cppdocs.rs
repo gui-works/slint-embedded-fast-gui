@@ -1,15 +1,14 @@
-/* LICENSE BEGIN
-    This file is part of the SixtyFPS Project -- https://sixtyfps.io
-    Copyright (c) 2020 Olivier Goffart <olivier.goffart@sixtyfps.io>
-    Copyright (c) 2020 Simon Hausmann <simon.hausmann@sixtyfps.io>
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
-    SPDX-License-Identifier: GPL-3.0-only
-    This file is also available under commercial licensing terms.
-    Please contact info@sixtyfps.io for more information.
-LICENSE END */
+// cspell:ignore cppdocs pipenv pipfile
+
 use anyhow::{Context, Result};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+
+#[path = "../../api/cpp/cbindgen.rs"]
+mod cbindgen;
 
 fn symlink_file<P: AsRef<Path>, Q: AsRef<Path>>(src: P, dst: Q) -> Result<()> {
     if dst.as_ref().exists() {
@@ -59,10 +58,10 @@ fn symlink_files_in_dir<S: AsRef<Path>, T: AsRef<Path>, TS: AsRef<Path>>(
     Ok(())
 }
 
-pub fn generate() -> Result<(), Box<dyn std::error::Error>> {
-    let root = super::root_dir()?;
+pub fn generate(show_warnings: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let root = super::root_dir();
 
-    let docs_source_dir = root.join("api/sixtyfps-cpp");
+    let docs_source_dir = root.join("api/cpp");
     let docs_build_dir = root.join("target/cppdocs");
     let html_static_dir = docs_build_dir.join("_static");
 
@@ -73,19 +72,21 @@ pub fn generate() -> Result<(), Box<dyn std::error::Error>> {
     symlink_files_in_dir(
         docs_source_dir.join("docs"),
         &docs_build_dir,
-        ["..", "..", "api", "sixtyfps-cpp", "docs"].iter().collect::<PathBuf>(),
+        ["..", "..", "api", "cpp", "docs"].iter().collect::<PathBuf>(),
     )
-    .context("Error symlinking files from docs source to docs build dir")?;
+    .context("Error creating symlinks from docs source to docs build dir")?;
 
     symlink_dir(["..", "..", "docs"].iter().collect::<PathBuf>(), docs_build_dir.join("markdown"))?;
 
     symlink_file(
-        ["..", "..", "api", "sixtyfps-cpp", "README.md"].iter().collect::<PathBuf>(),
+        ["..", "..", "api", "cpp", "README.md"].iter().collect::<PathBuf>(),
         docs_build_dir.join("README.md"),
     )?;
 
-    let pip_env =
-        vec![(OsString::from("PIPENV_PIPFILE"), docs_source_dir.join("docs/Pipfile").to_owned())];
+    let generated_headers_dir = docs_build_dir.join("generated_include");
+    cbindgen::gen_all(&root, &generated_headers_dir)?;
+
+    let pip_env = vec![(OsString::from("PIPENV_PIPFILE"), docs_source_dir.join("docs/Pipfile"))];
 
     println!("Running pipenv install");
 
@@ -102,11 +103,15 @@ pub fn generate() -> Result<(), Box<dyn std::error::Error>> {
             docs_build_dir.to_str().unwrap(),
             docs_build_dir.join("html").to_str().unwrap(),
         ],
-        pip_env.clone(),
+        pip_env,
     )
     .context("Error running pipenv install")?;
 
-    println!("{}", String::from_utf8_lossy(&output));
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+
+    if show_warnings {
+        println!("{}", String::from_utf8_lossy(&output.stderr));
+    }
 
     Ok(())
 }

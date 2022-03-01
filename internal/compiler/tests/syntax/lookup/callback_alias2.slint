@@ -1,0 +1,13 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+Xxx := Rectangle {
+
+    foo := Rectangle {
+        callback hello(int) -> int;
+    }
+
+    callback bar(int) -> int;
+    bar <=> foo.hello;
+//  ^error{Unknown property bar in Rectangle}
+}

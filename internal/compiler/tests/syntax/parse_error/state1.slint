@@ -1,0 +1,29 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+TestCase := Rectangle {
+    property<bool> checked;
+    property <int> border;
+    states [
+        checked when checked: {
+            text.color: red;
+            <<<<<    // FIXME: we should only report one error
+//          ^error{Syntax error: expected Identifier}
+//          ^^error{Syntax error: expected '\]'}
+//          ^^^error{Parse error}
+            border: 42;
+        }
+    ]
+//  ^error{expected Identifier}
+
+    transitions [
+        in pressed: {
+            animate * { duration: 88ms; }
+            animate color { duration: 88ms; }
+        }
+    ]
+
+    text := Text {}
+    touch := TouchArea {}
+
+}

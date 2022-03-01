@@ -1,0 +1,16 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+Inline1 := Rectangle {
+    Rectangle {
+        x: 66phx;
+    }
+}
+
+SubElements := Rectangle {
+    Inline1 {
+        background: yellow;
+        invalid: yellow;
+//      ^error{Unknown property invalid in Inline1}
+    }
+}

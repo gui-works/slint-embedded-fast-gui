@@ -1,0 +1,45 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+Comp := Rectangle {
+    property<length> custom_prop;
+    property<color> color_prop;
+    color_prop: red;
+
+    Rectangle {
+        x: custom_prop;
+        y: nothing;
+//         ^error{Unknown unqualified identifier 'nothing'}
+    }
+
+}
+
+
+X := Rectangle {
+    width: 50phx;
+    height: width;
+
+    foo := Rectangle {
+        border_width: foo.height;
+    }
+
+    Rectangle {
+        width: foo.height;
+        height: xxx.fff;
+//              ^error{Cannot access id 'xxx'}
+        background: foo.height.blue;
+//                             ^error{Cannot access the field 'blue' of length}
+        x: foo.blue;
+//             ^error{Element 'Rectangle' does not have a property 'blue'}
+
+    }
+
+    plop := Comp {
+        x: plop.custom_prop;
+        color_prop: yellow;
+        y: plop.not_exist;
+//              ^error{Element 'Comp' does not have a property 'not_exist'}
+    }
+
+
+}

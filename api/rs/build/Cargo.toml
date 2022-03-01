@@ -1,0 +1,25 @@
+# Copyright © SixtyFPS GmbH <info@slint-ui.com>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+[package]
+name = "slint-build"
+version = "0.2.1"
+authors = ["Slint Developers <info@slint-ui.com>"]
+edition = "2021"
+license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
+description = "Helper for Slint build script"
+repository = "https://github.com/slint-ui/slint"
+homepage = "https://slint-ui.com"
+
+
+[lib]
+path = "lib.rs"
+
+[features]
+default = []
+
+[dependencies]
+i-slint-compiler = { version = "=0.2.1", path = "../../../internal/compiler", features = ["rust", "display-diagnostics"] }
+
+spin_on = "0.1"
+thiserror = "1"

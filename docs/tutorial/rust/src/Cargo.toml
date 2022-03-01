@@ -1,0 +1,41 @@
+# Copyright © SixtyFPS GmbH <info@slint-ui.com>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+[package]
+name = "src"
+version = "0.2.1"
+authors = ["Slint Developers <info@slint-ui.com>"]
+edition = "2021"
+license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
+description = "Binaries for Rust version of Memory Tutorial of Slint"
+repository = "https://github.com/slint-ui/slint"
+homepage = "https://slint-ui.com"
+publish = false
+
+[[bin]]
+name = "memory_tutorial_initial"
+path = "main_initial.rs"
+
+[[bin]]
+name = "memory_tutorial_tile"
+path = "main_memory_tile.rs"
+
+[[bin]]
+name = "memory_tutorial_polishing_the_tile"
+path = "main_polishing_the_tile.rs"
+
+[[bin]]
+name = "memory_tutorial_multiple_tiles"
+path = "main_multiple_tiles.rs"
+
+[[bin]]
+name = "memory_tutorial_tiles_from_rust"
+path = "main_tiles_from_rust.rs"
+
+[[bin]]
+name = "memory_tutorial_game_logic_in_rust"
+path = "main_game_logic_in_rust.rs"
+
+[dependencies]
+slint = { path = "../../../../api/rs/slint" }
+rand = "0.8"

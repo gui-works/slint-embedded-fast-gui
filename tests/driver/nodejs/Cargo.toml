@@ -1,0 +1,25 @@
+# Copyright © SixtyFPS GmbH <info@slint-ui.com>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+[package]
+name = "test-driver-nodejs"
+version = "0.2.1"
+authors = ["Slint Developers <info@slint-ui.com>"]
+edition = "2021"
+publish = false
+license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
+
+[[bin]]
+path = "main.rs"
+name = "test-driver-nodejs"
+
+[dev-dependencies]
+test_driver_lib = { path = "../driverlib" }
+# Require `artifact`  dependencies tracked by rust RFC 3028
+#slint-node = { path = "../../../api/node/native", artifact = ["cdylib"] }
+lazy_static = "1.4.0"
+which = "4.0.2"
+tempfile = "3.2"
+
+[build-dependencies]
+test_driver_lib = { path = "../driverlib" }

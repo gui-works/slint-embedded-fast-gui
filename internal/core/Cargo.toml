@@ -1,0 +1,75 @@
+# Copyright © SixtyFPS GmbH <info@slint-ui.com>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+[package]
+name = "i-slint-core"
+version = "0.2.1"
+authors = ["Slint Developers <info@slint-ui.com>"]
+edition = "2021"
+license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
+description = "Internal Slint Runtime Library."
+repository = "https://github.com/slint-ui/slint"
+homepage = "https://slint-ui.com"
+categories = ["gui", "development-tools"]
+keywords = ["gui", "ui", "toolkit", "graphics", "design"]
+
+[lib]
+path = "lib.rs"
+
+[features]
+ffi = [] # Expose C ABI
+libm = ["num-traits/libm", "euclid/libm"]
+# Allow the viewer to query at runtime information about item types
+rtti = []
+# Use the standard library
+std = ["euclid/std", "once_cell/std", "scoped-tls-hkt", "lyon_path", "lyon_algorithms", "lyon_geom", "lyon_svg", "instant"]
+# Unsafe feature meaning that there is only one core running and all thread_local are static.
+# You can only enable this feature if you are sure that any API of this crate is only called
+# from a single core, and not in a interrupt or signal handler.
+unsafe_single_core = []
+
+default = ["std"]
+
+[dependencies]
+i-slint-common = { version = "=0.2.1", path = "../common" }
+i-slint-core-macros = { version = "=0.2.1", path = "../core-macros" }
+
+const-field-offset = { version = "0.1", path = "../../helper_crates/const-field-offset" }
+vtable = { version="0.1.6", path = "../../helper_crates/vtable" }
+
+atomic-polyfill = { version = "0.1.5" }
+auto_enums = "0.7"
+cfg-if = "1"
+defmt = { version = "0.3.0", optional = true }
+derive_more = "0.99.5"
+euclid = { version = "0.22.1", default-features = false }
+instant = { version = "0.1", features = [ "now" ], optional = true }
+lyon_algorithms = { version = "0.17.1" , optional = true }
+lyon_geom = { version = "0.17.0", optional = true  }
+lyon_path = { version = "0.17.3" , optional = true }
+lyon_svg = { version = "0.17.2", optional = true }
+num-traits = { version = "0.2", default-features = false }
+once_cell = { version = "1.5", default-features = false }
+pin-project = "1"
+pin-weak = { version = "1.1", default-features = false }
+# Note: the rgb version is extracted in ci.yaml for rustdoc builds
+rgb = "0.8.27"
+scoped-tls-hkt = { version = "0.1", optional = true }
+scopeguard =  { version = "1.1.0", default-features = false }
+slab = { version = "0.4.3", default-features = false }
+static_assertions = "1.1"
+strum = { version = "0.24.0", default-features = false, features = ["derive"] }
+unicode-segmentation = "1.8.0"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+instant = { version = "0.1", features = [ "wasm-bindgen", "now" ] }
+wasm-bindgen = { version = "0.2" }
+web_sys = { version = "0.3", package = "web-sys", features=["console", "CanvasRenderingContext2d", "TextMetrics", "HtmlSpanElement"] }
+
+[dev-dependencies]
+slint = { path = "../../api/rs/slint", default-features = false, features = ["std", "compat-0-2-0"] }
+i-slint-backend-testing = { path="../backends/testing" }
+
+image = { version = "0.24.0", default-features = false, features = [ "png" ] }
+pin-weak = "1"
+tiny-skia = "0.6.1"

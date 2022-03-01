@@ -1,0 +1,23 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+
+SuperSimple := Rectangle {
+    background: green;
+
+    for xx Text {}
+//         ^error{Invalid 'for' syntax: there should be a 'in' token}
+
+
+    for xx in zz: Hello {
+        Rectangle {}
+    }
+
+    Image {
+    }
+
+    for xx[idx] in zz: Hello {
+        Rectangle {}
+    }
+
+}

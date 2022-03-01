@@ -1,12 +1,6 @@
-/* LICENSE BEGIN
-    This file is part of the SixtyFPS Project -- https://sixtyfps.io
-    Copyright (c) 2020 Olivier Goffart <olivier.goffart@sixtyfps.io>
-    Copyright (c) 2020 Simon Hausmann <simon.hausmann@sixtyfps.io>
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
-    SPDX-License-Identifier: GPL-3.0-only
-    This file is also available under commercial licensing terms.
-    Please contact info@sixtyfps.io for more information.
-LICENSE END */
 /*!
 Implementation detail for the vtable crate
 */
@@ -36,7 +30,7 @@ fn match_generic_type(ty: &Type, container: &str, containee: &Ident) -> bool {
 }
 
 /// Returns Some(type) if the type is `Pin<type>`
-fn is_pin<'a>(ty: &'a Type) -> Option<&'a Type> {
+fn is_pin(ty: &Type) -> Option<&Type> {
     if let Type::Path(pat) = ty {
         if let Some(seg) = pat.path.segments.last() {
             if seg.ident != "Pin" {
@@ -77,6 +71,14 @@ For function type fields:
   the vtable without having a valid pointer to the actual object. But if the original function was
   marked unsafe, the unsafety is forwarded to the trait.
  - If a field is called `drop`, then it is understood that this is the destructor for a VBox.
+   It must have the type `fn(VRefMut<MyVTable>)`
+ - If two fields called `drop_in_place` and `dealloc` are present, then they are understood to be
+    in-place destructors and deallocation functions. `drop_in_place` must have the signature
+    `fn(VRefMut<MyVTable> -> Layout`, and `dealloc` must have the signature
+    `fn(&MyVTable, ptr: *mut u8, layout: Layout)`.
+    `drop_in_place` is responsible for destructing the object and returning the memory layout that
+    was used for the initial allocation. It will be passed to `dealloc`, which is responsible for releasing
+    the memory. These two functions are used to enable the use of `VRc` and `VWeak`.
  - If the first argument of the function is `VRef<MyVTable>` or `VRefMut<MyVTable>`, then it is
    understood as a `&self` or `&mut self` argument in the trait.
  - Similarly, if it is a `Pin<VRef<MyVTable>>` or `Pin<VRefMut<MyVTable>>`, self is mapped
@@ -90,7 +92,7 @@ For the other fields:
 
 The VRef/VRefMut/VBox structure will dereference to a type which has the following associated items:
  - The functions from the vtable that have a VRef or VRefMut first parameter for self.
- - For each `#[field_offset] attributes, a corresponding getter returns a reference
+ - For each `#[field_offset]` attributes, a corresponding getter returns a reference
    to that field, and mutable accessor that ends with `_mut` returns a mutable reference.
  - `as_ptr` returns a `*mut u8`
  - `get_vtable` Return a reference to the VTable so one can access the associated consts.
@@ -111,7 +113,7 @@ struct AnimalVTable {
     /// `unsafe` and `extern "C"` will automatically be added
     make_noise: fn(VRef<AnimalVTable>, i32) -> i32,
 
-    /// if there is a 'drop' member, it is considered as the destrutor
+    /// if there is a 'drop' member, it is considered as the destructor
     drop: fn(VRefMut<AnimalVTable>),
 
     /// Associated constant.
@@ -124,13 +126,13 @@ struct AnimalVTable {
 }
 
 #[repr(C)]
-struct Dog{ strenght: i32, is_hungry: bool };
+struct Dog{ strength: i32, is_hungry: bool };
 
 // The #[vtable] macro created the Animal Trait
 impl Animal for Dog {
     fn make_noise(&self, intensity: i32) -> i32 {
         println!("Wof!");
-        return self.strenght * intensity;
+        return self.strength * intensity;
     }
 }
 
@@ -145,7 +147,7 @@ impl AnimalConsts for Dog {
 AnimalVTable_static!(static DOG_VT for Dog);
 
 // with that, it is possible to instantiate a vtable::VRefMut
-let mut dog = Dog { strenght: 100, is_hungry: false };
+let mut dog = Dog { strength: 100, is_hungry: false };
 {
     let mut animal_vref = VRefMut::<AnimalVTable>::new(&mut dog);
 
@@ -169,7 +171,7 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         return Error::new(
             proc_macro2::Span::call_site(),
-            "Only suported with structure with named fields",
+            "Only supported for structure with named fields",
         )
         .to_compile_error()
         .into();
@@ -189,7 +191,7 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let vtable_name = input.ident.clone();
 
-    let mut drop_impl = None;
+    let mut drop_impls = vec![];
 
     let mut generated_trait = ItemTrait {
         attrs: input
@@ -210,8 +212,10 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
         items: Default::default(),
     };
 
-    let additional_doc =
-        format!("\nNote: Was generated from the `#[vtable]` macro on `{}`", vtable_name);
+    let additional_doc = format!(
+        "\nNote: Was generated from the [`#[vtable]`](vtable) macro on [`{}`]",
+        vtable_name
+    );
     generated_trait
         .attrs
         .append(&mut Attribute::parse_outer.parse2(quote!(#[doc = #additional_doc])).unwrap());
@@ -259,10 +263,10 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 asyncness: None,
                 unsafety: f.unsafety,
                 abi: None,
-                fn_token: f.fn_token.clone(),
+                fn_token: f.fn_token,
                 ident: ident.clone(),
                 generics: Default::default(),
-                paren_token: f.paren_token.clone(),
+                paren_token: f.paren_token,
                 inputs: Default::default(),
                 variadic: None,
                 output: f.output.clone(),
@@ -308,7 +312,7 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                                         .to_compile_error()
                                         .into();
                                 }
-                                if call_code.is_some() || sig.inputs.len() > 0 {
+                                if call_code.is_some() || !sig.inputs.is_empty() {
                                     return Error::new(
                                         p.span(),
                                         "VTable pointer need to be the first",
@@ -336,7 +340,7 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 } else {
                     (false, None)
                 } {
-                    if sig.inputs.len() > 0 {
+                    if !sig.inputs.is_empty() {
                         return Error::new(param.span(), "Self pointer need to be the first")
                             .to_compile_error()
                             .into();
@@ -424,8 +428,8 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     #ident::<T>
                 },));
 
-                drop_impl = Some(quote! {
-                    impl VTableMetaDrop for #vtable_name {
+                drop_impls.push(quote! {
+                    unsafe impl VTableMetaDrop for #vtable_name {
                         unsafe fn drop(ptr: *mut #to_name) {
                             // Safety: The vtable is valid and inner is a type corresponding to the vtable,
                             // which was allocated such that drop is expected.
@@ -440,6 +444,39 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                         }
                     }
                 });
+                continue;
+            }
+
+            if ident == "drop_in_place" {
+                vtable_ctor.push(quote!(#ident: {
+                    #sig_extern {
+                        unsafe { ::core::ptr::drop_in_place((#self_call).0 as *mut T) };
+                        ::core::alloc::Layout::new::<T>().into()
+                    }
+                    #ident::<T>
+                },));
+
+                drop_impls.push(quote! {
+                    unsafe impl VTableMetaDropInPlace for #vtable_name {
+                        unsafe fn #ident(vtable: &Self::VTable, ptr: *mut u8) -> vtable::Layout {
+                            // Safety: The vtable is valid and ptr is a type corresponding to the vtable,
+                            (vtable.#ident)(VRefMut::from_raw(core::ptr::NonNull::from(vtable), core::ptr::NonNull::new_unchecked(ptr).cast()))
+                        }
+                        unsafe fn dealloc(vtable: &Self::VTable, ptr: *mut u8, layout: vtable::Layout) {
+                            (vtable.dealloc)(vtable, ptr, layout)
+                        }
+                    }
+                });
+                continue;
+            }
+            if ident == "dealloc" {
+                vtable_ctor.push(quote!(#ident: {
+                    unsafe extern "C" fn #ident(_: &#vtable_name, ptr: *mut u8, layout: vtable::Layout) {
+                        use ::core::convert::TryInto;
+                        vtable::internal::dealloc(ptr, layout.try_into().unwrap())
+                    }
+                    #ident
+                },));
                 continue;
             }
 
@@ -508,10 +545,16 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     #some(#ident::<T>)
                 },));
             } else {
+                let erase_return_type_lifetime = match &sig_extern.output {
+                    ReturnType::Default => quote!(),
+                    // If the return type contains a implicit lifetime, it is safe to erase it while returning it
+                    // because a sound implementation of the trait wouldn't allow unsound things here
+                    ReturnType::Type(_, r) => quote!(core::mem::transmute::<#r, #r>),
+                };
                 vtable_ctor.push(quote!(#ident: {
                     #sig_extern {
                         // This is safe since the self must be a instance of our type
-                        unsafe { T::#ident(#self_call #forward_code) }
+                        unsafe { #erase_return_type_lifetime(T::#ident(#self_call #forward_code)) }
                     }
                     #ident::<T>
                 },));
@@ -522,7 +565,7 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let generated_trait_assoc_const =
                 generated_trait_assoc_const.get_or_insert_with(|| ItemTrait {
                     attrs: Attribute::parse_outer.parse_str(&format!(
-                        "/** Trait containing the associated constant relative to the the trait {}.\n{} */",
+                        "/** Trait containing the associated constant relative to the trait {}.\n{} */",
                         trait_name, additional_doc
                     )).unwrap(),
                     ident: quote::format_ident!("{}Consts", trait_name),
@@ -543,7 +586,7 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
                 match &field.ty {
                     Type::Path(p) if p.path.get_ident().map(|i| i == "usize").unwrap_or(false) => {}
-                    ty @ _ => {
+                    ty => {
                         return Error::new(
                             ty.span(),
                             "The type of an #[field_offset] member in the vtable must be 'usize'",
@@ -621,7 +664,7 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
         r"Instantiate a static {vtable} for a given type and implements `vtable::HasStaticVTable<{vtable}>` for it.
 
 ```ignore
-// The preview above is misleading because of rust-lang/rust#45939, so it is reproctuced bellow
+// The preview above is misleading because of rust-lang/rust#45939, so it is reproduced below
 macro_rules! {macro} {{
     ($(#[$meta:meta])* $vis:vis static $ident:ident for $ty:ty) => {{ ... }}
 }}
@@ -656,7 +699,7 @@ and implements HasStaticVTable for it.
             #[allow(unused)]
             use super::*;
             use ::vtable::*;
-            use ::std::boxed::Box; // make sure `Box` was not overriden in super
+            use ::vtable::internal::*;
             #input
 
             impl #vtable_name {
@@ -699,7 +742,7 @@ and implements HasStaticVTable for it.
                 type Target = #to_name;
             }
 
-            #drop_impl
+            #(#drop_impls)*
         }
         #[doc(inline)]
         #[macro_use]
@@ -724,6 +767,6 @@ and implements HasStaticVTable for it.
             }
         }
     );
-    //     println!("{}", result);
+    //println!("{}", result);
     result.into()
 }

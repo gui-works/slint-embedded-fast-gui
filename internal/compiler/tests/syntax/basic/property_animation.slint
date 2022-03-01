@@ -1,0 +1,12 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+TestCase := Rectangle {
+    animate x {
+        duration: 1000ms;
+    }
+    animate y {
+        x: 0phx;
+//      ^error{Unknown property x in PropertyAnimation}
+    }
+}

@@ -1,0 +1,42 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+
+X := Rectangle {
+    Rectangle {
+        background: blue;
+    }
+    Rectangle {
+        background: {blue}
+    }
+
+    Rectangle {
+        background: not_a_color;
+//                  ^error{Unknown unqualified identifier 'not_a_color'}
+    }
+
+    Rectangle {
+        background: yellow;
+    }
+
+    Rectangle {
+        background: #blue;
+//                  ^error{Invalid color literal}
+        x: #0;
+//         ^error{Invalid color literal}
+        y: #0000000000;
+//         ^error{Invalid color literal}
+        property<color> a: #abq;
+//                         ^error{Invalid color literal}
+
+        property<color> b: 123;
+//                        ^error{Cannot convert float to color}
+    }
+
+    Rectangle {
+        background: Colors;
+//                  ^error{Cannot take reference to a namespace}
+        property<color> xxx: Colors.xxx;
+//                                  ^error{'xxx' is not a member of the namespace Colors}
+    }
+}

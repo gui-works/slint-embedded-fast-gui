@@ -1,0 +1,16 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+TestButtonImpl := Rectangle {
+    property<string> button_text;
+    Text {
+        x: 10phx;
+        y: 10phx;
+        text: root.button_text;
+    }
+}
+export { TestButtonImpl as TestButton }
+
+export ColorButton := TestButtonImpl {
+    property<color> button_color;
+}

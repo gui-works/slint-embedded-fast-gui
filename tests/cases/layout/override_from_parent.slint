@@ -1,0 +1,40 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+ComboBox := Rectangle {
+    min-width: 60px;
+}
+
+SubComp1 := Rectangle {
+    HorizontalLayout {
+        ComboBox {
+            width: 200px;
+        }
+    }
+}
+
+SubComp2 := HorizontalLayout {
+    ComboBox {
+        width: 200px;
+    }
+}
+
+SubComp3 := HorizontalLayout {
+    max-width: 500px;
+    Rectangle { }
+}
+
+SubComp4 := SubComp1 {}
+
+
+TestCase := Rectangle {
+    width: 300phx;
+    height: 300phx;
+
+    sc1 := SubComp1 {}
+    sc2 := SubComp2 {}
+    // FIXME: the HorizontalLayout is required here because the sc3.max-width takes the existing binding instead of being re-materialized
+    sc3 := HorizontalLayout { SubComp3 { width: 200px; } }
+    sc4 := SubComp4 {}
+    property<bool> test: sc1.min-width == 200px && sc2.min-width == 200px && sc3.max-width == 200px && sc4.min-width == 200px;
+}

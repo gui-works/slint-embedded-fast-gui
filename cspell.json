@@ -1,0 +1,130 @@
+{
+    "version": "0.2",
+    "language": "en",
+    "languageSettings": [
+        {
+            "languageId": "rust",
+            "words": [
+                "ARGB",
+                "bbox",
+                "bindgen",
+                "builtins",
+                "canonicalize", // std::path::Path::canonicalize
+                "codemap",
+                "concat",
+                "Consts",
+                "evenodd",
+                "FBOs", // plural of FBO (frame buffer object)
+                "femtovg",
+                "Flickable",
+                "fontdb",
+                "fullscreen",
+                "glutin",
+                "glutin's",
+                "maxx",
+                "maxy",
+                "minx",
+                "miny",
+                "peekable",
+                "Realloc",
+                "Rgba",
+                "rtti",
+                "subspan",
+                "uninit",
+                "unmap",
+                "unsync",
+                "viewbox",
+                "vsync",
+                "winit"
+            ],
+            "ignoreRegExpList": [
+                "/#\\[cfg\\b.+\\]/",
+                "/#\\[repr\\b.+\\]/",
+                // Exclude crate paths
+                "/(\\b|::)[a-z0-9_]+::/",
+                "/::[a-z0-9_]+(\\b|::)/",
+                // Qt things:
+                "/\\bQt_[a-zA-Z0-9_]+/"
+            ]
+        },
+        {
+            "languageId": "restructuredtext",
+            "words": [
+                "genindex",
+                "langref",
+                "modindex",
+                "toctree"
+            ],
+            "ignoreRegExpList": [
+                "/:.+:/"
+            ]
+        },
+        {
+            "languageId": "markdown",
+            "words": [
+                "rustup",
+                "SUBDIR",
+                "Yocto"
+            ],
+            "ignoreRegExpList": [
+                // Ignore simple code blocks
+                "`[^`]+`"
+            ]
+        }
+    ],
+    "words": [
+        "Bezier",
+        "cbindgen",
+        "cmake",
+        "colspan",
+        "datastructures",
+        "focusable", // common term in UI (css, dom, toolkits)
+        "Goffart",
+        "gradians",
+        "Hausmann",
+        "Helvetica",
+        "layouting", // This would be worth renaming in the ItemVTable to layout_info
+        "linebreak",
+        "listview",
+        "lvalue",
+        "microcontroller",
+        "microcontrollers",
+        "MSVC",
+        "opengl",
+        "pixmap",
+        "rowspan",
+        "rustc",
+        "rvalue",
+        "SDK",
+        "sixtyfps",
+        "slint",
+        "SPDX",
+        "streetsidesoftware",
+        "testcase",
+        "tmpobj",
+        "toolchain",
+        "uncompiled",
+        "unmapping", // present participle of unmap
+        "untracked",
+        "vtable",
+        "wasm",
+        "windowrc", // use in slint_windowrc_foo FFI functions
+        "xtask"
+    ],
+    "ignorePaths": [
+        "api/cpp/docs/conf.py",
+        "Cargo.toml",
+        "cspell.json",
+        ".github/workflows/*.yaml"
+    ],
+    "ignoreRegExpList": [
+        // Color encodings in all languages:
+        "/(\\b|0x|#|_)?[argbARGB][argbARGB][argbARGB]+(\\b|_|Color)/"
+    ],
+    "overrides": [
+        {
+            "filename": "**/*.rst",
+            "languageId": "restructuredtext"
+        }
+    ]
+}

@@ -1,0 +1,22 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+MyTouchArea := TouchArea { }
+
+SubElements := Rectangle {
+    Rectangle {
+        clip: 42;
+//           ^error{Cannot convert float to bool}
+    }
+    Image {
+        clip: false;
+//           ^error{The 'clip' property can only be applied to a Rectangle or a Path for now}
+    }
+    MyTouchArea {
+//  ^error{The 'clip' property can only be applied to a Rectangle or a Path for now}
+        clicked => { self.clip = false; }
+    }
+    for a in 12 : Rectangle {
+        clip: true || true;
+    }
+}

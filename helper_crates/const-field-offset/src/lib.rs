@@ -1,9 +1,12 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 /*!
-This crate expose the `FieldOffsets` derive macro and the types it uses.
+This crate expose the [`FieldOffsets`] derive macro and the types it uses.
 
 The macro allows to get const FieldOffset for member of a `#[repr(C)]` struct.
 
-The `FieldOffset` type is re-exported from the `field-offset` crate.
+The [`FieldOffset`] type is re-exported from the `field-offset` crate.
 */
 #![no_std]
 
@@ -37,7 +40,7 @@ mod tests {
     use crate as const_field_offset;
     // ### Structures were change to repr(c) and to inherit FieldOffsets
 
-    // Example structs
+    // Example structures
     #[derive(Debug, FieldOffsets)]
     #[repr(C)]
     struct Foo {
@@ -54,6 +57,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // We want bit-wise equality here
     fn test_simple() {
         // Get a pointer to `b` within `Foo`
         let foo_b = Foo::FIELD_OFFSETS.b;
@@ -64,7 +68,7 @@ mod tests {
         // Apply the pointer to get at `b` and read it
         {
             let y = foo_b.apply(&x);
-            assert!(*y == 2.0);
+            assert_eq!(*y, 2.0);
         }
 
         // Apply the pointer to get at `b` and mutate it
@@ -72,10 +76,11 @@ mod tests {
             let y = foo_b.apply_mut(&mut x);
             *y = 42.0;
         }
-        assert!(x.b == 42.0);
+        assert_eq!(x.b, 42.0);
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // We want bit-wise equality here
     fn test_nested() {
         // Construct an example `Foo`
         let mut x = Bar { x: 0, y: Foo { a: 1, b: 2.0, c: false } };
@@ -88,26 +93,27 @@ mod tests {
             let y = bar_y_b.apply_mut(&mut x);
             *y = 42.0;
         }
-        assert!(x.y.b == 42.0);
+        assert_eq!(x.y.b, 42.0);
     }
 
     #[test]
+    #[allow(clippy::float_cmp)] // We want bit-wise equality here
     fn test_pin() {
         use ::alloc::boxed::Box;
         // Get a pointer to `b` within `Foo`
         let foo_b = Foo::FIELD_OFFSETS.b;
         let foo_b_pin = unsafe { foo_b.as_pinned_projection() };
-        let foo = Box::pin(Foo { a: 21, b: 22.0, c: true });
-        let pb: Pin<&f64> = foo_b_pin.apply_pin(foo.as_ref());
-        assert!(*pb == 22.0);
+        let foo_object = Box::pin(Foo { a: 21, b: 22.0, c: true });
+        let pb: Pin<&f64> = foo_b_pin.apply_pin(foo_object.as_ref());
+        assert_eq!(*pb, 22.0);
 
         let mut x = Box::pin(Bar { x: 0, y: Foo { a: 1, b: 52.0, c: false } });
         let bar_y_b = Bar::FIELD_OFFSETS.y + foo_b_pin;
-        assert!(*bar_y_b.apply(&*x) == 52.0);
+        assert_eq!(*bar_y_b.apply(&*x), 52.0);
 
         let bar_y_pin = unsafe { Bar::FIELD_OFFSETS.y.as_pinned_projection() };
         *(bar_y_pin + foo_b_pin).apply_pin_mut(x.as_mut()) = 12.;
-        assert!(x.y.b == 12.0);
+        assert_eq!(x.y.b, 12.0);
     }
 }
 
@@ -179,7 +185,7 @@ union TransmutePinFlag<Container, Field, PinFlag> {
     y: FieldOffset<Container, Field>,
 }
 
-/// Helper class used as the result of the addition of two stype that implement the `ConstFieldOffset` trait
+/// Helper class used as the result of the addition of two types that implement the `ConstFieldOffset` trait
 #[derive(Copy, Clone)]
 #[cfg(feature = "field-offset-trait")]
 pub struct ConstFieldOffsetSum<A: ConstFieldOffset, B: ConstFieldOffset>(pub A, pub B);

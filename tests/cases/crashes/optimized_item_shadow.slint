@@ -1,0 +1,13 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+export D := Rectangle {
+    for xy in 1 : Rectangle {
+        drop-shadow-color: #333;
+        HorizontalLayout {
+            VerticalLayout {
+                Rectangle { }
+            }
+        }
+    }
+}

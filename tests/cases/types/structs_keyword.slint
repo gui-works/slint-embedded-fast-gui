@@ -1,0 +1,20 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+// Right now, this test is only testing rust keyword, but it should be expaneded to JS and C++ keywords
+
+export struct mod := {
+    loop: string,
+}
+
+match := Rectangle {
+    property<mod> move: {loop : "mod" };
+    property<bool> test: move.loop == "mod";
+}
+
+/*
+```rust
+let instance = r#match::new();
+assert_eq!(instance.get_move(), r#mod{ r#loop: "mod".into() });
+```
+*/

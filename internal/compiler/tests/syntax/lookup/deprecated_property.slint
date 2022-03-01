@@ -1,0 +1,26 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+Xxx := Rectangle {
+    color: white;
+//  ^warning{The property 'color' has been deprecated. Please use 'background' instead}
+
+    r := Rectangle {
+        background: root.color;
+//                       ^warning{The property 'color' has been deprecated. Please use 'background' instead}
+        animate color {
+//              ^warning{The property 'color' has been deprecated. Please use 'background' instead}
+            duration: 250ms;
+        }
+    }
+
+    minimum-height: root.maximum-width;
+//  ^warning{The property 'minimum-height' has been deprecated. Please use 'min-height' instead}
+//                       ^^warning{The property 'maximum-width' has been deprecated. Please use 'max-width' instead}
+
+    callback not_called;
+    not_called() => {
+        color = #000000;
+//      ^warning{The property 'color' has been deprecated. Please use 'background' instead}
+    }
+}

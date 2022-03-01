@@ -1,0 +1,23 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+Win := Window {
+    GridLayout {
+        Image {
+            source: @image-url("../../../examples/memory/icons/tile_logo.png");
+        }
+        Image {
+            source: @image-url("../../../examples/memory/icons/tile_logo.png");
+            colorize: yellow;
+        }
+        Image {
+            row: 1;
+            source: @image-url("../../../examples/memory/icons/tile_logo.png");
+            colorize: @linear-gradient(45deg, blue, red);
+        }
+        Image {
+            source: @image-url("../../../examples/memory/icons/tile_logo.png");
+            colorize: @linear-gradient(0, red, yellow, green, transparent);
+        }
+    }
+}

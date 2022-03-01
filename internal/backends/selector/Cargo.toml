@@ -1,0 +1,27 @@
+# Copyright © SixtyFPS GmbH <info@slint-ui.com>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+[package]
+name = "i-slint-backend-selector"
+version = "0.2.1"
+authors = ["Slint Developers <info@slint-ui.com>"]
+edition = "2021"
+license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
+description = "Helper crate to pick the default rendering backend for Slint"
+repository = "https://github.com/slint-ui/slint"
+homepage = "https://slint-ui.com"
+
+[lib]
+path = "lib.rs"
+
+[features]
+backend-gl-all = ["backend-gl-x11", "backend-gl-wayland"]
+backend-gl-wayland = ["i-slint-backend-gl/wayland"]
+backend-gl-x11 = ["i-slint-backend-gl/x11"]
+
+[dependencies]
+i-slint-core = { version = "=0.2.1", path = "../../../internal/core", default-features = false }
+i-slint-backend-gl = { version = "=0.2.1", path = "../gl", optional = true }
+i-slint-backend-qt = { version = "=0.2.1", path = "../qt", optional = true }
+
+cfg-if = "1"

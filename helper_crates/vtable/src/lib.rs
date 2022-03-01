@@ -1,21 +1,16 @@
-/* LICENSE BEGIN
-    This file is part of the SixtyFPS Project -- https://sixtyfps.io
-    Copyright (c) 2020 Olivier Goffart <olivier.goffart@sixtyfps.io>
-    Copyright (c) 2020 Simon Hausmann <simon.hausmann@sixtyfps.io>
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
-    SPDX-License-Identifier: GPL-3.0-only
-    This file is also available under commercial licensing terms.
-    Please contact info@sixtyfps.io for more information.
-LICENSE END */
 /*!
 This crate allows you to create ffi-friendly virtual tables.
 
 ## Features
 
- - A `#[vtable]` macro to annotate a VTable struct to generate the traits and structure
+ - A [`#[vtable]`](macro@vtable) macro to annotate a VTable struct to generate the traits and structure
    to safely work with it.
- - `VRef`/`VRefMut`/`VBox` types. They are fat reference/box types which wrap a pointer to
+ - [`VRef`]/[`VRefMut`]/[`VBox`] types. They are fat reference/box types which wrap a pointer to
    the vtable, and a pointer to the object.
+ - [`VRc`]/[`VWeak`] types: equivalent to `std::rc::{Rc, Weak}` types but works with a vtable pointer.
  - Ability to store constants in a vtable.
  - These constants can even be a field offset.
 
@@ -55,13 +50,16 @@ let animal_box = VBox::<AnimalVTable>::new(Dog(42));
 assert_eq!(animal_box.make_noise(2), 42 * 2);
 ```
 
-The `#[vtable]` macro created the "Animal" trait.
+The [`#[vtable]`](macro@vtable) macro created the "Animal" trait.
 
-Note that the `#[vtable]` macro is applied to the VTable struct so
+Note that the [`#[vtable]`](macro@vtable) macro is applied to the VTable struct so
 that `cbindgen` can see the actual vtable.
 
-
 */
+
+#![warn(missing_docs)]
+#![no_std]
+extern crate alloc;
 
 #[doc(no_inline)]
 pub use const_field_offset::*;
@@ -71,9 +69,14 @@ use core::{pin::Pin, ptr::NonNull};
 #[doc(inline)]
 pub use vtable_macro::*;
 
-/// Internal trait that is implemented by the `#[vtable]` macro.
+mod vrc;
+pub use vrc::*;
+
+/// Internal trait that is implemented by the [`#[vtable]`](macro@vtable) macro.
 ///
-/// Safety: The Target object needs to be implemented correctly.
+/// # Safety
+///
+/// The Target object needs to be implemented correctly.
 /// And there should be a VTable::VTable::new<T> function that returns a
 /// VTable suitable for the type T.
 pub unsafe trait VTableMeta {
@@ -88,18 +91,25 @@ pub unsafe trait VTableMeta {
     type VTable: 'static;
 }
 
-/// This trait is implemented by the `#[vtable]` macro.
+/// This trait is implemented by the [`#[vtable]`](macro@vtable) macro.
 ///
 /// It is implemented if the macro has a "drop" function.
-pub trait VTableMetaDrop: VTableMeta {
-    /// Safety: the Target needs to be pointing to a valid allocated pointer
+///
+/// # Safety
+/// Only the [`#[vtable]`](macro@vtable) macro should implement this trait.
+pub unsafe trait VTableMetaDrop: VTableMeta {
+    /// # Safety
+    /// `ptr` needs to be pointing to a valid allocated pointer
     unsafe fn drop(ptr: *mut Self::Target);
+    /// allocate a new [`VBox`]
     fn new_box<X: HasStaticVTable<Self>>(value: X) -> VBox<Self>;
 }
 
 /// Allow to associate a VTable with a type.
 ///
-/// Safety: the VTABLE and STATIC_VTABLE need to be a a valid virtual table
+/// # Safety
+///
+/// The VTABLE and STATIC_VTABLE need to be a valid virtual table
 /// corresponding to pointer to Self instance.
 pub unsafe trait HasStaticVTable<VT>
 where
@@ -127,6 +137,12 @@ impl Inner {
         debug_assert_eq!(core::mem::size_of::<T::Target>(), core::mem::size_of::<Inner>());
         self as *const Inner as *const T::Target
     }
+
+    /// Same as [`Self::deref`].
+    fn deref_mut<T: ?Sized + VTableMeta>(&mut self) -> *mut T::Target {
+        debug_assert_eq!(core::mem::size_of::<T::Target>(), core::mem::size_of::<Inner>());
+        self as *mut Inner as *mut T::Target
+    }
 }
 
 /// An equivalent of a Box that holds a pointer to a VTable and a pointer to an instance.
@@ -136,7 +152,7 @@ impl Inner {
 ///
 /// The VBox implements Deref so one can access all the members of the vtable.
 ///
-/// This is only valid if the VTable has a `drop` type (so that the `#[vtable]` macro
+/// This is only valid if the VTable has a `drop` function (so that the [`#[vtable]`](macro@vtable) macro
 /// implements the `VTableMetaDrop` trait for it)
 #[repr(transparent)]
 pub struct VBox<T: ?Sized + VTableMetaDrop> {
@@ -152,7 +168,7 @@ impl<T: ?Sized + VTableMetaDrop> Deref for VBox<T> {
 }
 impl<T: ?Sized + VTableMetaDrop> DerefMut for VBox<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { &mut *(self.inner.deref::<T>() as *mut _) }
+        unsafe { &mut *(self.inner.deref_mut::<T>() as *mut _) }
     }
 }
 
@@ -175,7 +191,10 @@ impl<T: ?Sized + VTableMetaDrop> VBox<T> {
         T::new_box(value)
     }
 
-    /// Safety: the `ptr` needs to be a valid for the `vtable`, and properly allocated so it can be dropped
+    /// Create a new VBox from raw pointers
+    /// # Safety
+    /// The `ptr` needs to be a valid object fitting the `vtable`.
+    /// ptr must be properly allocated so it can be dropped.
     pub unsafe fn from_raw(vtable: NonNull<T::VTable>, ptr: NonNull<u8>) -> Self {
         Self {
             inner: Inner { vtable: vtable.cast().as_ptr(), ptr: ptr.cast().as_ptr() },
@@ -184,12 +203,12 @@ impl<T: ?Sized + VTableMetaDrop> VBox<T> {
     }
 
     /// Gets a VRef pointing to this box
-    pub fn borrow<'b>(&'b self) -> VRef<'b, T> {
+    pub fn borrow(&self) -> VRef<'_, T> {
         unsafe { VRef::from_inner(self.inner) }
     }
 
     /// Gets a VRefMut pointing to this box
-    pub fn borrow_mut<'b>(&'b mut self) -> VRefMut<'b, T> {
+    pub fn borrow_mut(&mut self) -> VRefMut<'_, T> {
         unsafe { VRefMut::from_inner(self.inner) }
     }
 
@@ -210,7 +229,7 @@ pub struct VRef<'a, T: ?Sized + VTableMeta> {
     phantom: PhantomData<&'a T::Target>,
 }
 
-// Need to implement manually otheriwse it is not implemented if T do not implement Copy / Clone
+// Need to implement manually otherwise it is not implemented if T does not implement Copy / Clone
 impl<'a, T: ?Sized + VTableMeta> Copy for VRef<'a, T> {}
 
 impl<'a, T: ?Sized + VTableMeta> Clone for VRef<'a, T> {
@@ -259,7 +278,10 @@ impl<'a, T: ?Sized + VTableMeta> VRef<'a, T> {
         Self { inner, phantom: PhantomData }
     }
 
-    /// Safety: the `ptr` needs to be a valid for the `vtable`, and properly allocated so it can be dropped
+    /// Create a new VRef from raw pointers
+    /// # Safety
+    /// The `ptr` needs to be a valid object fitting the `vtable`.
+    /// Both vtable and ptr lifetime must outlive 'a
     pub unsafe fn from_raw(vtable: NonNull<T::VTable>, ptr: NonNull<u8>) -> Self {
         Self {
             inner: Inner { vtable: vtable.cast().as_ptr(), ptr: ptr.cast().as_ptr() },
@@ -307,7 +329,7 @@ impl<'a, T: ?Sized + VTableMeta> Deref for VRefMut<'a, T> {
 
 impl<'a, T: ?Sized + VTableMeta> DerefMut for VRefMut<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { &mut *(self.inner.deref::<T>() as *mut _) }
+        unsafe { &mut *(self.inner.deref_mut::<T>() as *mut _) }
     }
 }
 
@@ -330,7 +352,12 @@ impl<'a, T: ?Sized + VTableMeta> VRefMut<'a, T> {
         Self { inner, phantom: PhantomData }
     }
 
-    /// Safety: the `ptr` needs to be a valid for the `vtable`, and properly allocated so it can be dropped
+    /// Create a new VRefMut from raw pointers
+    /// # Safety
+    /// The `ptr` needs to be a valid object fitting the `vtable`.
+    /// Both vtable and ptr lifetime must outlive 'a.
+    /// Can create mutable reference to ptr, so no other code can create mutable reference of ptr
+    /// during the life time 'a.
     pub unsafe fn from_raw(vtable: NonNull<T::VTable>, ptr: NonNull<u8>) -> Self {
         Self {
             inner: Inner { vtable: vtable.cast().as_ptr(), ptr: ptr.cast().as_ptr() },
@@ -339,12 +366,12 @@ impl<'a, T: ?Sized + VTableMeta> VRefMut<'a, T> {
     }
 
     /// Borrow this to obtain a VRef.
-    pub fn borrow<'b>(&'b self) -> VRef<'b, T> {
+    pub fn borrow(&self) -> VRef<'_, T> {
         unsafe { VRef::from_inner(self.inner) }
     }
 
     /// Borrow this to obtain a new VRefMut.
-    pub fn borrow_mut<'b>(&'b mut self) -> VRefMut<'b, T> {
+    pub fn borrow_mut(&mut self) -> VRefMut<'_, T> {
         unsafe { VRefMut::from_inner(self.inner) }
     }
 
@@ -364,9 +391,9 @@ impl<'a, T: ?Sized + VTableMeta> VRefMut<'a, T> {
     }
 }
 
-/** Creates a `VRef` or a `VRefMut` suitable for an instance that implements the trait
+/** Creates a [`VRef`] or a [`VRefMut`] suitable for an instance that implements the trait
 
-When possible, `VRef::new` or `VRefMut::new` should be preferred, as they use a static vtable.
+When possible, [`VRef::new`] or [`VRefMut::new`] should be preferred, as they use a static vtable.
 But when using the generated `XxxVTable_static!` macro that is not possible and this macro can be
 used instead.
 Note that the `downcast` will not work with references created with this macro.
@@ -416,7 +443,7 @@ macro_rules! new_vref {
         // ensure that the type of the expression is correct
         let vtable = {
             use $crate::VTableMeta;
-            fn get_vt<X: $trait_>(_: &X) -> <$vtable as VTableMeta>::VTable {
+            fn get_vt<X: $trait_>(_: &mut X) -> <$vtable as VTableMeta>::VTable {
                 <$vtable as VTableMeta>::VTable::new::<X>()
             }
             get_vt($e)
@@ -456,9 +483,11 @@ impl<Base, T: ?Sized + VTableMeta, PinFlag> core::fmt::Debug for VOffset<Base, T
 }
 
 impl<Base, T: ?Sized + VTableMeta, Flag> VOffset<Base, T, Flag> {
+    /// Apply this offset to a reference to the base to obtain a [`VRef`] with the same
+    /// lifetime as the base lifetime
     #[inline]
-    pub fn apply<'a>(self, x: &'a Base) -> VRef<'a, T> {
-        let ptr = x as *const Base as *const u8;
+    pub fn apply(self, base: &Base) -> VRef<'_, T> {
+        let ptr = base as *const Base as *const u8;
         unsafe {
             VRef::from_raw(
                 NonNull::from(self.vtable),
@@ -467,9 +496,11 @@ impl<Base, T: ?Sized + VTableMeta, Flag> VOffset<Base, T, Flag> {
         }
     }
 
+    /// Apply this offset to a reference to the base to obtain a [`VRefMut`] with the same
+    /// lifetime as the base lifetime
     #[inline]
-    pub fn apply_mut<'a>(self, x: &'a mut Base) -> VRefMut<'a, T> {
-        let ptr = x as *mut Base as *mut u8;
+    pub fn apply_mut(self, base: &mut Base) -> VRefMut<'_, T> {
+        let ptr = base as *mut Base as *mut u8;
         unsafe {
             VRefMut::from_raw(
                 NonNull::from(self.vtable),
@@ -478,6 +509,8 @@ impl<Base, T: ?Sized + VTableMeta, Flag> VOffset<Base, T, Flag> {
         }
     }
 
+    /// Create an new VOffset from a [`FieldOffset`] where the target type implement the
+    /// [`HasStaticVTable`] trait.
     #[inline]
     pub fn new<X: HasStaticVTable<T>>(o: FieldOffset<Base, X, Flag>) -> Self {
         Self { vtable: X::static_vtable(), offset: o.get_byte_offset(), phantom: PhantomData }
@@ -485,7 +518,8 @@ impl<Base, T: ?Sized + VTableMeta, Flag> VOffset<Base, T, Flag> {
 
     /// Create a new VOffset from raw data
     ///
-    /// Safety: there must be a field that matches the vtable at offset T in base.
+    /// # Safety
+    /// There must be a field that matches the vtable at offset T in base.
     #[inline]
     pub unsafe fn from_raw(vtable: &'static T::VTable, offset: usize) -> Self {
         Self { vtable, offset, phantom: PhantomData }
@@ -493,9 +527,11 @@ impl<Base, T: ?Sized + VTableMeta, Flag> VOffset<Base, T, Flag> {
 }
 
 impl<Base, T: ?Sized + VTableMeta> VOffset<Base, T, AllowPin> {
+    /// Apply this offset to a reference to the base to obtain a `Pin<VRef<'a, T>>` with the same
+    /// lifetime as the base lifetime
     #[inline]
-    pub fn apply_pin<'a>(self, x: Pin<&'a Base>) -> Pin<VRef<'a, T>> {
-        let ptr = x.get_ref() as *const Base as *mut u8;
+    pub fn apply_pin(self, base: Pin<&Base>) -> Pin<VRef<T>> {
+        let ptr = base.get_ref() as *const Base as *mut u8;
         unsafe {
             Pin::new_unchecked(VRef::from_raw(
                 NonNull::from(self.vtable),
@@ -505,7 +541,7 @@ impl<Base, T: ?Sized + VTableMeta> VOffset<Base, T, AllowPin> {
     }
 }
 
-// Need to implement manually otheriwse it is not implemented if T do not implement Copy / Clone
+// Need to implement manually otherwise it is not implemented if T does not implement Copy / Clone
 impl<Base, T: ?Sized + VTableMeta, Flag> Copy for VOffset<Base, T, Flag> {}
 
 impl<Base, T: ?Sized + VTableMeta, Flag> Clone for VOffset<Base, T, Flag> {
@@ -516,3 +552,10 @@ impl<Base, T: ?Sized + VTableMeta, Flag> Clone for VOffset<Base, T, Flag> {
 
 #[cfg(doctest)]
 mod compile_fail_tests;
+
+/// re-export for the macro
+#[doc(hidden)]
+pub mod internal {
+    pub use alloc::alloc::dealloc;
+    pub use alloc::boxed::Box;
+}

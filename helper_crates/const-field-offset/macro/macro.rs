@@ -1,12 +1,6 @@
-/* LICENSE BEGIN
-    This file is part of the SixtyFPS Project -- https://sixtyfps.io
-    Copyright (c) 2020 Olivier Goffart <olivier.goffart@sixtyfps.io>
-    Copyright (c) 2020 Simon Hausmann <simon.hausmann@sixtyfps.io>
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
-    SPDX-License-Identifier: GPL-3.0-only
-    This file is also available under commercial licensing terms.
-    Please contact info@sixtyfps.io for more information.
-LICENSE END */
 /*!
 This crate allow to get the offset of a field of a structure in a const or static context.
 
@@ -40,7 +34,7 @@ const FOO : usize = Foo::FIELD_OFFSETS.field_2.get_byte_offset();
 assert_eq!(FOO, 4);
 
 // This would not work on stable rust at the moment (rust 1.43)
-// const FOO : usize = memofsets::offsetof!(Foo, field_2);
+// const FOO : usize = memoffsets::offsetof!(Foo, field_2);
 ```
 
 */
@@ -169,7 +163,7 @@ pub fn const_field_offset(input: TokenStream) -> TokenStream {
                     }
                 }
                 return TokenStream::from(
-                    quote_spanned! {a.span() => compile_error!{"const_field_offset attreibute must be a crate name"}},
+                    quote_spanned! {a.span() => compile_error!{"const_field_offset attribute must be a crate name"}},
                 );
             } else if i == "pin" {
                 pin = true;
@@ -181,11 +175,12 @@ pub fn const_field_offset(input: TokenStream) -> TokenStream {
     }
     if !has_repr_c {
         return TokenStream::from(
-            quote! {compile_error!{"FieldOffsets inly work if the structure repr(C)"}},
+            quote! {compile_error!{"FieldOffsets only work for structures using repr(C)"}},
         );
     }
 
     let struct_name = input.ident;
+    let struct_vis = input.vis;
     let field_struct_name = quote::format_ident!("{}FieldsOffsets", struct_name);
 
     let (fields, types, vis) = if let syn::Data::Struct(s) = &input.data {
@@ -202,8 +197,9 @@ pub fn const_field_offset(input: TokenStream) -> TokenStream {
     };
 
     let doc = format!(
-        "Helper struct containing the offsets of the fields of the struct `{}`",
-        struct_name
+        "Helper struct containing the offsets of the fields of the struct [`{}`]\n\n\
+        Generated from the `#[derive(FieldOffsets)]` macro from the [`const-field-offset`]({}) crate",
+        struct_name, crate_
     );
 
     let (ensure_pin_safe, ensure_no_unpin, pin_flag, new_from_offset) = if !pin {
@@ -224,7 +220,6 @@ pub fn const_field_offset(input: TokenStream) -> TokenStream {
                 })
             },
             Some(quote! {
-
                     /// Make sure that Unpin is not implemented
                     pub struct __MustNotImplUnpin<'__dummy_lifetime> (
                         #(#types, )*
@@ -253,13 +248,12 @@ pub fn const_field_offset(input: TokenStream) -> TokenStream {
     // Build the output, possibly using quasi-quotation
     let expanded = quote! {
         #[doc = #doc]
-        ///
-        /// Generated from the derive macro `const-field-offset::FieldOffsets`
         #[allow(missing_docs, non_camel_case_types)]
-        pub struct #field_struct_name {
+        #struct_vis struct #field_struct_name {
             #(#vis #fields : #crate_::FieldOffset<#struct_name, #types, #pin_flag>,)*
         }
 
+        #[allow(clippy::eval_order_dependence)] // The point of this code is to depend on the order!
         impl #struct_name {
             /// Return a struct containing the offset of for the fields of this struct
             pub const FIELD_OFFSETS : #field_struct_name = {
@@ -286,7 +280,7 @@ pub fn const_field_offset(input: TokenStream) -> TokenStream {
     let module_name = quote::format_ident!("{}_field_offsets", struct_name);
 
     #[cfg(feature = "field-offset-trait")]
-    let in_mod_vis = vis.iter().map(|vis| match vis {
+    let in_mod_vis = vis.iter().map(|vis| min_vis(vis, &struct_vis)).map(|vis| match vis {
         Visibility::Public(_) => quote! {#vis},
         Visibility::Crate(_) => quote! {#vis},
         Visibility::Restricted(VisRestricted { pub_token, path, .. }) => {
@@ -304,7 +298,7 @@ pub fn const_field_offset(input: TokenStream) -> TokenStream {
         #[allow(non_camel_case_types)]
         #[allow(non_snake_case)]
         #[allow(missing_docs)]
-        pub mod #module_name {
+        #struct_vis mod #module_name {
             #(
                 #[derive(Clone, Copy, Default)]
                 #in_mod_vis struct #fields;
@@ -336,6 +330,21 @@ pub fn const_field_offset(input: TokenStream) -> TokenStream {
 
     // Hand the output tokens back to the compiler
     TokenStream::from(expanded)
+}
+
+#[cfg(feature = "field-offset-trait")]
+/// Returns the most restricted visibility
+fn min_vis<'a>(a: &'a Visibility, b: &'a Visibility) -> &'a Visibility {
+    match (a, b) {
+        (Visibility::Public(_), _) => b,
+        (_, Visibility::Public(_)) => a,
+        (Visibility::Crate(_), _) => b,
+        (_, Visibility::Crate(_)) => a,
+        (Visibility::Inherited, _) => a,
+        (_, Visibility::Inherited) => b,
+        // FIXME: compare two paths
+        _ => a,
+    }
 }
 
 /**

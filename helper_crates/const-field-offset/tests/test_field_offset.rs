@@ -1,15 +1,9 @@
-/* LICENSE BEGIN
-    This file is part of the SixtyFPS Project -- https://sixtyfps.io
-    Copyright (c) 2020 Olivier Goffart <olivier.goffart@sixtyfps.io>
-    Copyright (c) 2020 Simon Hausmann <simon.hausmann@sixtyfps.io>
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
-    SPDX-License-Identifier: GPL-3.0-only
-    This file is also available under commercial licensing terms.
-    Please contact info@sixtyfps.io for more information.
-LICENSE END */
 use const_field_offset::*;
-use lazy_static::lazy_static;
 use memoffset::offset_of;
+use std::sync::atomic::Ordering::SeqCst;
 
 #[derive(FieldOffsets)]
 #[repr(C)]
@@ -30,6 +24,7 @@ struct MyStruct2 {
 
 #[derive(FieldOffsets)]
 #[repr(C)]
+#[allow(unused)]
 struct MyStruct3 {
     ms2: MyStruct2,
 }
@@ -78,7 +73,7 @@ fn test_module() {
 #[pin]
 struct MyStructPin {
     phantom: core::marker::PhantomPinned,
-    a: u8,
+    pub a: u8,
     b: u16,
     c: u8,
     d: u16,
@@ -111,9 +106,7 @@ fn test_pin() {
     assert_eq!(D_STATIC_PIN, offset_of!(MyStructPin, d));
 }
 
-lazy_static! {
-    static ref DROP_CALLED: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
-}
+static DROP_CALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[derive(FieldOffsets)]
 #[repr(C)]
@@ -125,15 +118,33 @@ struct MyPinnedStructWithDrop {
 
 impl PinnedDrop for MyPinnedStructWithDrop {
     fn drop(self: core::pin::Pin<&mut MyPinnedStructWithDrop>) {
-        *DROP_CALLED.lock().unwrap() = true;
+        DROP_CALLED.store(true, SeqCst);
     }
 }
 
 #[test]
 fn test_pin_drop() {
-    *DROP_CALLED.lock().unwrap() = false;
+    DROP_CALLED.store(false, SeqCst);
     {
         let _instance = Box::pin(MyPinnedStructWithDrop { x: 42 });
     }
-    assert!(*DROP_CALLED.lock().unwrap());
+    assert!(DROP_CALLED.load(SeqCst));
+}
+
+mod priv_mod {
+    #[derive(const_field_offset::FieldOffsets)]
+    #[repr(C)]
+    struct PrivStruct {
+        pub a: u32,
+        pub b: Vec<PrivStruct>,
+    }
+
+    #[allow(unused)]
+    #[derive(const_field_offset::FieldOffsets)]
+    #[repr(C)]
+    pub struct PubStruct {
+        pub a: u32,
+        b: Vec<PrivStruct>,
+        pub r#mod: Vec<PubStruct>,
+    }
 }

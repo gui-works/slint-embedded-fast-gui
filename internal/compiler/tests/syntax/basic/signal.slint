@@ -1,0 +1,38 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+SubElements := Rectangle {
+    callback foobar;
+
+    callback callback_with_arg(int, string);
+
+    callback invalid_arg(InvalidType);
+//                       ^error{Unknown type 'InvalidType'}
+
+    TouchArea {
+        clicked => { foobar() }
+    }
+
+    TouchArea {
+        clicked: 45;
+//      ^error{'clicked' is a callback. Use `=>` to connect}
+        x => {}
+//      ^error{'x' is not a callback in TouchArea}
+    }
+
+    TouchArea {
+        clicked => { foobar() }
+        clicked => { foobar() }
+//      ^error{Duplicated callback}
+    }
+
+    does_not_exist => {
+//  ^error{'does-not-exist' is not a callback in Rectangle}
+        root.does_not_exist();
+    }
+
+    foobar() => { foobar() }
+    callback_with_arg(a, b, c, d) => { }
+//  ^error{'callback-with-arg' only has 2 arguments, but 4 were provided}
+
+}

@@ -1,0 +1,12 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+TestCase := Path {
+    property<float> my_x: 100;
+    property<float> my_y: 200;
+
+    LineTo {
+        x: root.my_x;
+        y: root.my_y;
+    }
+}

@@ -1,0 +1,18 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+// There used to be a bug in the deduplicate_property_read pass that would mess up aliases
+
+BoxWithButtons := Window {
+    property <string> value <=> val.text;
+    val := Text {}
+}
+
+export TestCase := BoxWithButtons {
+    property <int> temperature: 24;
+    value: {
+        (temperature < 0 ? "" : "+") + temperature;
+    }
+
+    property <bool> test: value == "+24";
+}

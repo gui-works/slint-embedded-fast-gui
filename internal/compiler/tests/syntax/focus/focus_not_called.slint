@@ -1,0 +1,18 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+
+X := Rectangle {
+    edit := TextInput { }
+    TouchArea {
+        clicked => {
+            (edit.focus)();
+//           ^error{'edit.focus' must be called. Did you forgot the '\(\)'\?}
+            edit.focus;
+//          ^error{'edit.focus' must be called. Did you forgot the '\(\)'\?}
+        }
+    }
+    x: edit.focus;
+//    ^error{Cannot convert function\(element ref\) -> void to length}
+//     ^^error{'edit.focus' must be called. Did you forgot the '\(\)'\?}
+}

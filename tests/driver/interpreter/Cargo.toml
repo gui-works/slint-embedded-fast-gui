@@ -1,0 +1,26 @@
+# Copyright © SixtyFPS GmbH <info@slint-ui.com>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+[package]
+name = "test-driver-interpreter"
+version = "0.2.1"
+authors = ["Slint Developers <info@slint-ui.com>"]
+edition = "2021"
+publish = false
+license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
+
+[[bin]]
+path = "main.rs"
+name = "test-driver-interpreter"
+
+[dev-dependencies]
+slint-interpreter = { path = "../../../internal/interpreter", default-features = false, features = ["display-diagnostics", "compat-0-2-0"] }
+i-slint-backend-testing = { path = "../../../internal/backends/testing" }
+
+itertools = "0.10"
+lazy_static = "1.4.0"
+spin_on = "0.1"
+test_driver_lib = { path = "../driverlib" }
+
+[build-dependencies]
+test_driver_lib = { path = "../driverlib" }

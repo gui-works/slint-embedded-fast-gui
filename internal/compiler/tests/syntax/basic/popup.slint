@@ -1,0 +1,22 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+
+X := PopupWindow {
+//  ^error{PopupWindow cannot be the top level}
+
+    Rectangle {
+
+        popup := PopupWindow {
+//              ^error{Cannot access the inside of a PopupWindow from enclosing component}
+            r := Rectangle {
+            }
+        }
+
+        background: r.background;
+
+    }
+
+
+
+}

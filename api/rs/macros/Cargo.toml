@@ -1,0 +1,24 @@
+# Copyright © SixtyFPS GmbH <info@slint-ui.com>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+[package]
+name = "slint-macros"
+version = "0.2.1"
+authors = ["Slint Developers <info@slint-ui.com>"]
+edition = "2021"
+license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
+description = "Macro helper for slint crate"
+repository = "https://github.com/slint-ui/slint"
+homepage = "https://slint-ui.com"
+
+
+[lib]
+proc-macro = true
+path = "lib.rs"
+
+[dependencies]
+i-slint-compiler = { version = "=0.2.1", path = "../../../internal/compiler", features = ["proc_macro_span", "rust", "display-diagnostics"] }
+
+proc-macro2 = "1.0.17"
+quote = "1.0"
+spin_on = "0.1"
