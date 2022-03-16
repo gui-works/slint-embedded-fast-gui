@@ -208,6 +208,7 @@ export TextInput := _ {
     property <length> width;
     property <length> height;
     property <length> text-cursor-width; // StyleMetrics.text-cursor-width  set in apply_default_properties_from_style
+    property <InputType> input-type;
     property <int> cursor-position: native_output;
     property <int> anchor-position: native_output;
     property <bool> has-focus: native_output;
@@ -458,9 +459,12 @@ export NativeSpinBox := _ {
     property <length> width;
     property <length> height;
     property <bool> enabled: true;
+    property <bool> has-focus: native_output;
     property <int> value: native_output;
     property <int> minimum;
     property <int> maximum: 100;
+    callback key_pressed(KeyEvent) -> EventResult;
+    callback key_released(KeyEvent) -> EventResult;
     //-is_internal
 }
 

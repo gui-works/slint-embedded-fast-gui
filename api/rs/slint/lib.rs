@@ -68,11 +68,11 @@ build = "build.rs"
 edition = "2021"
 
 [dependencies]
-slint = "0.2.0"
+slint = "0.2.1"
 ...
 
 [build-dependencies]
-slint-build = "0.2.0"
+slint-build = "0.2.1"
 ```
 
 Use the API of the slint-build crate in the `build.rs` file:
@@ -547,7 +547,7 @@ macro_rules! include_modules {
 /// Helper type that helps checking that the generated code is generated for the right version
 #[doc(hidden)]
 #[allow(non_camel_case_types)]
-pub struct VersionCheck_0_2_1;
+pub struct VersionCheck_0_2_2;
 
 #[cfg(doctest)]
 mod compile_fail_tests;

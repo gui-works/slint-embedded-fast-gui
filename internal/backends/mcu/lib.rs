@@ -10,7 +10,6 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use core::cell::RefCell;
-use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
 
 #[cfg(all(not(feature = "std"), feature = "unsafe_single_core"))]
@@ -19,6 +18,7 @@ use i_slint_core::unsafe_single_core;
 #[cfg(all(not(feature = "std"), feature = "unsafe_single_core"))]
 use i_slint_core::thread_local_ as thread_local;
 
+mod profiler;
 #[cfg(feature = "simulator")]
 mod simulator;
 
@@ -31,14 +31,18 @@ mod renderer;
 
 use lengths::*;
 
+/// The Pixel type of the backing store
+/// TODO: make it configurable
+pub type TargetPixel = embedded_graphics::pixelcolor::Rgb565;
+
 pub trait Devices {
     fn screen_size(&self) -> PhysicalSize;
-    fn fill_region(&mut self, region: PhysicalRect, pixels: &[Rgb888]);
+    fn fill_region(&mut self, region: PhysicalRect, pixels: &[TargetPixel]);
     fn read_touch_event(&mut self) -> Option<i_slint_core::input::MouseEvent> {
         None
     }
     fn debug(&mut self, _: &str);
-    fn time(&mut self) -> core::time::Duration {
+    fn time(&self) -> core::time::Duration {
         core::time::Duration::ZERO
     }
 }
@@ -46,14 +50,14 @@ pub trait Devices {
 impl<T: embedded_graphics::draw_target::DrawTarget> crate::Devices for T
 where
     T::Error: core::fmt::Debug,
-    T::Color: core::convert::From<embedded_graphics::pixelcolor::Rgb888>,
+    T::Color: core::convert::From<TargetPixel>,
 {
     fn screen_size(&self) -> PhysicalSize {
         let s = self.bounding_box().size;
         PhysicalSize::new(s.width as i16, s.height as i16)
     }
 
-    fn fill_region(&mut self, region: PhysicalRect, pixels: &[Rgb888]) {
+    fn fill_region(&mut self, region: PhysicalRect, pixels: &[TargetPixel]) {
         self.color_converted()
             .fill_contiguous(
                 &embedded_graphics::primitives::Rectangle::new(
@@ -67,15 +71,21 @@ where
 
     fn debug(&mut self, text: &str) {
         use embedded_graphics::{
-            mono_font::{ascii::FONT_6X10, MonoTextStyle},
+            mono_font::{ascii, MonoTextStyle},
             text::Text,
         };
-        let style = MonoTextStyle::new(&FONT_6X10, Rgb888::RED.into());
-        Text::new(text, Point::new(20, 30), style).draw(self).unwrap();
+        let style = MonoTextStyle::new(&ascii::FONT_8X13, TargetPixel::RED.into());
+        thread_local! { static LINE: core::cell::Cell<i16>  = core::cell::Cell::new(0) }
+        LINE.with(|l| {
+            let line = (l.get() + 1) % (self.screen_size().height / 13 - 2);
+            l.set(line);
+            Text::new(text, Point::new(3, (1 + line) as i32 * 13), style).draw(self).unwrap();
+        });
     }
 }
 
 thread_local! { static DEVICES: RefCell<Option<Box<dyn Devices + 'static>>> = RefCell::new(None) }
+thread_local! { static PARTIAL_RENDERING_CACHE: RefCell<i_slint_core::item_rendering::PartialRenderingCache> = RefCell::new(Default::default()) }
 
 mod the_backend {
     use super::*;
@@ -89,7 +99,7 @@ mod the_backend {
     use i_slint_core::graphics::{Color, Point, Size};
     use i_slint_core::window::PlatformWindow;
     use i_slint_core::window::Window;
-    use i_slint_core::ImageInner;
+    use i_slint_core::{ImageInner, StaticTextures};
 
     thread_local! { static WINDOWS: RefCell<Option<Rc<McuWindow>>> = RefCell::new(None) }
 
@@ -222,7 +232,14 @@ mod the_backend {
                 runtime_window.set_window_item_geometry(size.width as _, size.height as _);
                 let background =
                     crate::renderer::to_rgb888_color_discard_alpha(window.background_color.get());
-                crate::renderer::render_window_frame(runtime_window, background, &mut **devices);
+                PARTIAL_RENDERING_CACHE.with(|cache| {
+                    crate::renderer::render_window_frame(
+                        runtime_window,
+                        background.into(),
+                        &mut **devices,
+                        &mut cache.borrow_mut(),
+                    )
+                });
             });
         }
     }
@@ -312,7 +329,7 @@ mod the_backend {
                     unimplemented!()
                 }
                 ImageInner::EmbeddedImage(buffer) => buffer.size(),
-                ImageInner::StaticTextures { size, .. } => *size,
+                ImageInner::StaticTextures(StaticTextures { original_size, .. }) => *original_size,
             }
         }
 
@@ -343,7 +360,7 @@ pub mod native_widgets {}
 pub const HAS_NATIVE_STYLE: bool = false;
 
 #[cfg(feature = "simulator")]
-pub fn init_simulator() {
+pub fn init() {
     i_slint_core::backend::instance_or_init(|| alloc::boxed::Box::new(simulator::SimulatorBackend));
 }
 
@@ -354,8 +371,8 @@ pub fn init_with_display<Display: Devices + 'static>(display: Display) {
     });
 }
 
-#[cfg(not(feature = "pico-st7789"))]
-pub fn init_with_mock_display() {
+#[cfg(not(any(feature = "pico-st7789", feature = "simulator")))]
+pub fn init() {
     struct EmptyDisplay;
     impl embedded_graphics::draw_target::DrawTarget for EmptyDisplay {
         type Color = embedded_graphics::pixelcolor::Rgb888;
@@ -381,3 +398,6 @@ mod pico_st7789;
 
 #[cfg(feature = "pico-st7789")]
 pub use pico_st7789::*;
+
+#[cfg(not(feature = "pico-st7789"))]
+pub use i_slint_core_macros::identity as entry;

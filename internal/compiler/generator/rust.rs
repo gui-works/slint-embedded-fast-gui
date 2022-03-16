@@ -147,7 +147,11 @@ pub fn generate(doc: &Document) -> TokenStream {
                     let data = embedded_file_tokens(path);
                     quote!(const #symbol: &'static [u8] = #data;)
                 }
-                crate::embedded_resources::EmbeddedResourcesKind::TextureData(crate::embedded_resources::Texture { data, format, rect, total_size: crate::embedded_resources::Size{width, height} }) => {
+                crate::embedded_resources::EmbeddedResourcesKind::TextureData(crate::embedded_resources::Texture {
+                    data, format, rect,
+                    total_size: crate::embedded_resources::Size{width, height},
+                    original_size: crate::embedded_resources::Size{width: unscaled_width, height: unscaled_height},
+                }) => {
                     let (r_x, r_y, r_w, r_h) = (rect.x(), rect.y(), rect.width(), rect.height());
                     let color = if let crate::embedded_resources::PixelFormat::AlphaMap([r, g, b]) = format {
                         quote!(slint::re_exports::Color::from_rgb_u8(#r, #g, #b))
@@ -155,8 +159,9 @@ pub fn generate(doc: &Document) -> TokenStream {
                         quote!(slint::re_exports::Color::from_argb_encoded(0))
                     };
                     quote!(
-                        const #symbol: slint::re_exports::ImageInner = slint::re_exports::ImageInner::StaticTextures {
+                        const #symbol: slint::re_exports::ImageInner = slint::re_exports::ImageInner::StaticTextures(&slint::re_exports::StaticTextures{
                             size: slint::re_exports::IntSize::new(#width as _, #height as _),
+                            original_size: slint::re_exports::IntSize::new(#unscaled_width as _, #unscaled_height as _),
                             data: Slice::from_slice(&[#(#data),*]),
                             textures: Slice::from_slice(&[
                                 slint::re_exports::StaticTexture {
@@ -166,7 +171,7 @@ pub fn generate(doc: &Document) -> TokenStream {
                                     index: 0,
                                 }
                             ])
-                        };
+                        });
                     )
                 },
                 crate::embedded_resources::EmbeddedResourcesKind::BitmapFontData(crate::embedded_resources::BitmapFont { family_name, character_map, units_per_em, ascent, descent, glyphs }) => {
@@ -949,6 +954,7 @@ fn generate_item_tree(
     });
     let parent_item_index = parent_item_index.iter();
     let mut item_tree_array = vec![];
+    let mut item_array = vec![];
     sub_tree.tree.visit_in_array(&mut |node, children_offset, parent_index| {
         let parent_index = parent_index as u32;
         let (path, component) = follow_sub_component_path(&sub_tree.root, &node.sub_component_path);
@@ -979,18 +985,21 @@ fn generate_item_tree(
 
             let children_count = node.children.len() as u32;
             let children_index = children_offset as u32;
+            let item_array_len = item_array.len() as u32;
             item_tree_array.push(quote!(
                 slint::re_exports::ItemTreeNode::Item{
-                    item: VOffset::new(#path #field #flick),
                     children_count: #children_count,
                     children_index: #children_index,
                     parent_index: #parent_index,
+                    item_array_index: #item_array_len,
                 }
-            ))
+            ));
+            item_array.push(quote!(VOffset::new(#path #field #flick)));
         }
     });
 
     let item_tree_array_len = item_tree_array.len();
+    let item_array_len = item_array.len();
 
     quote!(
         #sub_comp
@@ -1007,25 +1016,34 @@ fn generate_item_tree(
                 let self_rc = VRc::new(_self);
                 let _self = self_rc.as_pin_ref();
                 #init_window
-                slint::re_exports::init_component_items(_self, Self::item_tree(), #root_token.window.get().unwrap().window_handle());
+                slint::re_exports::init_component_items(_self, Self::item_array(), #root_token.window.get().unwrap().window_handle());
                 Self::init(slint::re_exports::VRc::map(self_rc.clone(), |x| x), #root_token, 0, 1);
                 self_rc
             }
 
-            fn item_tree() -> &'static [slint::re_exports::ItemTreeNode<Self>] {
+            fn item_tree() -> &'static [slint::re_exports::ItemTreeNode] {
+                use slint::re_exports::*;
+                // FIXME: ideally this should be a const, but we can't because of the pointer to the vtable
+                static ITEM_TREE : slint::re_exports::OnceBox<
+                    [slint::re_exports::ItemTreeNode; #item_tree_array_len]
+                > = slint::re_exports::OnceBox::new();
+                &*ITEM_TREE.get_or_init(|| Box::new([#(#item_tree_array),*]))
+            }
+
+            fn item_array() -> &'static [vtable::VOffset<Self, ItemVTable, vtable::AllowPin>] {
                 use slint::re_exports::*;
                 ComponentVTable_static!(static VT for #inner_component_id);
                 // FIXME: ideally this should be a const, but we can't because of the pointer to the vtable
-                static ITEM_TREE : slint::re_exports::OnceBox<
-                    [slint::re_exports::ItemTreeNode<#inner_component_id>; #item_tree_array_len]
+                static ITEM_ARRAY : slint::re_exports::OnceBox<
+                    [vtable::VOffset<#inner_component_id, ItemVTable, vtable::AllowPin>; #item_array_len]
                 > = slint::re_exports::OnceBox::new();
-                &*ITEM_TREE.get_or_init(|| Box::new([#(#item_tree_array),*]))
+                &*ITEM_ARRAY.get_or_init(|| Box::new([#(#item_array),*]))
             }
         }
 
         impl slint::re_exports::PinnedDrop for #inner_component_id {
             fn drop(self: core::pin::Pin<&mut #inner_component_id>) {
-                slint::re_exports::free_component_item_graphics_resources(self.as_ref(), Self::item_tree(), self.window.get().unwrap().window_handle());
+                slint::re_exports::free_component_item_graphics_resources(self.as_ref(), Self::item_array(), self.window.get().unwrap().window_handle());
             }
         }
 
@@ -1040,7 +1058,7 @@ fn generate_item_tree(
                 -> slint::re_exports::VisitChildrenResult
             {
                 use slint::re_exports::*;
-                return slint::re_exports::visit_item_tree(self, &VRcMapped::origin(&self.as_ref().self_weak.get().unwrap().upgrade().unwrap()), Self::item_tree(), index, order, visitor, visit_dynamic);
+                return slint::re_exports::visit_item_tree(self, &VRcMapped::origin(&self.as_ref().self_weak.get().unwrap().upgrade().unwrap()), self.get_item_tree().as_slice(), index, order, visitor, visit_dynamic);
                 #[allow(unused)]
                 fn visit_dynamic(_self: ::core::pin::Pin<&#inner_component_id>, order: slint::re_exports::TraversalOrder, visitor: ItemVisitorRefMut, dyn_index: usize) -> VisitChildrenResult  {
                     _self.visit_dynamic_children(dyn_index, order, visitor)
@@ -1048,11 +1066,19 @@ fn generate_item_tree(
             }
 
             fn get_item_ref(self: ::core::pin::Pin<&Self>, index: usize) -> ::core::pin::Pin<ItemRef> {
-                match &Self::item_tree()[index] {
-                    ItemTreeNode::Item { item, .. } => item.apply_pin(self),
+                match &self.get_item_tree().as_slice()[index] {
+                    ItemTreeNode::Item { item_array_index, .. } => {
+                        Self::item_array()[*item_array_index as usize].apply_pin(self)
+                    }
                     ItemTreeNode::DynamicTree { .. } => panic!("get_item_ref called on dynamic tree"),
 
                 }
+            }
+
+            fn get_item_tree(
+                self: ::core::pin::Pin<&Self>) -> slint::re_exports::Slice<slint::re_exports::ItemTreeNode>
+            {
+                Self::item_tree().into()
             }
 
             fn parent_item(self: ::core::pin::Pin<&Self>, index: usize, result: &mut slint::re_exports::ItemWeak) {
@@ -1064,7 +1090,7 @@ fn generate_item_tree(
                     )*
                     return;
                 }
-                let parent_index = Self::item_tree()[index].parent_index();
+                let parent_index = self.get_item_tree().as_slice()[index].parent_index();
                 let self_rc = slint::re_exports::VRcMapped::origin(&self.self_weak.get().unwrap().upgrade().unwrap());
                 *result = ItemRc::new(self_rc, parent_index).downgrade();
             }

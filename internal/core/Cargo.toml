@@ -3,7 +3,7 @@
 
 [package]
 name = "i-slint-core"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["Slint Developers <info@slint-ui.com>"]
 edition = "2021"
 license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
@@ -28,11 +28,15 @@ std = ["euclid/std", "once_cell/std", "scoped-tls-hkt", "lyon_path", "lyon_algor
 # from a single core, and not in a interrupt or signal handler.
 unsafe_single_core = []
 
-default = ["std"]
+text_layout = []
+
+unicode = ["unicode-script", "unicode-linebreak"]
+
+default = ["std", "text_layout", "unicode"]
 
 [dependencies]
-i-slint-common = { version = "=0.2.1", path = "../common" }
-i-slint-core-macros = { version = "=0.2.1", path = "../core-macros" }
+i-slint-common = { version = "=0.2.2", path = "../common" }
+i-slint-core-macros = { version = "=0.2.2", path = "../core-macros" }
 
 const-field-offset = { version = "0.1", path = "../../helper_crates/const-field-offset" }
 vtable = { version="0.1.6", path = "../../helper_crates/vtable" }
@@ -60,6 +64,8 @@ slab = { version = "0.4.3", default-features = false }
 static_assertions = "1.1"
 strum = { version = "0.24.0", default-features = false, features = ["derive"] }
 unicode-segmentation = "1.8.0"
+unicode-linebreak = { version = "0.1.2", optional = true }
+unicode-script = { version = "0.5.3", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 instant = { version = "0.1", features = [ "wasm-bindgen", "now" ] }
@@ -69,6 +75,9 @@ web_sys = { version = "0.3", package = "web-sys", features=["console", "CanvasRe
 [dev-dependencies]
 slint = { path = "../../api/rs/slint", default-features = false, features = ["std", "compat-0-2-0"] }
 i-slint-backend-testing = { path="../backends/testing" }
+rustybuzz = "0.5.0"
+ttf-parser = "0.15.0"
+fontdb = { version = "0.8.0" }
 
 image = { version = "0.24.0", default-features = false, features = [ "png" ] }
 pin-weak = "1"

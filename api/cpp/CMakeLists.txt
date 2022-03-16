@@ -74,6 +74,15 @@ define_cargo_feature(backend-gl-wayland "Enable the OpenGL ES 2.0 backend with w
 
 define_cargo_feature(backend-qt "Enable Qt based rendering backend" ON)
 
+if(SLINT_FEATURE_INTERPRETER)
+    if (SLINT_FEATURE_BACKEND_QT)
+        list(APPEND features rtti-qt)
+    endif()
+    if(SLINT_FEATURE_BACKEND_GL_ALL OR SLINT_FEATURE_BACKEND_GL_X11 OR SLINT_FEATURE_BACKEND_GL_WAYLAND)
+        list(APPEND features rtti-gl)
+    endif()
+endif()
+
 set_property(
     TARGET slint-cpp
     PROPERTY CORROSION_FEATURES
@@ -196,7 +205,7 @@ configure_package_config_file("cmake/SlintConfig.cmake.in" "${CMAKE_CURRENT_BINA
 
 write_basic_package_version_file(
   ${CMAKE_CURRENT_BINARY_DIR}/lib/cmake/Slint/SlintConfigVersion.cmake
-  VERSION 0.2.1
+  VERSION 0.2.2
   COMPATIBILITY SameMinorVersion
 )
 
@@ -242,7 +251,7 @@ set(CPACK_PACKAGE_VENDOR "Slint")
 set(CPACK_VERBATIM_VARIABLES true)
 set(CPACK_PACKAGE_VERSION_MAJOR 0)
 set(CPACK_PACKAGE_VERSION_MINOR 2)
-set(CPACK_PACKAGE_VERSION_PATCH 1)
+set(CPACK_PACKAGE_VERSION_PATCH 2)
 set(CPACK_PACKAGE_HOMEPAGE_URL "https://slint-ui.com")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_LIST_DIR}/../../LICENSE.md")
 set(CPACK_RESOURCE_FILE_README "${CMAKE_CURRENT_LIST_DIR}/README.md")

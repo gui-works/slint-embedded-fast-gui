@@ -51,7 +51,10 @@ using cbindgen_private::TraversalOrder;
 }
 
 namespace private_api {
-using ItemTreeNode = cbindgen_private::ItemTreeNode<uint8_t>;
+using ItemTreeNode = cbindgen_private::ItemTreeNode;
+using ItemArrayEntry =
+        vtable::VOffset<uint8_t, slint::cbindgen_private::ItemVTable, vtable::AllowPin>;
+using ItemArray = slint::cbindgen_private::Slice<ItemArrayEntry>;
 using cbindgen_private::KeyboardModifiers;
 using cbindgen_private::KeyEvent;
 using cbindgen_private::PointerEvent;
@@ -107,10 +110,10 @@ public:
     float scale_factor() const { return slint_windowrc_get_scale_factor(&inner); }
     void set_scale_factor(float value) const { slint_windowrc_set_scale_factor(&inner, value); }
 
-    template<typename Component, typename ItemTree>
-    void free_graphics_resources(Component *c, ItemTree items) const
+    template<typename Component, typename ItemArray>
+    void free_graphics_resources(Component *c, ItemArray items) const
     {
-        cbindgen_private::slint_component_free_item_graphics_resources(
+        cbindgen_private::slint_component_free_item_array_graphics_resources(
                 vtable::VRef<ComponentVTable> { &Component::static_vtable, c }, items, &inner);
     }
 
@@ -120,8 +123,8 @@ public:
         cbindgen_private::slint_windowrc_set_focus_item(&inner, &item_rc);
     }
 
-    template<typename Component, typename ItemTree>
-    void init_items(Component *c, ItemTree items) const
+    template<typename Component, typename ItemArray>
+    void init_items(Component *c, ItemArray items) const
     {
         cbindgen_private::slint_component_init_items(
                 vtable::VRef<ComponentVTable> { &Component::static_vtable, c }, items, &inner);
@@ -165,13 +168,11 @@ private:
     cbindgen_private::WindowRcOpaque inner;
 };
 
-constexpr inline ItemTreeNode make_item_node(std::uintptr_t offset,
-                                             const cbindgen_private::ItemVTable *vtable,
-                                             uint32_t child_count, uint32_t child_index,
-                                             uint32_t parent_index)
+constexpr inline ItemTreeNode make_item_node(uint32_t child_count, uint32_t child_index,
+                                             uint32_t parent_index, uint32_t item_array_index)
 {
-    return ItemTreeNode { ItemTreeNode::Item_Body {
-            ItemTreeNode::Tag::Item, { vtable, offset }, child_count, child_index, parent_index } };
+    return ItemTreeNode { ItemTreeNode::Item_Body { ItemTreeNode::Tag::Item, child_count,
+                                                    child_index, parent_index, item_array_index } };
 }
 
 constexpr inline ItemTreeNode make_dyn_node(std::uintptr_t offset, std::uint32_t parent_index)
@@ -180,10 +181,12 @@ constexpr inline ItemTreeNode make_dyn_node(std::uintptr_t offset, std::uint32_t
                                                            parent_index } };
 }
 
-inline ItemRef get_item_ref(ComponentRef component, cbindgen_private::Slice<ItemTreeNode> item_tree,
-                            int index)
+inline ItemRef get_item_ref(ComponentRef component,
+                            const cbindgen_private::Slice<ItemTreeNode> item_tree,
+                            const private_api::ItemArray item_array, int index)
 {
-    const auto &item = item_tree.ptr[index].item.item;
+    const auto item_array_index = item_tree.ptr[index].item.item_array_index;
+    const auto item = item_array[item_array_index];
     return ItemRef { item.vtable, reinterpret_cast<char *>(component.instance) + item.offset };
 }
 

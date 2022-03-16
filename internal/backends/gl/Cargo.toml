@@ -3,7 +3,7 @@
 
 [package]
 name = "i-slint-backend-gl"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["Slint Developers <info@slint-ui.com>"]
 edition = "2021"
 license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
@@ -23,12 +23,12 @@ x11 = ["winit/x11", "glutin/x11", "copypasta/x11"]
 
 rtti = ["i-slint-core/rtti"]
 
-default = ["svg", "rtti"]
+default = ["svg"]
 
 [dependencies]
-i-slint-core = { version = "=0.2.1", path = "../../../internal/core" }
-i-slint-core-macros = { version = "=0.2.1", path = "../../../internal/core-macros" }
-i-slint-common = { version = "=0.2.1", path = "../../../internal/common" }
+i-slint-core = { version = "=0.2.2", path = "../../../internal/core" }
+i-slint-core-macros = { version = "=0.2.2", path = "../../../internal/core-macros" }
+i-slint-common = { version = "=0.2.2", path = "../../../internal/common" }
 
 const-field-offset = { version = "0.1", path = "../../../helper_crates/const-field-offset" }
 vtable = { version = "0.1.6", path = "../../../helper_crates/vtable" }
@@ -48,7 +48,6 @@ pin-weak = "1"
 resvg = { version= "0.22", optional = true, default-features = false }
 rgb = "0.8.27"
 scoped-tls-hkt = "0.1"
-smallvec = "1.7"
 tiny-skia = { version= "0.6", optional = true, default-features = false }
 ttf-parser = "0.15.0" # Use the same version was femtovg's rustybuzz, to avoid duplicate crates
 unicode-script = "0.5.4" # Use the same version was femtovg's rustybuzz, to avoid duplicate crates

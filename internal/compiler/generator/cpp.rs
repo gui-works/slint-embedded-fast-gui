@@ -788,7 +788,8 @@ fn generate_item_tree(
 
     let root_access = if parent_ctx.is_some() { "parent->root" } else { "self" };
 
-    let mut tree_array: Vec<String> = Default::default();
+    let mut item_tree_array: Vec<String> = Default::default();
+    let mut item_array: Vec<String> = Default::default();
 
     sub_tree.tree.visit_in_array(&mut |node, children_offset, parent_index| {
         let parent_index = parent_index as u32;
@@ -801,7 +802,7 @@ fn generate_item_tree(
                 repeater_index += sub_component.sub_components[*i].repeater_offset;
                 sub_component = &sub_component.sub_components[*i].ty;
             }
-            tree_array.push(format!(
+            item_tree_array.push(format!(
                 "slint::private_api::make_dyn_node({}, {})",
                 repeater_index, parent_index
             ));
@@ -828,16 +829,18 @@ fn generate_item_tree(
 
             let children_count = node.children.len() as u32;
             let children_index = children_offset as u32;
+            let item_array_index = item_array.len() as u32;
 
-            tree_array.push(format!(
-                "slint::private_api::make_item_node({} offsetof({}, {}), {}, {}, {}, {})",
+            item_tree_array.push(format!(
+                "slint::private_api::make_item_node({}, {}, {}, {})",
+                children_count, children_index, parent_index, item_array_index,
+            ));
+            item_array.push(format!(
+                "{{ {}, {} offsetof({}, {}) }}",
+                item.ty.cpp_vtable_getter,
                 compo_offset,
                 &ident(&sub_component.name),
                 ident(&item.name),
-                item.ty.cpp_vtable_getter,
-                children_count,
-                children_index,
-                parent_index,
             ));
         }
     });
@@ -858,7 +861,7 @@ fn generate_item_tree(
     visit_children_statements.extend([
         "};".into(),
         format!("auto self_rc = reinterpret_cast<const {}*>(component.instance)->self_weak.lock()->into_dyn();", item_tree_class_name),
-        "return slint::cbindgen_private::slint_visit_item_tree(&self_rc, item_tree() , index, order, visitor, dyn_visit);".to_owned(),
+        "return slint::cbindgen_private::slint_visit_item_tree(&self_rc, get_item_tree(component) , index, order, visitor, dyn_visit);".to_owned(),
     ]);
 
     target_struct.members.push((
@@ -871,6 +874,7 @@ fn generate_item_tree(
             ..Default::default()
         }),
     ));
+
     target_struct.members.push((
         Access::Private,
         Declaration::Function(Function {
@@ -878,7 +882,20 @@ fn generate_item_tree(
             signature: "(slint::private_api::ComponentRef component, uintptr_t index) -> slint::private_api::ItemRef".into(),
             is_static: true,
             statements: Some(vec![
-                "return slint::private_api::get_item_ref(component, item_tree(), index);".to_owned(),
+                "return slint::private_api::get_item_ref(component, get_item_tree(component), item_array(), index);".to_owned(),
+            ]),
+            ..Default::default()
+        }),
+    ));
+
+    target_struct.members.push((
+        Access::Private,
+        Declaration::Function(Function {
+            name: "get_item_tree".into(),
+            signature: "(slint::private_api::ComponentRef) -> slint::cbindgen_private::Slice<slint::private_api::ItemTreeNode>".into(),
+            is_static: true,
+            statements: Some(vec![
+                "return item_tree();".to_owned(),
             ]),
             ..Default::default()
         }),
@@ -892,7 +909,7 @@ fn generate_item_tree(
         }) {
         format!(
             // that does not work when the parent is not a component with a ComponentVTable
-            //"   *result = slint::private_api::parent_item(self->parent->self_weak.into_dyn(), self->parent->item_tree(), {});",
+            //"   *result = slint::private_api::parent_item(self->parent->self_weak.into_dyn(), self->parent->get_item_tree(), {});",
             "self->parent->self_weak.vtable()->parent_item(self->parent->self_weak.lock()->borrow(), {}, result);",
             parent_index,
         )
@@ -911,7 +928,7 @@ fn generate_item_tree(
                 parent_item_from_parent_component,
                 "   return;".into(),
                 "}".into(),
-                "*result = slint::private_api::parent_item(self->self_weak.into_dyn(), item_tree(), index);".into(),
+                "*result = slint::private_api::parent_item(self->self_weak.into_dyn(), get_item_tree(component), index);".into(),
             ]),
             ..Default::default()
         }),
@@ -925,8 +942,24 @@ fn generate_item_tree(
             is_static: true,
             statements: Some(vec![
                 "static const slint::private_api::ItemTreeNode children[] {".to_owned(),
-                format!("    {} }};", tree_array.join(", \n")),
+                format!("    {} }};", item_tree_array.join(", \n")),
                 "return { const_cast<slint::private_api::ItemTreeNode*>(children), std::size(children) };"
+                    .to_owned(),
+            ]),
+            ..Default::default()
+        }),
+    ));
+
+    target_struct.members.push((
+        Access::Private,
+        Declaration::Function(Function {
+            name: "item_array".into(),
+            signature: "() -> const slint::private_api::ItemArray".into(),
+            is_static: true,
+            statements: Some(vec![
+                "static const slint::private_api::ItemArrayEntry items[] {".to_owned(),
+                format!("    {} }};", item_array.join(", \n")),
+                "return { const_cast<slint::private_api::ItemArrayEntry*>(items), std::size(items) };"
                     .to_owned(),
             ]),
             ..Default::default()
@@ -962,7 +995,7 @@ fn generate_item_tree(
         ty: "const slint::private_api::ComponentVTable".to_owned(),
         name: format!("{}::static_vtable", item_tree_class_name),
         init: Some(format!(
-            "{{ visit_children, get_item_ref, parent_item,  layout_info, slint::private_api::drop_in_place<{}>, slint::private_api::dealloc }}",
+            "{{ visit_children, get_item_ref, get_item_tree, parent_item,  layout_info, slint::private_api::drop_in_place<{}>, slint::private_api::dealloc }}",
             item_tree_class_name)
         ),
         ..Default::default()
@@ -996,7 +1029,7 @@ fn generate_item_tree(
     }
 
     create_code.extend([
-        format!("{}->m_window.window_handle().init_items(self, item_tree());", root_access),
+        format!("{}->m_window.window_handle().init_items(self, self->item_array());", root_access),
         format!("self->init({}, self->self_weak, 0, 1 {});", root_access, init_parent_parameters),
         format!("return slint::ComponentHandle<{0}>{{ self_rc }};", target_struct.name),
     ]);
@@ -1019,7 +1052,7 @@ fn generate_item_tree(
     let mut destructor = vec!["auto self = this;".to_owned()];
 
     destructor.push(format!(
-        "{}->m_window.window_handle().free_graphics_resources(self, item_tree());",
+        "{}->m_window.window_handle().free_graphics_resources(self, item_array());",
         root_access
     ));
 
@@ -1944,7 +1977,7 @@ fn compile_expression(expr: &llr::Expression, ctx: &EvaluationContext) -> String
                 crate::expression_tree::ImageReference::EmbeddedData { resource_id, extension } => {
                     let symbol = format!("slint_embedded_resource_{}", resource_id);
                     format!(
-                        r#"slint::Image(slint::cbindgen_private::types::ImageInner::EmbeddedData(slint::cbindgen_private::Slice<uint8_t>{{std::data({}), std::size({})}}, slint::cbindgen_private::Slice<uint8_t>{{const_cast<uint8_t *>(reinterpret_cast<const uint8_t *>(u8"{}")), {}}}))"#,
+                        r#"slint::Image(slint::cbindgen_private::types::ImageInner::ImageInner_EmbeddedData(slint::cbindgen_private::Slice<uint8_t>{{std::data({}), std::size({})}}, slint::cbindgen_private::Slice<uint8_t>{{const_cast<uint8_t *>(reinterpret_cast<const uint8_t *>(u8"{}")), {}}}))"#,
                         symbol, symbol, escape_string(extension), extension.as_bytes().len()
                     )
                 }

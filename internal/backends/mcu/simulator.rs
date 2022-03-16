@@ -4,11 +4,10 @@
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
 use embedded_graphics_simulator::SimulatorDisplay;
 use i_slint_core::component::ComponentRc;
-use i_slint_core::graphics::{Image, ImageInner};
+use i_slint_core::graphics::{Image, ImageInner, StaticTextures};
 use i_slint_core::input::KeyboardModifiers;
 use i_slint_core::items::ItemRef;
 use i_slint_core::layout::Orientation;
@@ -34,6 +33,7 @@ pub struct SimulatorWindow {
     constraints: Cell<(i_slint_core::layout::LayoutInfo, i_slint_core::layout::LayoutInfo)>,
     visible: Cell<bool>,
     background_color: Cell<Color>,
+    frame_buffer: RefCell<Option<SimulatorDisplay<embedded_graphics::pixelcolor::Rgb888>>>,
 }
 
 impl SimulatorWindow {
@@ -61,6 +61,7 @@ impl SimulatorWindow {
             constraints: Default::default(),
             visible: Default::default(),
             background_color: Color::from_rgb_u8(0, 0, 0).into(),
+            frame_buffer: RefCell::default(),
         });
 
         let runtime_window = window_weak.upgrade().unwrap();
@@ -241,33 +242,37 @@ impl WinitWindow for SimulatorWindow {
                 canvas.set_size(size.width, size.height, 1.0);
             }
 
-            let mut display: SimulatorDisplay<embedded_graphics::pixelcolor::Rgb888> =
-                SimulatorDisplay::new(Size { width: size.width, height: size.height });
-
             let background =
                 crate::renderer::to_rgb888_color_discard_alpha(self.background_color.get());
-            display.clear(background).unwrap();
 
-            // Debug
-            {
-                use embedded_graphics::{
-                    prelude::*,
-                    primitives::{PrimitiveStyleBuilder, Rectangle},
-                };
+            let mut frame_buffer = self.frame_buffer.borrow_mut();
+            let display = match frame_buffer.as_mut() {
+                Some(buffer)
+                    if buffer.size().width == size.width && buffer.size().height == size.height =>
+                {
+                    buffer
+                }
+                _ => {
+                    let buffer = frame_buffer.insert(SimulatorDisplay::new(Size {
+                        width: size.width,
+                        height: size.height,
+                    }));
+                    super::PARTIAL_RENDERING_CACHE.with(|cache| {
+                        *cache.borrow_mut() = Default::default();
+                    });
+                    buffer.clear(background).unwrap();
+                    buffer
+                }
+            };
 
-                let style = PrimitiveStyleBuilder::new()
-                    .stroke_color(Rgb888::RED)
-                    .stroke_width(3)
-                    .fill_color(Rgb888::GREEN)
-                    .build();
-
-                Rectangle::new(Point::new(30, 20), Size::new(10, 15))
-                    .into_styled(style)
-                    .draw(&mut display)
-                    .unwrap();
-            }
-
-            crate::renderer::render_window_frame(runtime_window, background, &mut display);
+            super::PARTIAL_RENDERING_CACHE.with(|cache| {
+                crate::renderer::render_window_frame(
+                    runtime_window,
+                    background.into(),
+                    &mut *display,
+                    &mut cache.borrow_mut(),
+                );
+            });
 
             let output_image = display
                 .to_rgb_output_image(&embedded_graphics_simulator::OutputSettings::default());
@@ -333,6 +338,7 @@ impl i_slint_core::backend::Backend for SimulatorBackend {
 
     fn run_event_loop(&'static self, behavior: i_slint_core::backend::EventLoopQuitBehavior) {
         event_loop::run(behavior);
+        std::process::exit(0);
     }
 
     fn quit_event_loop(&'static self) {
@@ -382,7 +388,7 @@ impl i_slint_core::backend::Backend for SimulatorBackend {
             ImageInner::None => Default::default(),
             ImageInner::AbsoluteFilePath(_) | ImageInner::EmbeddedData { .. } => unimplemented!(),
             ImageInner::EmbeddedImage(buffer) => buffer.size(),
-            ImageInner::StaticTextures { size, .. } => *size,
+            ImageInner::StaticTextures(StaticTextures { original_size, .. }) => *original_size,
         }
     }
 }

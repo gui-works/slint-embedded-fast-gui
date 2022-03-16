@@ -287,32 +287,33 @@ impl<F: Fn(*mut ()) -> BindingResult> BindingCallable for F {
 }
 
 #[cfg(feature = "std")]
-scoped_tls_hkt::scoped_thread_local!(static CURRENT_BINDING : for<'a> Pin<&'a BindingHolder>);
+scoped_tls_hkt::scoped_thread_local!(static CURRENT_BINDING : for<'a> Option<Pin<&'a BindingHolder>>);
 
 #[cfg(all(not(feature = "std"), feature = "unsafe_single_core"))]
 mod unsafe_single_core {
     use super::BindingHolder;
     use core::cell::Cell;
     use core::pin::Pin;
+    use core::ptr::null;
     pub(super) struct FakeThreadStorage(Cell<*const BindingHolder>);
     impl FakeThreadStorage {
         pub const fn new() -> Self {
-            Self(Cell::new(core::ptr::null()))
+            Self(Cell::new(null()))
         }
-        pub fn set<T>(&self, value: Pin<&BindingHolder>, f: impl FnOnce() -> T) -> T {
-            let old = self.0.replace(value.get_ref() as *const BindingHolder);
+        pub fn set<T>(&self, value: Option<Pin<&BindingHolder>>, f: impl FnOnce() -> T) -> T {
+            let old = self.0.replace(value.map_or(null(), |v| v.get_ref() as *const BindingHolder));
             let res = f();
             let new = self.0.replace(old);
-            assert_eq!(new, value.get_ref() as *const BindingHolder);
+            assert_eq!(new, value.map_or(null(), |v| v.get_ref() as *const BindingHolder));
             res
         }
         pub fn is_set(&self) -> bool {
             !self.0.get().is_null()
         }
-        pub fn with<T>(&self, f: impl FnOnce(Pin<&BindingHolder>) -> T) -> T {
-            let local = unsafe { Pin::new_unchecked(self.0.get().as_ref().unwrap()) };
+        pub fn with<T>(&self, f: impl FnOnce(Option<Pin<&BindingHolder>>) -> T) -> T {
+            let local = unsafe { self.0.get().as_ref().map(|x| Pin::new_unchecked(x)) };
             let res = f(local);
-            assert_eq!(self.0.get(), local.get_ref() as *const BindingHolder);
+            assert_eq!(self.0.get(), local.map_or(null(), |v| v.get_ref() as *const BindingHolder));
             res
         }
     }
@@ -323,6 +324,12 @@ mod unsafe_single_core {
 #[cfg(all(not(feature = "std"), feature = "unsafe_single_core"))]
 static CURRENT_BINDING: unsafe_single_core::FakeThreadStorage =
     unsafe_single_core::FakeThreadStorage::new();
+
+/// Evaluate a function, but do not register any property dependencies if that function
+/// get the value of properties
+pub fn evaluate_no_tracking<T>(f: impl FnOnce() -> T) -> T {
+    CURRENT_BINDING.set(None, f)
+}
 
 #[repr(C)]
 struct BindingHolder<B = ()> {
@@ -367,7 +374,7 @@ fn alloc_binding_holder<B: BindingCallable + 'static>(binding: B) -> *mut Bindin
         value: *mut (),
     ) -> BindingResult {
         let pinned_holder = Pin::new_unchecked(&*_self);
-        CURRENT_BINDING.set(pinned_holder, || {
+        CURRENT_BINDING.set(Some(pinned_holder), || {
             Pin::new_unchecked(&((*(_self as *mut BindingHolder<B>)).binding)).evaluate(value)
         })
     }
@@ -566,23 +573,27 @@ impl PropertyHandle {
         #[cfg(slint_debug_property)] debug_name: &str,
     ) {
         if CURRENT_BINDING.is_set() {
-            let dependencies = self.dependencies();
-            if !core::ptr::eq(
-                unsafe { *(dependencies as *mut *const u32) },
-                (&CONSTANT_PROPERTY_SENTINEL) as *const u32,
-            ) {
-                CURRENT_BINDING.with(|cur_binding| {
-                    cur_binding.register_self_as_dependency(
-                        dependencies,
-                        #[cfg(slint_debug_property)]
-                        debug_name,
-                    );
-                });
-            }
+            CURRENT_BINDING.with(|cur_binding| {
+                if let Some(cur_binding) = cur_binding {
+                    let dependencies = self.dependencies();
+                    if !core::ptr::eq(
+                        unsafe { *(dependencies as *mut *const u32) },
+                        (&CONSTANT_PROPERTY_SENTINEL) as *const u32,
+                    ) {
+                        cur_binding.register_self_as_dependency(
+                            dependencies,
+                            #[cfg(slint_debug_property)]
+                            debug_name,
+                        );
+                    }
+                }
+            });
         }
     }
 
-    fn mark_dirty(&self) {
+    fn mark_dirty(&self, #[cfg(slint_debug_property)] debug_name: &str) {
+        #[cfg(not(slint_debug_property))]
+        let debug_name = "";
         unsafe {
             let dependencies = self.dependencies();
             assert!(
@@ -590,7 +601,8 @@ impl PropertyHandle {
                     *(dependencies as *mut *const u32),
                     (&CONSTANT_PROPERTY_SENTINEL) as *const u32,
                 ),
-                "Constant property being changed"
+                "Constant property being changed {}",
+                debug_name
             );
             mark_dependencies_dirty(dependencies)
         };
@@ -794,7 +806,10 @@ impl<T: Clone> Property<T> {
             }
         });
         if has_value_changed {
-            self.handle.mark_dirty();
+            self.handle.mark_dirty(
+                #[cfg(slint_debug_property)]
+                self.debug_name.borrow().as_str(),
+            );
         }
     }
 
@@ -837,7 +852,10 @@ impl<T: Clone> Property<T> {
                 self.debug_name.borrow().as_str(),
             )
         }
-        self.handle.mark_dirty();
+        self.handle.mark_dirty(
+            #[cfg(slint_debug_property)]
+            self.debug_name.borrow().as_str(),
+        );
     }
 
     /// Any of the properties accessed during the last evaluation of the closure called
@@ -849,7 +867,10 @@ impl<T: Clone> Property<T> {
     /// Internal function to mark the property as dirty and notify dependencies, regardless of
     /// whether the property value has actually changed or not.
     pub fn mark_dirty(&self) {
-        self.handle.mark_dirty()
+        self.handle.mark_dirty(
+            #[cfg(slint_debug_property)]
+            self.debug_name.borrow().as_str(),
+        )
     }
 
     /// Mark that this property will never be modified again and that no tracking should be done
@@ -890,7 +911,10 @@ impl<T: Clone + InterpolatedPropertyValue + 'static> Property<T> {
                 self.debug_name.borrow().as_str(),
             );
         }
-        self.handle.mark_dirty();
+        self.handle.mark_dirty(
+            #[cfg(slint_debug_property)]
+            self.debug_name.borrow().as_str(),
+        );
     }
 
     /// Set a binding to this property.
@@ -928,7 +952,10 @@ impl<T: Clone + InterpolatedPropertyValue + 'static> Property<T> {
                 self.debug_name.borrow().as_str(),
             )
         };
-        self.handle.mark_dirty();
+        self.handle.mark_dirty(
+            #[cfg(slint_debug_property)]
+            self.debug_name.borrow().as_str(),
+        );
     }
 
     /// Set a binding to this property, providing a callback for the transition animation
@@ -967,7 +994,10 @@ impl<T: Clone + InterpolatedPropertyValue + 'static> Property<T> {
                 self.debug_name.borrow().as_str(),
             )
         };
-        self.handle.mark_dirty();
+        self.handle.mark_dirty(
+            #[cfg(slint_debug_property)]
+            self.debug_name.borrow().as_str(),
+        );
     }
 }
 
@@ -1067,7 +1097,10 @@ impl<T: PartialEq + Clone + 'static> Property<T> {
                 debug_name.as_str(),
             );
         }
-        prop1.handle.mark_dirty();
+        prop1.handle.mark_dirty(
+            #[cfg(slint_debug_property)]
+            debug_name.as_str(),
+        );
     }
 }
 
@@ -2074,11 +2107,13 @@ impl<ChangeHandler: PropertyChangeHandler> PropertyTracker<ChangeHandler> {
     fn register_as_dependency_to_current_binding(self: Pin<&Self>) {
         if CURRENT_BINDING.is_set() {
             CURRENT_BINDING.with(|cur_binding| {
-                cur_binding.register_self_as_dependency(
-                    self.holder.dependencies.as_ptr() as *mut DependencyListHead,
-                    #[cfg(slint_debug_property)]
-                    &self.holder.debug_name,
-                );
+                if let Some(cur_binding) = cur_binding {
+                    cur_binding.register_self_as_dependency(
+                        self.holder.dependencies.as_ptr() as *mut DependencyListHead,
+                        #[cfg(slint_debug_property)]
+                        &self.holder.debug_name,
+                    );
+                }
             });
         }
     }
@@ -2110,7 +2145,7 @@ impl<ChangeHandler: PropertyChangeHandler> PropertyTracker<ChangeHandler> {
                 core::mem::transmute::<&BindingHolder<ChangeHandler>, &BindingHolder<()>>(&s.holder)
             })
         };
-        let r = CURRENT_BINDING.set(pinned_holder, f);
+        let r = CURRENT_BINDING.set(Some(pinned_holder), f);
         self.holder.dirty.set(false);
         r
     }

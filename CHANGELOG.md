@@ -1,16 +1,31 @@
 # Changelog
-All notable changes to this project will be documented in this file.
+All notable changes to this project are documented in this file.
 
 ## Unreleased
 
 ### Added
 
- - C++ interpreter API: added a `Value::Value(int)` constructor
- - Globals Singleton may now refer to other global singletons
+ - Added `From<&str>` and `From<SharedString>` to `StandardListViewItem` to make creation and modification of `StandardListView`'s models easier.
 
 ### Fixed
 
- - `TouchArea::has-hover` is now properly set to false when the mouse leaves the window.
+## [0.2.1] - 2022-03-10
+
+### Added
+
+ - C++ interpreter API: added a `Value::Value(int)` constructor
+ - Global singletons in `.slint` files may now refer to other global singletons
+ - Added `input-type` property to `TextInput` and `LineEdit` that allows for characters to be replaced in password fields
+ - The `SpinBox` widget now handles up and down key events
+
+### Fixed
+
+ - `TouchArea::has-hover` is now properly set to false when the mouse leaves the window
+ - Fixed some cases of panics with 'Constant property being changed'
+ - Fixed `Flickable` animation
+ - Better compilation error when selecting unknown styles
+ - Fixed duplicated key event for some keys (such as tab) with the GL backend
+ - Improved property optimizations by inlining some bindings and remove more unused properties
 
 ## [0.2.0] - 2022-02-10
 
@@ -396,4 +411,5 @@ as well as the [Rust migration guide for the `sixtyfps` crate](api/rs/slint/migr
 [0.1.4]: https://github.com/slint-ui/slint/releases/tag/v0.1.4
 [0.1.5]: https://github.com/slint-ui/slint/releases/tag/v0.1.5
 [0.1.6]: https://github.com/slint-ui/slint/releases/tag/v0.1.6
-[0.2.0]: https://github.com/slint-ui/slint/releases/tag/v0.0.2
+[0.2.0]: https://github.com/slint-ui/slint/releases/tag/v0.2.0
+[0.2.1]: https://github.com/slint-ui/slint/releases/tag/v0.2.1

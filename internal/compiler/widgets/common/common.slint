@@ -12,6 +12,7 @@ export LineEditInner := Rectangle {
     property placeholder-color <=> placeholder.color;
     property enabled <=> input.enabled;
     property has-focus <=> input.has-focus;
+    property input-type <=> input.input-type;
     min-height: input.preferred-height;
     min-width: max(50px, placeholder.min-width);
     clip: true;
@@ -97,7 +98,7 @@ export AboutSlint := Rectangle {
             preferred-width: 256px;
         }
         Text {
-            text: "Version 0.2.1\nhttps://slint-ui.com/";
+            text: "Version 0.2.2\nhttps://slint-ui.com/";
             font-size: 10px;
             horizontal-alignment: center;
         }

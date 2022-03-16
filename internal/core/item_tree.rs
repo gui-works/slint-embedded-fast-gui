@@ -67,12 +67,9 @@ impl core::fmt::Debug for VisitChildrenResult {
 /// within a component.
 #[repr(u8)]
 #[derive(Debug)]
-pub enum ItemTreeNode<T> {
+pub enum ItemTreeNode {
     /// Static item
     Item {
-        /// byte offset where we can find the item (from the *ComponentImpl)
-        item: vtable::VOffset<T, ItemVTable, vtable::AllowPin>,
-
         /// number of children
         children_count: u32,
 
@@ -81,6 +78,9 @@ pub enum ItemTreeNode<T> {
 
         /// The index of the parent item (not valid for the root)
         parent_index: u32,
+
+        /// The index in the extra item_array
+        item_array_index: u32,
     },
     /// A placeholder for many instance of item in their own component which
     /// are instantiated according to a model.
@@ -93,7 +93,7 @@ pub enum ItemTreeNode<T> {
     },
 }
 
-impl<T> ItemTreeNode<T> {
+impl ItemTreeNode {
     pub fn parent_index(&self) -> usize {
         match self {
             ItemTreeNode::Item { parent_index, .. } => *parent_index as usize,
@@ -237,7 +237,7 @@ fn visit_internal<State, PostVisitState>(
 pub fn visit_item_tree<Base>(
     base: Pin<&Base>,
     component: &ComponentRc,
-    item_tree: &[ItemTreeNode<Base>],
+    item_tree: &[ItemTreeNode],
     index: isize,
     order: TraversalOrder,
     mut visitor: vtable::VRefMut<ItemVisitorVTable>,
@@ -250,8 +250,9 @@ pub fn visit_item_tree<Base>(
 ) -> VisitChildrenResult {
     let mut visit_at_index = |idx: usize| -> VisitChildrenResult {
         match &item_tree[idx] {
-            ItemTreeNode::Item { item, .. } => {
-                visitor.visit_item(component, idx, item.apply_pin(base))
+            ItemTreeNode::Item { .. } => {
+                let item = crate::items::ItemRc::new(component.clone(), idx);
+                visitor.visit_item(component, idx, item.borrow())
             }
             ItemTreeNode::DynamicTree { index, .. } => {
                 if let Some(sub_idx) =
@@ -299,7 +300,7 @@ pub(crate) mod ffi {
     #[no_mangle]
     pub unsafe extern "C" fn slint_visit_item_tree(
         component: &ComponentRc,
-        item_tree: Slice<ItemTreeNode<u8>>,
+        item_tree: Slice<ItemTreeNode>,
         index: isize,
         order: TraversalOrder,
         visitor: VRefMut<ItemVisitorVTable>,

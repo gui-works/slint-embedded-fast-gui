@@ -31,7 +31,7 @@ static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
 #[global_allocator]
 static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
 
-pub fn init_board() {
+pub fn init() {
     let mut pac = pac::Peripherals::take().unwrap();
     let core = pac::CorePeripherals::take().unwrap();
 
@@ -117,11 +117,7 @@ impl<Display: Devices, IRQ: InputPin, CS: OutputPin<Error = IRQ::Error>, SPI: Tr
         self.display.screen_size()
     }
 
-    fn fill_region(
-        &mut self,
-        region: PhysicalRect,
-        pixels: &[embedded_graphics::pixelcolor::Rgb888],
-    ) {
+    fn fill_region(&mut self, region: PhysicalRect, pixels: &[super::TargetPixel]) {
         self.display.fill_region(region, pixels)
     }
 
@@ -136,7 +132,6 @@ impl<Display: Devices, IRQ: InputPin, CS: OutputPin<Error = IRQ::Error>, SPI: Tr
             .map_err(|_| ())
             .unwrap()
             .map(|point| {
-                let point = point.to_f32() / (i16::MAX as f32);
                 let size = self.display.screen_size().to_f32();
                 let pos = euclid::point2(point.x * size.width, point.y * size.height);
                 match self.last_touch.replace(pos) {
@@ -151,7 +146,7 @@ impl<Display: Devices, IRQ: InputPin, CS: OutputPin<Error = IRQ::Error>, SPI: Tr
             })
     }
 
-    fn time(&mut self) -> core::time::Duration {
+    fn time(&self) -> core::time::Duration {
         core::time::Duration::from_micros(self.timer.get_counter())
     }
 }
@@ -166,6 +161,7 @@ mod xpt2046 {
         irq: IRQ,
         cs: CS,
         spi: SPI,
+        pressed: bool,
     }
 
     impl<PinE, IRQ: InputPin<Error = PinE>, CS: OutputPin<Error = PinE>, SPI: Transfer<u8>>
@@ -173,15 +169,25 @@ mod xpt2046 {
     {
         pub fn new(irq: IRQ, mut cs: CS, spi: SPI) -> Result<Self, PinE> {
             cs.set_high()?;
-            Ok(Self { irq, cs, spi })
+            Ok(Self { irq, cs, spi, pressed: false })
         }
 
-        pub fn read(&mut self) -> Result<Option<Point2D<i16>>, Error<PinE, SPI::Error>> {
+        pub fn read(&mut self) -> Result<Option<Point2D<f32>>, Error<PinE, SPI::Error>> {
+            const PRESS_THRESHOLD: i32 = -20_000;
+            const RELEASE_THRESHOLD: i32 = -25_000;
+            let threshold = if self.pressed { PRESS_THRESHOLD } else { RELEASE_THRESHOLD };
+            self.pressed = false;
             if self.irq.is_low().map_err(|e| Error::Pin(e))? {
                 const CMD_X_READ: u8 = 0b10010000;
                 const CMD_Y_READ: u8 = 0b11010000;
+                const CMD_Z1_READ: u8 = 0b10110001;
+                const CMD_Z2_READ: u8 = 0b11000001;
 
-                let mut point = Point2D::new(0u32, 0u32);
+                // These numbers were measured approximately.
+                const MIN_X: u32 = 1900;
+                const MAX_X: u32 = 30300;
+                const MIN_Y: u32 = 2300;
+                const MAX_Y: u32 = 30300;
 
                 // FIXME! how else set the frequency to this device
                 unsafe { set_spi_freq(3_000_000u32.Hz()) };
@@ -190,27 +196,55 @@ mod xpt2046 {
 
                 macro_rules! xchg {
                     ($byte:expr) => {
-                        match self.spi.transfer(&mut [$byte]).map_err(|e| Error::Transfer(e))? {
-                            [x] => *x as u32,
+                        match self
+                            .spi
+                            .transfer(&mut [$byte, 0, 0])
+                            .map_err(|e| Error::Transfer(e))?
+                        {
+                            [_, h, l] => ((*h as u32) << 8) | (*l as u32),
                             _ => return Err(Error::InternalError),
                         }
                     };
                 }
 
-                for _ in 0..10 {
-                    xchg!(CMD_X_READ);
-                    let mut x = xchg!(0) << 8;
-                    x |= xchg!(CMD_Y_READ);
-                    let mut y = xchg!(0) << 8;
-                    y |= xchg!(0);
+                let z1 = xchg!(CMD_Z1_READ);
+                let z2 = xchg!(CMD_Z2_READ);
+                let z = z1 as i32 - z2 as i32;
 
+                if z < threshold {
+                    xchg!(0);
+                    self.cs.set_high().map_err(|e| Error::Pin(e))?;
+                    unsafe { set_spi_freq(18_000_000u32.Hz()) };
+                    return Ok(None);
+                }
+
+                xchg!(CMD_X_READ | 1); // Dummy read, first read is a outlier
+
+                let mut point = Point2D::new(0u32, 0u32);
+                for _ in 0..10 {
+                    let y = xchg!(CMD_Y_READ);
+                    let x = xchg!(CMD_X_READ);
                     point += euclid::vec2(i16::MAX as u32 - x, y)
                 }
-                self.cs.set_high().map_err(|e| Error::Pin(e))?;
 
+                let z1 = xchg!(CMD_Z1_READ);
+                let z2 = xchg!(CMD_Z2_READ);
+                let z = z1 as i32 - z2 as i32;
+
+                xchg!(0);
+                self.cs.set_high().map_err(|e| Error::Pin(e))?;
                 unsafe { set_spi_freq(18_000_000u32.Hz()) };
 
-                Ok(Some((point / 10).cast()))
+                if z < RELEASE_THRESHOLD {
+                    return Ok(None);
+                }
+
+                point /= 10;
+                self.pressed = true;
+                Ok(Some(euclid::point2(
+                    point.x.saturating_sub(MIN_X) as f32 / (MAX_X - MIN_X) as f32,
+                    point.y.saturating_sub(MIN_Y) as f32 / (MAX_Y - MIN_Y) as f32,
+                )))
             } else {
                 Ok(None)
             }

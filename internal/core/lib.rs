@@ -84,6 +84,9 @@ pub mod window;
 #[cfg(feature = "rtti")]
 pub mod rtti;
 
+#[cfg(feature = "text_layout")]
+pub mod textlayout;
+
 #[doc(inline)]
 pub use string::SharedString;
 
@@ -91,7 +94,7 @@ pub use string::SharedString;
 pub use sharedvector::SharedVector;
 
 #[doc(inline)]
-pub use graphics::ImageInner;
+pub use graphics::{ImageInner, StaticTextures};
 
 #[doc(inline)]
 pub use properties::Property;

@@ -3,7 +3,7 @@
 
 [package]
 name = "slint-cpp"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["Slint Developers <info@slint-ui.com>"]
 edition = "2021"
 build = "build.rs"
@@ -29,13 +29,16 @@ backend-gl-all = ["i-slint-backend-selector/backend-gl-all"]
 backend-gl-wayland = ["i-slint-backend-selector/backend-gl-wayland"]
 backend-gl-x11 = ["i-slint-backend-selector/backend-gl-x11"]
 
+rtti-qt = ["i-slint-backend-selector/rtti-qt"]
+rtti-gl = ["i-slint-backend-selector/rtti-gl"]
+
 default = ["backend-gl-all", "backend-qt"]
 
 [dependencies]
-i-slint-backend-selector = { version = "=0.2.1", path="../../internal/backends/selector" }
-i-slint-backend-testing = { version = "=0.2.1", path="../../internal/backends/testing", optional = true }
-i-slint-core = { version = "=0.2.1", path="../../internal/core", features = ["ffi"] }
-slint-interpreter = { version = "=0.2.1", path="../../internal/interpreter", default-features = false, features = ["ffi", "compat-0-2-0"], optional = true }
+i-slint-backend-selector = { version = "=0.2.2", path="../../internal/backends/selector" }
+i-slint-backend-testing = { version = "=0.2.2", path="../../internal/backends/testing", optional = true }
+i-slint-core = { version = "=0.2.2", path="../../internal/core", features = ["ffi"] }
+slint-interpreter = { version = "=0.2.2", path="../../internal/interpreter", default-features = false, features = ["ffi", "compat-0-2-0"], optional = true }
 
 [build-dependencies]
 anyhow = "1.0"

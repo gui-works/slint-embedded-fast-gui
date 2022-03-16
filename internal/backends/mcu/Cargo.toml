@@ -3,7 +3,7 @@
 
 [package]
 name = "i-slint-backend-mcu"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["Slint Developers <info@slint-ui.com>"]
 edition = "2021"
 license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
@@ -11,6 +11,7 @@ publish = false
 description = "Rendering backend for Slint for use on Microcontrollers"
 repository = "https://github.com/slint-ui/slint"
 homepage = "https://slint-ui.com"
+links = "i_slint_backend_mcu" # just so we can pass metadata to the slint build crate
 
 [lib]
 path = "lib.rs"
@@ -28,8 +29,9 @@ std = ["i-slint-core/std"]
 default = ["simulator"]
 
 [dependencies]
-i-slint-common = { version = "=0.2.1", path = "../../../internal/common", default-features = false }
-i-slint-core = { version = "=0.2.1", path = "../../../internal/core", default-features = false }
+i-slint-common = { version = "=0.2.2", path = "../../../internal/common", default-features = false }
+i-slint-core = { version = "=0.2.2", path = "../../../internal/core", default-features = false, features = ["libm", "text_layout"] }
+i-slint-core-macros = { version = "=0.2.2", path = "../../../internal/core-macros" }
 
 const-field-offset = { version = "0.1", path = "../../../helper_crates/const-field-offset" }
 vtable = { version = "0.1.6", path = "../../../helper_crates/vtable" }
@@ -42,6 +44,7 @@ euclid = { version = "0.22.1", default-features = false }
 femtovg = { version = "0.3.3", optional = true }
 glutin = { version = "0.28", default-features = false, optional = true, features = ["x11"] }
 imgref = { version = "1.6.1", optional = true }
+integer-sqrt = "0.1.5"
 once_cell = { version = "1.9", default-features = false, features = ["alloc", "atomic-polyfill"] }
 pin-weak = { version = "1", default-features = false }
 rgb = "0.8.27"
@@ -54,7 +57,7 @@ cortex-m = { version = "0.7.2", optional = true }
 display-interface-spi = { version = "0.4.1", optional = true }
 embedded-hal = { version = "0.2.5", optional = true }
 embedded-time = { version = "0.12.0", optional = true }
-rp-pico = { version = "0.2.0", optional = true }
+rp-pico = { version = "0.3.0", optional = true }
 shared-bus = { version = "0.2", optional = true }
 st7789 = { version = "0.6.1", optional = true }
 
@@ -64,3 +67,6 @@ panic-probe = { version = "0.3.0", optional = true, features = ["print-defmt"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = { version = "0.24.0" }
+
+[build-dependencies]
+cfg-if = "1.0.0"
