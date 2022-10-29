@@ -50,7 +50,7 @@ jobs:
             binary_built: slint-lsp
             target_dir:
             artifact_name: slint-lsp-x86_64-unknown-linux-gnu
-          - os: windows-2019
+          - os: windows-2022
             toolchain: x86_64-pc-windows-gnu
             binary_built: slint-lsp.exe
             target_dir:
@@ -58,14 +58,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@v2
-    - name: Install latest stable
-      uses: actions-rs/toolchain@v1
+    - uses: ./.github/actions/setup-rust
       with:
-          toolchain: stable
-          target: ${{ matrix.toolchain }}
-    - name: Install Linux Dependencies
-      if: matrix.os == 'ubuntu-latest'
-      run: sudo apt-get install libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev
+        target: ${{ matrix.toolchain }}
+    - uses: ./.github/actions/install-linux-dependencies
     - name: Build LSP
       uses: actions-rs/cargo@v1
       with:
@@ -86,14 +82,12 @@ jobs:
   build_vscode_lsp_macos_x86_64:
     env:
       SLINT_NO_QT: 1
-    runs-on: macOS-11
+    runs-on: macos-11
     steps:
     - uses: actions/checkout@v2
-    - name: Install latest stable
-      uses: actions-rs/toolchain@v1
+    - uses: ./.github/actions/setup-rust
       with:
-          toolchain: stable
-          target: x86_64-apple-darwin
+        target: x86_64-apple-darwin
     - name: Install cargo-bundle
       run: cargo install cargo-bundle
     - name: Build Main LSP Bundle
@@ -113,14 +107,12 @@ jobs:
   build_vscode_lsp_macos_aarch64:
     env:
       SLINT_NO_QT: 1
-    runs-on: macOS-11
+    runs-on: macos-11
     steps:
     - uses: actions/checkout@v2
-    - name: Install latest stable
-      uses: actions-rs/toolchain@v1
+    - uses: ./.github/actions/setup-rust
       with:
-          toolchain: stable
-          target: aarch64-apple-darwin
+        target: aarch64-apple-darwin
     - name: Build AArch64 LSP
       uses: actions-rs/cargo@v1
       with:
@@ -140,7 +132,7 @@ jobs:
 
   build_vscode_lsp_macos_bundle:
     needs: [build_vscode_lsp_macos_x86_64, build_vscode_lsp_macos_aarch64]
-    runs-on: macOS-11
+    runs-on: macos-11
     steps:
     - uses: actions/download-artifact@v2
       with:
@@ -167,15 +159,13 @@ jobs:
       matrix:
         target:
           - armv7-unknown-linux-gnueabihf
+          - aarch64-unknown-linux-gnu
     runs-on: ubuntu-20.04
     steps:
     - uses: actions/checkout@v2
-    - name: Install latest stable
-      uses: actions-rs/toolchain@v1
+    - uses: ./.github/actions/setup-rust
       with:
-          toolchain: stable
-          override: true
-          target: ${{ matrix.target }}
+        target: ${{ matrix.target }}
     - name: Build LSP
       uses: actions-rs/cargo@v1
       with:
@@ -195,63 +185,67 @@ jobs:
 
   build_vscode_extension:
     needs: [build_vscode_lsp_linux_windows, build_vscode_lsp_macos_bundle, build_vscode_cross_linux_lsp]
-    runs-on: macOS-11
+    runs-on: macos-11
     steps:
     - uses: actions/checkout@v2
     - uses: actions/download-artifact@v2
       with:
         name: vscode-lsp-binary-x86_64-unknown-linux-gnu
-        path: editor/vscode/bin
+        path: editors/vscode/bin
     - uses: actions/download-artifact@v2
       with:
         name: vscode-lsp-binary-x86_64-pc-windows-gnu
-        path: editor/vscode/bin
+        path: editors/vscode/bin
     - uses: actions/download-artifact@v2
       with:
         name: vscode-lsp-binary-darwin
-        path: editor/vscode/bin
+        path: editors/vscode/bin
     - uses: actions/download-artifact@v2
       with:
         name: vscode-lsp-binary-armv7-unknown-linux-gnueabihf
-        path: editor/vscode/bin
-    - name: Fix permissions
-      run: chmod 755 editor/vscode/bin/* editor/vscode/bin/*.app/Contents/MacOS/*
-    - name: Setup Node.js
-      uses: actions/setup-node@v1
+        path: editors/vscode/bin
+    - uses: actions/download-artifact@v2
       with:
-        node-version: '12'
+        name: vscode-lsp-binary-aarch64-unknown-linux-gnu
+        path: editors/vscode/bin
+    - name: Fix permissions
+      run: chmod 755 editors/vscode/bin/* editors/vscode/bin/*.app/Contents/MacOS/*
+    - uses: ./.github/actions/install-nodejs
     - name: "Prepare meta-data files for nightly package"
       env:
         RELEASE_INPUT: ${{ github.event.inputs.release }}
-      working-directory: editor/vscode
+      working-directory: editors/vscode
       run: |
         if [ "$RELEASE_INPUT" != "true" ]; then
           ../../scripts/prepare_vscode_nightly.sh
         fi
     - name: "npm install"
-      working-directory: editor/vscode
+      working-directory: editors/vscode
       run: npm install
-    - name: Build package and optionally publish to Open VSX Registry
-      id: publishToOpenVSX
-      uses: HaaLeo/publish-vscode-extension@v0
-      with:
-        pat: ${{ secrets.OPENVSX_PAT }}
-        dryRun: ${{ github.event.inputs.private == 'true' || github.ref != 'refs/heads/master' }}
-        packagePath: editor/vscode
-    - name: Publish to Visual Studio Marketplace
-      if: ${{ github.event.inputs.private != 'true' && github.ref == 'refs/heads/master' }}
-      uses: HaaLeo/publish-vscode-extension@v0
+    - name: Install wasm-pack
+      run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+    - name: Build package and optionally publish to Visual Studio Marketplace
+      id: publishToVSCM
+      uses: HaaLeo/publish-vscode-extension@v1
       with:
         pat: ${{ secrets.VSCODE_MARKETPLACE_PAT }}
         registryUrl: https://marketplace.visualstudio.com
-        extensionFile: ${{ steps.publishToOpenVSX.outputs.vsixPath }}
+        dryRun: ${{ github.event.inputs.private == 'true' || github.ref != 'refs/heads/master' }}
+        packagePath: editors/vscode
+    - name: Publish to Open VSX Registry
+      continue-on-error: true
+      if: ${{ github.event.inputs.private != 'true' && github.ref == 'refs/heads/master' }}
+      uses: HaaLeo/publish-vscode-extension@v1
+      with:
+        pat: ${{ secrets.OPENVSX_PAT }}
+        extensionFile: ${{ steps.publishToVSCM.outputs.vsixPath }}
         packagePath: ''
     - name: "Upload extension artifact"
       uses: actions/upload-artifact@v2
       with:
           name: slint-vscode.zip
           path: |
-              ${{ steps.publishToOpenVSX.outputs.vsixPath }}
+              ${{ steps.publishToVSCM.outputs.vsixPath }}
 
   publish_artifacts:
     if: github.event.inputs.private != 'true'
@@ -263,6 +257,10 @@ jobs:
           name: docs
       - uses: actions/download-artifact@v2
         with:
+          name: online_editor
+          path: online_editor
+      - uses: actions/download-artifact@v2
+        with:
           name: wasm
       - uses: actions/download-artifact@v2
         with:
@@ -271,7 +269,7 @@ jobs:
         run: |
             git config --global user.email "${GITHUB_ACTOR}@users.noreply.github.com"
             git config --global user.name "${GITHUB_ACTOR}"
-            git clone "https://tronical:${{ secrets.WWW_PUBLISH_SECRET }}@github.com/slint-ui/www" --depth 1
+            git clone "https://tronical:${{ secrets.WWW_PUBLISH_SECRET }}@github.com/tronical/www" --depth 1
             cd www
 
             target_branch=${GITHUB_REF##*/}
@@ -279,7 +277,7 @@ jobs:
             rm -rf snapshots/$target_branch/demos
             mkdir -p snapshots/$target_branch/demos
 
-            for demo_subdir in gallery, printerdemo,rust printerdemo_old,rust todo,rust slide_puzzle, memory, imagefilter, plotter, opengl_underlay,; do
+            for demo_subdir in gallery, printerdemo,rust printerdemo_old,rust todo,rust slide_puzzle, memory, imagefilter, plotter, opengl_underlay, carousel,rust; do
                 IFS=',' read demo subdir <<< "${demo_subdir}"
 
                 mkdir -p snapshots/$target_branch/demos/$demo
@@ -298,7 +296,9 @@ jobs:
 
             rm -rf snapshots/$target_branch/editor
             mkdir -p snapshots/$target_branch/editor
-            cp -a ../tools/online_editor/dist/* snapshots/$target_branch/editor/
+            cp -a ../online_editor/* snapshots/$target_branch/editor/
+            mkdir -p snapshots/$target_branch/editor/assets/assets
+            mv snapshots/$target_branch/editor/assets/slint_lsp_wasm* snapshots/$target_branch/editor/assets/assets # work around relative base set in vite"
             git add snapshots/$target_branch/editor
             git add -u snapshots/$target_branch/editor
 

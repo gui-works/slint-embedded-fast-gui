@@ -3,7 +3,7 @@
 
 [package]
 name = "syntax_updater"
-version = "0.2.2"
+version = "0.3.2"
 authors = ["Slint Developers <info@slint-ui.com>"]
 edition = "2021"
 license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
@@ -16,9 +16,11 @@ homepage = "https://slint-ui.com"
 [dependencies]
 i-slint-compiler = { path = "../../internal/compiler", features = ["display-diagnostics"] }
 
-clap = { version = "3.1", features = ["derive", "wrap_help"] }
+clap = { version = "4.0", features = ["derive", "wrap_help"] }
 codemap = "0.1"
 codemap-diagnostic = "0.1.1"
+spin_on = "0.1"
+by_address = "1.0.4"
 
 [[bin]]
 name = "syntax_updater"

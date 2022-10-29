@@ -1,41 +1,33 @@
 // Copyright © SixtyFPS GmbH <info@slint-ui.com>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
+// cSpell: ignore vecmodel
+
 //! Model and Repeater
 
-// Safety: we use pointer to Repeater in the DependencyList, bue the Drop of the Repeater
-// will remove them from the list so it will not be accessed after it is dropped
-#![allow(unsafe_code)]
-
+use crate::component::ComponentVTable;
 use crate::item_tree::TraversalOrder;
 use crate::items::ItemRef;
 use crate::layout::Orientation;
-use crate::properties::dependency_tracker::DependencyNode;
-use crate::{Property, SharedString, SharedVector};
+use crate::lengths::{LogicalLength, RectLengths};
+use crate::{Coord, Property, SharedString, SharedVector};
+pub use adapters::{FilterModel, MapModel, SortModel};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 use core::pin::Pin;
+use euclid::num::Zero;
+#[allow(unused)]
+use euclid::num::{Ceil, Floor};
+pub use model_peer::*;
 use once_cell::unsync::OnceCell;
 use pin_project::pin_project;
 use pin_weak::rc::{PinWeak, Rc};
 
-#[cfg(not(feature = "std"))]
-use num_traits::float::Float;
+mod adapters;
+mod model_peer;
 
-type DependencyListHead =
-    crate::properties::dependency_tracker::DependencyListHead<*const dyn ErasedRepeater>;
 type ComponentRc<C> = vtable::VRc<crate::component::ComponentVTable, C>;
-
-/// Represent a handle to a view that listens to changes to a model.
-///
-/// One should normally not use this class directly, it is just
-/// used internally by via [`ModelTracker::attach_peer`] and [`ModelNotify`]
-#[derive(Clone)]
-pub struct ModelPeer {
-    // FIXME: add a lifetime to ModelPeer so we can put the DependencyNode directly in the Repeater
-    inner: PinWeak<DependencyNode<*const dyn ErasedRepeater>>,
-}
 
 /// This trait defines the interface that users of a model can use to track changes
 /// to a model. It is supplied via [`Model::model_tracker`] and implementation usually
@@ -46,6 +38,8 @@ pub trait ModelTracker {
     /// Register the model as a dependency to the current binding being evaluated, so
     /// that it will be notified when the model changes its size.
     fn track_row_count_changes(&self);
+    /// Register a row as a dependency to the current binding being evaluated, so that
+    /// it will be notified when the value of that row changes.
     fn track_row_data_changes(&self, row: usize);
 }
 
@@ -54,88 +48,6 @@ impl ModelTracker for () {
 
     fn track_row_count_changes(&self) {}
     fn track_row_data_changes(&self, _row: usize) {}
-}
-
-#[pin_project]
-#[derive(Default)]
-struct ModelNotifyInner {
-    #[pin]
-    model_row_count_dirty_property: Property<()>,
-    #[pin]
-    model_row_data_dirty_property: Property<()>,
-    #[pin]
-    peers: DependencyListHead,
-    // Sorted list of rows that track_row_data_changes() was called for
-    tracked_rows: RefCell<Vec<usize>>,
-}
-
-/// Dispatch notifications from a [`Model`] to one or several [`ModelPeer`].
-/// Typically, you would want to put this in the implementation of the Model
-#[derive(Default)]
-pub struct ModelNotify {
-    inner: OnceCell<Pin<Box<ModelNotifyInner>>>,
-}
-
-impl ModelNotify {
-    fn inner(&self) -> Pin<&ModelNotifyInner> {
-        self.inner.get_or_init(|| Box::pin(ModelNotifyInner::default())).as_ref()
-    }
-
-    /// Notify the peers that a specific row was changed
-    pub fn row_changed(&self, row: usize) {
-        if let Some(inner) = self.inner.get() {
-            if inner.tracked_rows.borrow().binary_search(&row).is_ok() {
-                inner.model_row_data_dirty_property.mark_dirty();
-            }
-            inner.as_ref().project_ref().peers.for_each(|p| unsafe { &**p }.row_changed(row))
-        }
-    }
-    /// Notify the peers that rows were added
-    pub fn row_added(&self, index: usize, count: usize) {
-        if let Some(inner) = self.inner.get() {
-            inner.model_row_count_dirty_property.mark_dirty();
-            inner.tracked_rows.borrow_mut().clear();
-            inner.model_row_data_dirty_property.mark_dirty();
-            inner.as_ref().project_ref().peers.for_each(|p| unsafe { &**p }.row_added(index, count))
-        }
-    }
-    /// Notify the peers that rows were removed
-    pub fn row_removed(&self, index: usize, count: usize) {
-        if let Some(inner) = self.inner.get() {
-            inner.model_row_count_dirty_property.mark_dirty();
-            inner.tracked_rows.borrow_mut().clear();
-            inner.model_row_data_dirty_property.mark_dirty();
-            inner
-                .as_ref()
-                .project_ref()
-                .peers
-                .for_each(|p| unsafe { &**p }.row_removed(index, count))
-        }
-    }
-}
-
-impl ModelTracker for ModelNotify {
-    /// Attach one peer. The peer will be notified when the model changes
-    fn attach_peer(&self, peer: ModelPeer) {
-        if let Some(peer) = peer.inner.upgrade() {
-            self.inner().project_ref().peers.append(peer.as_ref())
-        }
-    }
-
-    fn track_row_count_changes(&self) {
-        self.inner().project_ref().model_row_count_dirty_property.get();
-    }
-
-    fn track_row_data_changes(&self, row: usize) {
-        let inner = self.inner().project_ref();
-
-        let mut tracked_rows = inner.tracked_rows.borrow_mut();
-        if let Err(insertion_point) = tracked_rows.binary_search(&row) {
-            tracked_rows.insert(insertion_point, row);
-        }
-
-        inner.model_row_data_dirty_property.get();
-    }
 }
 
 /// A Model is providing Data for the Repeater or ListView elements of the `.slint` language
@@ -206,6 +118,9 @@ pub trait Model {
     /// The amount of row in the model
     fn row_count(&self) -> usize;
     /// Returns the data for a particular row. This function should be called with `row < row_count()`.
+    ///
+    /// This function does not register dependencies on the current binding. For an equivalent
+    /// function that tracks dependencies, see [`ModelExt::row_data_tracked`]
     fn row_data(&self, row: usize) -> Option<Self::Data>;
     /// Sets the data for a particular row.
     ///
@@ -262,8 +177,65 @@ pub trait Model {
     }
 }
 
+/// Extension trait with extra methods implemented on types that implement [`Model`]
+pub trait ModelExt: Model {
+    /// Convenience function that calls [`ModelTracker::track_row_data_changes`]
+    /// before returning [`Model::row_data`].
+    ///
+    /// Calling [`row_data(row)`](Model::row_data) does not register the row as a dependency when calling it while
+    /// evaluating a property binding. This function calls [`track_row_data_changes(row)`](ModelTracker::track_row_data_changes)
+    /// on the [`self.model_tracker()`](Model::model_tracker) to enable tracking.
+    fn row_data_tracked(&self, row: usize) -> Option<Self::Data> {
+        self.model_tracker().track_row_data_changes(row);
+        self.row_data(row)
+    }
+
+    /// Returns a new Model where all elements are mapped by the function `map_function`.
+    /// This is a shortcut for [`MapModel::new()`].
+    fn map<F, U>(self, map_function: F) -> MapModel<Self, F>
+    where
+        Self: Sized + 'static,
+        F: Fn(Self::Data) -> U + 'static,
+    {
+        MapModel::new(self, map_function)
+    }
+
+    /// Returns a new Model where the elements are filtered by the function `filter_function`.
+    /// This is a shortcut for [`FilterModel::new()`].
+    fn filter<F>(self, filter_function: F) -> FilterModel<Self, F>
+    where
+        Self: Sized + 'static,
+        F: Fn(&Self::Data) -> bool + 'static,
+    {
+        FilterModel::new(self, filter_function)
+    }
+
+    /// Returns a new Model where the elements are sorted ascending.
+    /// This is a shortcut for [`SortModel::new_ascending()`].
+    #[must_use]
+    fn sort(self) -> SortModel<Self, adapters::AscendingSortHelper>
+    where
+        Self: Sized + 'static,
+        Self::Data: core::cmp::Ord,
+    {
+        SortModel::new_ascending(self)
+    }
+
+    /// Returns a new Model where the elements are sorted by the function `sort_function`.
+    /// This is a shortcut for [`SortModel::new()`].
+    fn sort_by<F>(self, sort_function: F) -> SortModel<Self, F>
+    where
+        Self: Sized + 'static,
+        F: FnMut(&Self::Data, &Self::Data) -> core::cmp::Ordering + 'static,
+    {
+        SortModel::new(self, sort_function)
+    }
+}
+
+impl<T: Model> ModelExt for T {}
+
 /// An iterator over the elements of a model.
-/// This struct is created by the [Model::iter()] trait function.
+/// This struct is created by the [`Model::iter()`] trait function.
 pub struct ModelIterator<'a, T> {
     model: &'a dyn Model<Data = T>,
     row: usize,
@@ -292,9 +264,37 @@ impl<'a, T> Iterator for ModelIterator<'a, T> {
         let len = self.model.row_count();
         (len, Some(len))
     }
+
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        self.row = self.row.checked_add(n)?;
+        self.next()
+    }
 }
 
 impl<'a, T> ExactSizeIterator for ModelIterator<'a, T> {}
+
+impl<M: Model> Model for Rc<M> {
+    type Data = M::Data;
+
+    fn row_count(&self) -> usize {
+        (**self).row_count()
+    }
+
+    fn row_data(&self, row: usize) -> Option<Self::Data> {
+        (**self).row_data(row)
+    }
+
+    fn model_tracker(&self) -> &dyn ModelTracker {
+        (**self).model_tracker()
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        (**self).as_any()
+    }
+    fn set_row_data(&self, row: usize, data: Self::Data) {
+        (**self).set_row_data(row, data)
+    }
+}
 
 /// A model backed by a `Vec<T>`
 #[derive(Default)]
@@ -326,9 +326,44 @@ impl<T: 'static> VecModel<T> {
     }
 
     /// Remove the row at the given index from the model
-    pub fn remove(&self, index: usize) {
-        self.array.borrow_mut().remove(index);
-        self.notify.row_removed(index, 1)
+    ///
+    /// Returns the removed row
+    pub fn remove(&self, index: usize) -> T {
+        let r = self.array.borrow_mut().remove(index);
+        self.notify.row_removed(index, 1);
+        r
+    }
+
+    /// Replace inner Vec with new data
+    pub fn set_vec(&self, new: impl Into<Vec<T>>) {
+        *self.array.borrow_mut() = new.into();
+        self.notify.reset();
+    }
+
+    /// Extend the model with the content of the iterator
+    ///
+    /// Similar to [`Vec::extend`]
+    pub fn extend<I: IntoIterator<Item = T>>(&self, iter: I) {
+        let mut array = self.array.borrow_mut();
+        let old_idx = array.len();
+        array.extend(iter);
+        let count = array.len() - old_idx;
+        drop(array);
+        self.notify.row_added(old_idx, count);
+    }
+}
+
+impl<T: Clone + 'static> VecModel<T> {
+    /// Appends all the elements in the slice to the model
+    ///
+    /// Similar to [`Vec::extend_from_slice`]
+    pub fn extend_from_slice(&self, src: &[T]) {
+        let mut array = self.array.borrow_mut();
+        let old_idx = array.len();
+
+        array.extend_from_slice(src);
+        drop(array);
+        self.notify.row_added(old_idx, src.len());
     }
 }
 
@@ -560,7 +595,9 @@ impl<T> Model for ModelRc<T> {
 }
 
 /// Component that can be instantiated by a repeater.
-pub trait RepeatedComponent: crate::component::Component {
+pub trait RepeatedComponent:
+    crate::component::Component + vtable::HasStaticVTable<ComponentVTable> + 'static
+{
     /// The data corresponding to the model
     type Data: 'static;
 
@@ -573,8 +610,8 @@ pub trait RepeatedComponent: crate::component::Component {
     /// it should be updated to be to the y position of the next item.
     fn listview_layout(
         self: Pin<&Self>,
-        _offset_y: &mut f32,
-        _viewport_width: Pin<&Property<f32>>,
+        _offset_y: &mut LogicalLength,
+        _viewport_width: Pin<&Property<LogicalLength>>,
     ) {
     }
 
@@ -596,25 +633,46 @@ enum RepeatedComponentState {
 }
 struct RepeaterInner<C: RepeatedComponent> {
     components: Vec<(RepeatedComponentState, Option<ComponentRc<C>>)>,
+
+    // The remaining properties only make sense for ListView
     /// The model row (index) of the first component in the `components` vector.
-    /// Only used for ListView
     offset: usize,
-    /// The average visible item_height. Only used for ListView
-    cached_item_height: f32,
+    /// The average visible item height.
+    cached_item_height: LogicalLength,
+    /// The viewport_y last time the layout of the ListView was done
+    previous_viewport_y: LogicalLength,
+    /// the position of the item in the row `offset` (which corresponds to `components[0]`).
+    /// We will try to keep this constant when re-layouting items
+    anchor_y: LogicalLength,
 }
 
 impl<C: RepeatedComponent> Default for RepeaterInner<C> {
     fn default() -> Self {
-        RepeaterInner { components: Default::default(), offset: 0, cached_item_height: 0. }
+        RepeaterInner {
+            components: Default::default(),
+            offset: 0,
+            cached_item_height: Default::default(),
+            previous_viewport_y: Default::default(),
+            anchor_y: Default::default(),
+        }
     }
 }
-trait ErasedRepeater {
-    fn row_changed(&self, row: usize);
-    fn row_added(&self, index: usize, count: usize);
-    fn row_removed(&self, index: usize, count: usize);
+
+/// This field is put in a component when using the `for` syntax
+/// It helps instantiating the components `C`
+#[pin_project]
+pub struct RepeaterTracker<C: RepeatedComponent> {
+    inner: RefCell<RepeaterInner<C>>,
+    #[pin]
+    model: Property<ModelRc<C::Data>>,
+    #[pin]
+    is_dirty: Property<bool>,
+    /// Only used for the list view to track if the scrollbar has changed and item needs to be layed out again.
+    #[pin]
+    listview_geometry_tracker: crate::properties::PropertyTracker,
 }
 
-impl<C: RepeatedComponent> ErasedRepeater for Repeater<C> {
+impl<C: RepeatedComponent> ModelChangeListener for RepeaterTracker<C> {
     /// Notify the peers that a specific row was changed
     fn row_changed(&self, row: usize) {
         self.is_dirty.set(true);
@@ -644,6 +702,10 @@ impl<C: RepeatedComponent> ErasedRepeater for Repeater<C> {
             index..index,
             core::iter::repeat((RepeatedComponentState::Dirty, None)).take(count),
         );
+        for c in inner.components[index + count..].iter_mut() {
+            // Because all the indexes are dirty
+            c.0 = RepeatedComponentState::Dirty;
+        }
     }
     /// Notify the peers that rows were removed
     fn row_removed(&self, mut index: usize, mut count: usize) {
@@ -670,68 +732,48 @@ impl<C: RepeatedComponent> ErasedRepeater for Repeater<C> {
             c.0 = RepeatedComponentState::Dirty;
         }
     }
+
+    fn reset(&self) {
+        self.is_dirty.set(true);
+        self.inner.borrow_mut().components.clear();
+    }
 }
 
-/// This field is put in a component when using the `for` syntax
-/// It helps instantiating the components `C`
-#[pin_project(PinnedDrop)]
-pub struct Repeater<C: RepeatedComponent> {
-    inner: RefCell<RepeaterInner<C>>,
-    #[pin]
-    model: Property<ModelRc<C::Data>>,
-    #[pin]
-    is_dirty: Property<bool>,
-    /// Only used for the list view to track if the scrollbar has changed and item needs to be layed out again.
-    #[pin]
-    listview_geometry_tracker: crate::properties::PropertyTracker,
-
-    /// Will be initialized when the ModelPeer is initialized.
-    /// The DependencyNode points to self
-    peer: OnceCell<Pin<Rc<DependencyNode<*const dyn ErasedRepeater>>>>,
-}
-
-impl<C: RepeatedComponent> Default for Repeater<C> {
+impl<C: RepeatedComponent> Default for RepeaterTracker<C> {
     fn default() -> Self {
-        Repeater {
+        Self {
             inner: Default::default(),
             model: Property::new_named(ModelRc::default(), "i_slint_core::Repeater::model"),
             is_dirty: Property::new_named(false, "i_slint_core::Repeater::is_dirty"),
             listview_geometry_tracker: Default::default(),
-            peer: Default::default(),
         }
     }
 }
 
-#[pin_project::pinned_drop]
-impl<C: RepeatedComponent> PinnedDrop for Repeater<C> {
-    fn drop(self: Pin<&mut Self>) {
-        if let Some(peer) = self.peer.get() {
-            peer.remove();
-            // We should be the only one still holding a ref count to it, so that
-            // it cannot be re-added in any list, and the pointer to self will not
-            // be accessed anymore
-            debug_assert_eq!(PinWeak::downgrade(peer.clone()).strong_count(), 1);
-        }
+#[pin_project]
+pub struct Repeater<C: RepeatedComponent>(#[pin] ModelChangeListenerContainer<RepeaterTracker<C>>);
+
+impl<C: RepeatedComponent> Default for Repeater<C> {
+    fn default() -> Self {
+        Self(Default::default())
     }
 }
 
 impl<C: RepeatedComponent + 'static> Repeater<C> {
+    fn data(self: Pin<&Self>) -> Pin<&RepeaterTracker<C>> {
+        self.project_ref().0.get()
+    }
+
     fn model(self: Pin<&Self>) -> ModelRc<C::Data> {
         // Safety: Repeater does not implement drop and never allows access to model as mutable
-        let model = self.project_ref().model;
+        let model = self.data().project_ref().model;
 
         if model.is_dirty() {
-            *self.inner.borrow_mut() = RepeaterInner::default();
-            self.is_dirty.set(true);
+            *self.data().inner.borrow_mut() = RepeaterInner::default();
+            self.data().is_dirty.set(true);
             let m = model.get();
-            let peer = self.peer.get_or_init(|| {
-                //Safety: we will reset it when we Drop the Repeater
-                Rc::pin(DependencyNode::new(
-                    self.get_ref() as &dyn ErasedRepeater as *const dyn ErasedRepeater
-                ))
-            });
-
-            m.model_tracker().attach_peer(ModelPeer { inner: PinWeak::downgrade(peer.clone()) });
+            let peer = self.project_ref().0.model_peer();
+            m.model_tracker().attach_peer(peer);
             m
         } else {
             model.get()
@@ -742,7 +784,7 @@ impl<C: RepeatedComponent + 'static> Repeater<C> {
     /// The init function is the function to create a component
     pub fn ensure_updated(self: Pin<&Self>, init: impl Fn() -> ComponentRc<C>) {
         let model = self.model();
-        if self.project_ref().is_dirty.get() {
+        if self.data().project_ref().is_dirty.get() {
             self.ensure_updated_impl(init, &model, model.row_count());
         }
     }
@@ -754,7 +796,7 @@ impl<C: RepeatedComponent + 'static> Repeater<C> {
         model: &ModelRc<C::Data>,
         count: usize,
     ) -> bool {
-        let mut inner = self.inner.borrow_mut();
+        let mut inner = self.0.inner.borrow_mut();
         inner.components.resize_with(count, || (RepeatedComponentState::Dirty, None));
         let offset = inner.offset;
         let mut created = false;
@@ -768,7 +810,7 @@ impl<C: RepeatedComponent + 'static> Repeater<C> {
                 c.0 = RepeatedComponentState::Clean;
             }
         }
-        self.is_dirty.set(false);
+        self.data().is_dirty.set(false);
         created
     }
 
@@ -776,149 +818,213 @@ impl<C: RepeatedComponent + 'static> Repeater<C> {
     pub fn ensure_updated_listview(
         self: Pin<&Self>,
         init: impl Fn() -> ComponentRc<C>,
-        viewport_width: Pin<&Property<f32>>,
-        viewport_height: Pin<&Property<f32>>,
-        viewport_y: Pin<&Property<f32>>,
-        listview_width: f32,
-        listview_height: Pin<&Property<f32>>,
+        viewport_width: Pin<&Property<LogicalLength>>,
+        viewport_height: Pin<&Property<LogicalLength>>,
+        viewport_y: Pin<&Property<LogicalLength>>,
+        listview_width: LogicalLength,
+        listview_height: Pin<&Property<LogicalLength>>,
     ) {
+        viewport_width.set(listview_width);
         let model = self.model();
         let row_count = model.row_count();
         if row_count == 0 {
-            self.inner.borrow_mut().components.clear();
-            viewport_height.set(0.);
-            viewport_y.set(0.);
+            self.0.inner.borrow_mut().components.clear();
+            viewport_height.set(LogicalLength::zero());
+            viewport_y.set(LogicalLength::zero());
 
             return;
         }
 
-        let init = &init;
+        let listview_height = listview_height.get();
+        let mut vp_y = viewport_y.get().min(LogicalLength::zero());
 
-        let listview_geometry_tracker = self.project_ref().listview_geometry_tracker;
-        let geometry_updated = listview_geometry_tracker
-            .evaluate_if_dirty(|| {
-                // Fetch the model again to make sure that it is a dependency of this geometry tracker.
-                let model = self.model();
-                // Also register a dependency to "is_dirty"
-                let _ = self.project_ref().is_dirty.get();
+        // We need some sort of estimation of the element height
+        let cached_item_height = self.data().inner.borrow_mut().cached_item_height;
+        let element_height = if cached_item_height > LogicalLength::zero() {
+            cached_item_height
+        } else {
+            let total_height = Cell::new(LogicalLength::zero());
+            let count = Cell::new(0);
+            let get_height_visitor = |item: Pin<ItemRef>| {
+                count.set(count.get() + 1);
+                let height = item.as_ref().geometry().height_length();
+                total_height.set(total_height.get() + height);
+            };
+            for c in self.data().inner.borrow().components.iter() {
+                if let Some(x) = c.1.as_ref() {
+                    get_height_visitor(x.as_pin_ref().get_item_ref(0));
+                }
+            }
 
-                let listview_height = listview_height.get();
-                // Compute the element height
-                let total_height = Cell::new(0.);
-                let min_height = Cell::new(listview_height);
-                let count = Cell::new(0);
+            if count.get() > 0 {
+                total_height.get() / (count.get() as Coord)
+            } else {
+                // There seems to be currently no items. Just instantiate one item.
+                {
+                    let mut inner = self.0.inner.borrow_mut();
+                    inner.offset = inner.offset.min(row_count - 1);
+                }
 
-                let get_height_visitor = |item: Pin<ItemRef>| {
-                    count.set(count.get() + 1);
-                    let height = item.as_ref().geometry().height();
-                    total_height.set(total_height.get() + height);
-                    min_height.set(min_height.get().min(height))
-                };
-                for c in self.inner.borrow().components.iter() {
+                self.ensure_updated_impl(&init, &model, 1);
+                if let Some(c) = self.data().inner.borrow().components.get(0) {
                     if let Some(x) = c.1.as_ref() {
                         get_height_visitor(x.as_pin_ref().get_item_ref(0));
                     }
-                }
-
-                let mut element_height = if count.get() > 0 {
-                    total_height.get() / (count.get() as f32)
                 } else {
-                    // There seems to be currently no items. Just instantiate one item.
-
-                    {
-                        let mut inner = self.inner.borrow_mut();
-                        inner.offset = inner.offset.min(row_count - 1);
-                    }
-
-                    self.ensure_updated_impl(&init, &model, 1);
-                    if let Some(c) = self.inner.borrow().components.get(0) {
-                        if let Some(x) = c.1.as_ref() {
-                            get_height_visitor(x.as_pin_ref().get_item_ref(0));
-                        }
-                    } else {
-                        panic!("Could not determine size of items");
-                    }
-                    total_height.get()
-                };
-
-                let min_height = min_height.get().min(element_height).max(1.);
-
-                let mut offset_y = -viewport_y.get().min(0.);
-                if offset_y > element_height * row_count as f32 - listview_height
-                    && offset_y > viewport_height.get() - listview_height
-                {
-                    offset_y = (element_height * row_count as f32 - listview_height).max(0.);
+                    panic!("Could not determine size of items");
                 }
-                let mut count = ((listview_height / min_height).ceil() as usize)
-                    // count never decreases to avoid too much flickering if items have different size
-                    .max(self.inner.borrow().components.len())
-                    .min(row_count);
-                let mut offset =
-                    ((offset_y / element_height).floor() as usize).min(row_count - count);
-                self.inner.borrow_mut().cached_item_height = element_height;
-                loop {
-                    self.inner.borrow_mut().cached_item_height = element_height;
-                    self.set_offset(offset, count);
-                    self.ensure_updated_impl(init, &model, count);
-                    let end = self.compute_layout_listview(viewport_width, listview_width);
-                    let adjusted_element_height =
-                        (end - element_height * offset as f32) / count as f32;
-                    element_height = adjusted_element_height;
-                    let diff = listview_height + offset_y - end;
-                    if diff > 0.5 && count < row_count {
-                        // we did not create enough item, try increasing count until it matches
-                        count = (count + (diff / element_height).ceil() as usize).min(row_count);
-                        if offset + count > row_count {
-                            // apparently, we scrolled past the end, so decrease the offset and make offset_y
-                            // so we just are at the end
-                            offset = row_count - count;
-                            offset_y = (offset_y - diff).max(0.);
-                        }
-                        continue;
+                total_height.get()
+            }
+        };
+
+        let data = self.data();
+        let mut inner = data.inner.borrow_mut();
+        let one_and_a_half_screen = listview_height * 3 as Coord / 2 as Coord;
+        let first_item_y = inner.anchor_y;
+        let last_item_bottom = first_item_y + element_height * inner.components.len() as Coord;
+
+        let (mut new_offset, mut new_offset_y) = if first_item_y > -vp_y + one_and_a_half_screen
+            || last_item_bottom + element_height < -vp_y
+        {
+            // We are jumping more than 1.5 screens, consider this as a random seek.
+            inner.components.clear();
+            inner.offset = ((-vp_y / element_height).get().floor() as usize).min(row_count - 1);
+            (inner.offset, -vp_y)
+        } else if vp_y < inner.previous_viewport_y {
+            // we scrolled down, try to find out the new offset.
+            let mut it_y = first_item_y;
+            let mut new_offset = inner.offset;
+            debug_assert!(it_y <= -vp_y); // we scrolled down, the anchor should be hidden
+            for c in inner.components.iter_mut() {
+                if c.0 == RepeatedComponentState::Dirty {
+                    if c.1.is_none() {
+                        c.1 = Some(init());
                     }
-                    viewport_height.set((element_height * row_count as f32).max(end));
-                    viewport_y.set(-offset_y);
+                    c.1.as_ref().unwrap().update(new_offset, model.row_data(new_offset).unwrap());
+                    c.0 = RepeatedComponentState::Clean;
+                }
+                let h =
+                    c.1.as_ref()
+                        .unwrap()
+                        .as_pin_ref()
+                        .get_item_ref(0)
+                        .as_ref()
+                        .geometry()
+                        .height_length();
+                if it_y + h >= -vp_y || new_offset + 1 >= row_count {
                     break;
                 }
-            })
-            .is_some();
-
-        if !geometry_updated && self.project_ref().is_dirty.get() {
-            let count = self
-                .inner
-                .borrow()
-                .components
-                .len()
-                .min(row_count.saturating_sub(self.inner.borrow().offset));
-            self.ensure_updated_impl(init, &model, count);
-            self.compute_layout_listview(viewport_width, listview_width);
-        }
-    }
-
-    fn set_offset(&self, offset: usize, count: usize) {
-        let mut inner = self.inner.borrow_mut();
-        let old_offset = inner.offset;
-        // Remove the items before the offset, or add items until the old offset
-        let to_remove = offset.saturating_sub(old_offset);
-        if to_remove < inner.components.len() {
-            inner.components.splice(
-                0..to_remove,
-                core::iter::repeat((RepeatedComponentState::Dirty, None))
-                    .take(old_offset.saturating_sub(offset)),
-            );
+                it_y += h;
+                new_offset += 1;
+            }
+            (new_offset, it_y)
         } else {
-            inner.components.truncate(0);
+            // We scrolled up, we'll instantiate items before offset in the loop
+            (inner.offset, first_item_y)
+        };
+
+        loop {
+            // If there is a gap before the new_offset and the beginning of the visible viewport,
+            // try to fill it with items. First look at items that are before new_offset in the
+            // inner.components, if any.
+            while new_offset > inner.offset && new_offset_y > -vp_y {
+                new_offset -= 1;
+                new_offset_y -= inner.components[new_offset - inner.offset]
+                    .1
+                    .as_ref()
+                    .unwrap()
+                    .as_pin_ref()
+                    .get_item_ref(0)
+                    .as_ref()
+                    .geometry()
+                    .height_length();
+            }
+            // If there is still a gap, fill it with new component before
+            let mut new_components = Vec::new();
+            while new_offset > 0 && new_offset_y > -vp_y {
+                new_offset -= 1;
+                let new_component = init();
+                new_component.update(new_offset, model.row_data(new_offset).unwrap());
+                new_offset_y -=
+                    new_component.as_pin_ref().get_item_ref(0).as_ref().geometry().height_length();
+                new_components.push(new_component);
+            }
+            if !new_components.is_empty() {
+                inner.components.splice(
+                    0..0,
+                    new_components
+                        .into_iter()
+                        .rev()
+                        .map(|c| (RepeatedComponentState::Clean, Some(c))),
+                );
+                inner.offset = new_offset;
+            }
+            assert!(
+                new_offset >= inner.offset && new_offset <= inner.offset + inner.components.len()
+            );
+
+            // Now we will layout items until we fit the view, starting with the ones that are already instantiated
+            let mut y = new_offset_y;
+            let mut idx = new_offset;
+            let components_begin = new_offset - inner.offset;
+            for c in &mut inner.components[components_begin..] {
+                if c.0 == RepeatedComponentState::Dirty {
+                    if c.1.is_none() {
+                        c.1 = Some(init());
+                    }
+                    c.1.as_ref().unwrap().update(idx, model.row_data(idx).unwrap());
+                    c.0 = RepeatedComponentState::Clean;
+                }
+                if let Some(x) = c.1.as_ref() {
+                    x.as_pin_ref().listview_layout(&mut y, viewport_width);
+                }
+                idx += 1;
+                if y >= -vp_y + listview_height {
+                    break;
+                }
+            }
+
+            // create more items until there is no more room.
+            while y < -vp_y + listview_height && idx < row_count {
+                let new_component = init();
+                new_component.update(idx, model.row_data(idx).unwrap());
+                new_component.as_pin_ref().listview_layout(&mut y, viewport_width);
+                inner.components.push((RepeatedComponentState::Clean, Some(new_component)));
+                idx += 1;
+            }
+            if y < -vp_y + listview_height && vp_y < LogicalLength::zero() {
+                assert!(idx >= row_count);
+                // we reached the end of the model, and we still have room. scroll a bit up.
+                vp_y = listview_height - y;
+                continue;
+            }
+
+            // Let's cleanup the components that are not shown.
+            if new_offset != inner.offset {
+                let components_begin = new_offset - inner.offset;
+                inner.components.splice(0..components_begin, core::iter::empty());
+                inner.offset = new_offset;
+            }
+            if inner.components.len() != idx - new_offset {
+                inner.components.splice(idx - new_offset.., core::iter::empty());
+            }
+
+            // Now re-compute some coordinate such a way that the scrollbar are adjusted.
+            inner.cached_item_height = (y - new_offset_y) / inner.components.len() as Coord;
+            inner.anchor_y = inner.cached_item_height * inner.offset as Coord;
+            viewport_height.set(inner.cached_item_height * row_count as Coord);
+            let new_viewport_y = -inner.anchor_y + vp_y + new_offset_y;
+            viewport_y.set(new_viewport_y);
+            inner.previous_viewport_y = new_viewport_y;
+            break;
         }
-        inner.components.resize_with(count, || (RepeatedComponentState::Dirty, None));
-        inner.offset = offset;
-        self.is_dirty.set(true);
     }
 
     /// Sets the data directly in the model
     pub fn model_set_row_data(self: Pin<&Self>, row: usize, data: C::Data) {
         let model = self.model();
         model.set_row_data(row, data);
-        if let Some(c) = self.inner.borrow_mut().components.get_mut(row) {
+        if let Some(c) = self.data().inner.borrow_mut().components.get_mut(row) {
             if c.0 == RepeatedComponentState::Dirty {
                 if let Some(comp) = c.1.as_ref() {
                     comp.update(row, model.row_data(row).unwrap());
@@ -927,12 +1033,10 @@ impl<C: RepeatedComponent + 'static> Repeater<C> {
             }
         }
     }
-}
 
-impl<C: RepeatedComponent> Repeater<C> {
     /// Set the model binding
     pub fn set_model_binding(&self, binding: impl Fn() -> ModelRc<C::Data> + 'static) {
-        self.model.set_binding(binding);
+        self.0.model.set_binding(binding);
     }
 
     /// Call the visitor for each component
@@ -942,10 +1046,10 @@ impl<C: RepeatedComponent> Repeater<C> {
         mut visitor: crate::item_tree::ItemVisitorRefMut,
     ) -> crate::item_tree::VisitChildrenResult {
         // We can't keep self.inner borrowed because the event might modify the model
-        let count = self.inner.borrow().components.len();
+        let count = self.0.inner.borrow().components.len();
         for i in 0..count {
             let i = if order == TraversalOrder::BackToFront { i } else { count - i - 1 };
-            let c = self.inner.borrow().components.get(i).and_then(|c| c.1.clone());
+            let c = self.0.inner.borrow().components.get(i).and_then(|c| c.1.clone());
             if let Some(c) = c {
                 if c.as_pin_ref().visit_children_item(-1, order, visitor.borrow_mut()).has_aborted()
                 {
@@ -958,36 +1062,34 @@ impl<C: RepeatedComponent> Repeater<C> {
 
     /// Return the amount of item currently in the component
     pub fn len(&self) -> usize {
-        self.inner.borrow().components.len()
+        self.0.inner.borrow().components.len()
     }
 
-    /// Return true if the Repeater is empty
+    /// Return the range of indices used by this Repeater.
+    ///
+    /// Two values are necessary here since the Repeater can start to insert the data from its
+    /// model at an offset.
+    pub fn range(&self) -> (usize, usize) {
+        let inner = self.0.inner.borrow();
+        (inner.offset, inner.offset + inner.components.len())
+    }
+
+    pub fn component_at(&self, index: usize) -> Option<ComponentRc<C>> {
+        let inner = self.0.inner.borrow();
+        inner
+            .components
+            .get(index - inner.offset)
+            .map(|c| c.1.clone().expect("That was updated before!"))
+    }
+
+    /// Return true if the Repeater as empty
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     /// Returns a vector containing all components
     pub fn components_vec(&self) -> Vec<ComponentRc<C>> {
-        self.inner.borrow().components.iter().flat_map(|x| x.1.clone()).collect()
-    }
-
-    /// Set the position of all the element in the listview
-    ///
-    /// Returns the offset of the end of the last element
-    pub fn compute_layout_listview(
-        &self,
-        viewport_width: Pin<&Property<f32>>,
-        listview_width: f32,
-    ) -> f32 {
-        let inner = self.inner.borrow();
-        let mut y_offset = inner.offset as f32 * inner.cached_item_height;
-        viewport_width.set(listview_width);
-        for c in self.inner.borrow().components.iter() {
-            if let Some(x) = c.1.as_ref() {
-                x.as_pin_ref().listview_layout(&mut y_offset, viewport_width);
-            }
-        }
-        y_offset
+        self.0.inner.borrow().components.iter().flat_map(|x| x.1.clone()).collect()
     }
 }
 
@@ -1046,6 +1148,9 @@ fn test_tracking_model_handle() {
         }),
         1
     );
+    assert!(!tracker.is_dirty());
+    model.set_vec(vec![1, 2, 3]);
+    assert!(tracker.is_dirty());
 }
 
 #[test]
@@ -1081,15 +1186,95 @@ fn test_data_tracking() {
     model.push(200);
     assert!(tracker.is_dirty());
 
-    assert_eq!(
-        tracker.as_ref().evaluate(|| {
-            handle.model_tracker().track_row_data_changes(1);
-            handle.row_data(1).unwrap()
-        }),
-        100
-    );
+    assert_eq!(tracker.as_ref().evaluate(|| { handle.row_data_tracked(1).unwrap() }), 100);
     assert!(!tracker.is_dirty());
 
     model.insert(0, 255);
     assert!(tracker.is_dirty());
+
+    model.set_vec(vec![]);
+    assert!(tracker.is_dirty());
+}
+
+#[test]
+fn test_vecmodel_set_vec() {
+    #[derive(Default)]
+    struct TestView {
+        // Track the parameters reported by the model (row counts, indices, etc.).
+        // The last field in the tuple is the row size the model reports at the time
+        // of callback
+        changed_rows: RefCell<Vec<(usize, usize)>>,
+        added_rows: RefCell<Vec<(usize, usize, usize)>>,
+        removed_rows: RefCell<Vec<(usize, usize, usize)>>,
+        reset: RefCell<usize>,
+        model: RefCell<Option<std::rc::Weak<dyn Model<Data = i32>>>>,
+    }
+    impl TestView {
+        fn clear(&self) {
+            self.changed_rows.borrow_mut().clear();
+            self.added_rows.borrow_mut().clear();
+            self.removed_rows.borrow_mut().clear();
+            *self.reset.borrow_mut() = 0;
+        }
+        fn row_count(&self) -> usize {
+            self.model
+                .borrow()
+                .as_ref()
+                .and_then(|model| model.upgrade())
+                .map_or(0, |model| model.row_count())
+        }
+    }
+    impl ModelChangeListener for TestView {
+        fn row_changed(&self, row: usize) {
+            self.changed_rows.borrow_mut().push((row, self.row_count()));
+        }
+
+        fn row_added(&self, index: usize, count: usize) {
+            self.added_rows.borrow_mut().push((index, count, self.row_count()));
+        }
+
+        fn row_removed(&self, index: usize, count: usize) {
+            self.removed_rows.borrow_mut().push((index, count, self.row_count()));
+        }
+        fn reset(&self) {
+            *self.reset.borrow_mut() += 1;
+        }
+    }
+
+    let view = Box::pin(ModelChangeListenerContainer::<TestView>::default());
+
+    let model = Rc::new(VecModel::from(vec![1i32, 2, 3, 4]));
+    model.model_tracker().attach_peer(Pin::as_ref(&view).model_peer());
+    *view.model.borrow_mut() =
+        Some(std::rc::Rc::downgrade(&(model.clone() as Rc<dyn Model<Data = i32>>)));
+
+    model.push(5);
+    assert!(view.changed_rows.borrow().is_empty());
+    assert_eq!(&*view.added_rows.borrow(), &[(4, 1, 5)]);
+    assert!(view.removed_rows.borrow().is_empty());
+    assert_eq!(*view.reset.borrow(), 0);
+    view.clear();
+
+    model.set_vec(vec![6, 7, 8]);
+    assert!(view.changed_rows.borrow().is_empty());
+    assert!(view.added_rows.borrow().is_empty());
+    assert!(view.removed_rows.borrow().is_empty());
+    assert_eq!(*view.reset.borrow(), 1);
+    view.clear();
+
+    model.extend_from_slice(&[9, 10, 11]);
+    assert!(view.changed_rows.borrow().is_empty());
+    assert_eq!(&*view.added_rows.borrow(), &[(3, 3, 6)]);
+    assert!(view.removed_rows.borrow().is_empty());
+    assert_eq!(*view.reset.borrow(), 0);
+    view.clear();
+
+    model.extend([12, 13]);
+    assert!(view.changed_rows.borrow().is_empty());
+    assert_eq!(&*view.added_rows.borrow(), &[(6, 2, 8)]);
+    assert!(view.removed_rows.borrow().is_empty());
+    assert_eq!(*view.reset.borrow(), 0);
+    view.clear();
+
+    assert_eq!(model.iter().collect::<Vec<_>>(), vec![6, 7, 8, 9, 10, 11, 12, 13]);
 }

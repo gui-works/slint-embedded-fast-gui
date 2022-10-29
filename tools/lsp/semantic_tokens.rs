@@ -1,6 +1,8 @@
 // Copyright © SixtyFPS GmbH <info@slint-ui.com>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
+#[cfg(target_arch = "wasm32")]
+use crate::wasm_prelude::*;
 use i_slint_compiler::parser::SyntaxKind;
 use lsp_types::{
     SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensResult,
@@ -92,7 +94,7 @@ pub fn get_semantic_tokens(
                 SyntaxKind::Binding | SyntaxKind::TwoWayBinding => Some((self::PROPERTY, 0)),
                 SyntaxKind::ReturnStatement => Some((self::KEYWORD, 0)),
                 SyntaxKind::AtImageUrl => Some((self::MACRO, 0)),
-                SyntaxKind::AtLinearGradient => Some((self::MACRO, 0)),
+                SyntaxKind::AtGradient => Some((self::MACRO, 0)),
                 SyntaxKind::ConditionalExpression => Some((self::KEYWORD, 0)),
                 SyntaxKind::ObjectMember => Some((self::PROPERTY, 1 << self::DECLARATION)),
                 SyntaxKind::States => Some((self::KEYWORD, 0)),

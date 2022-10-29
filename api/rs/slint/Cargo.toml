@@ -3,7 +3,7 @@
 
 [package]
 name = "slint"
-version = "0.2.2"
+version = "0.3.2"
 authors = ["Slint Developers <info@slint-ui.com>"]
 edition = "2021"
 license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
@@ -12,48 +12,110 @@ repository = "https://github.com/slint-ui/slint"
 homepage = "https://slint-ui.com"
 categories = ["gui", "rendering::engine"]
 keywords = ["gui", "toolkit", "graphics", "design", "ui"]
+rust-version = "1.60"
 
 [lib]
 path = "lib.rs"
 
 [features]
 
-default = ["std", "backend-gl-all", "backend-qt", "compat-0-2-0"]
+default = [
+  "std",
+  "backend-winit",
+  "renderer-winit-femtovg",
+  "backend-qt",
+  "compat-0-3-0",
+]
 
 ## Mandatory feature:
-## This feature is required to keep the compatibility with Slint 0.2.0
+## This feature is required to keep the compatibility with Slint 0.3.0
 ## Newer patch version may put current functionality behind a new feature
-## that would be enabled by default only if this feature was added
-compat-0-2-0 = []
+## that would be enabled by default only if this feature was added.
+## [More info in this blog post](https://slint-ui.com/blog/rust-adding-default-cargo-feature.html)
+"compat-0-3-0" = []
+# For compatibility with 0.2
+compat-0-2-0 = ["compat-0-3-0"]
 
 ## Enable use of the Rust standard library.
 std = ["i-slint-core/std"]
 
+## This feature enables floating point arithmetic emulation using the [libm](https://crates.io/crates/libm) crate. Use this
+## in MCU environments where the processor does not support floating point arithmetic.
+libm = ["i-slint-core/libm"]
+
+## If enabled, calls of `debug()` in `.slint` files use to the [`log::debug!()`] macro
+## of the [log](https://crates.io/crates/log) crate instead of just `println!()`.
+log = ["dep:log"]
+
+## Slint uses internally some `thread_local` state.
+##
+## When the `std` feature is enabled, Slint can use [`std::thread_local!`], but when in a `#![no_std]`
+## environment, we need a replacement. Using this feature, Slint will just use static variable
+## disregarding Rust's Send and Sync safety
+##
+## **Safety** : You must ensure that there is only one single thread that call into the Slint API
+unsafe-single-threaded = ["i-slint-core/unsafe-single-threaded"]
+
 #! ### Backends
 
+#! Slint needs a backend that will act as liaison between Slint and the OS.
+#! By default, Slint will use the Qt backend, if Qt is installed, otherwise, it
+#! will use [Winit](https://crates.io/crates/winit) with [Femtovg](https://crates.io/crates/femtovg).
+#! Both backends are compiled in. If you want to not compile one of these you need
+#! to disable the default feature and re-enable one backend. It is also possible
+#! to use Slint without backend if you provide the platform abstraction yourself
+#! with [`platform::set_platform()`].
+#!
+#! If you enable the Winit backend, you need to also include a renderer.
+#! `renderer-winit-femtovg` is the only stable renderer, the other ones are experimental
+#!
+#! It is also possible to select the backend and renderer at runtime when several
+#! are enabled, using the `SLINT_BACKEND`  environment variable.
+#!  * `SLINT_BACKEND=Qt` selects the Qt backend
+#!  * `SLINT_BACKEND=winit` selects the winit backend
+#!  * `SLINT_BACKEND=winit-femtovg` selects the winit backend with the femtovg renderer
+#!  * `SLINT_BACKEND=winit-skia` selects the winit backend with the skia renderer
+#!  * `SLINT_BACKEND=winit-software` selects the winit backend with the software renderer
+#! If the selected backend is not available, the default will be used.
+
+
 ## The Qt backend feature uses Qt for the windowing system integration and rendering.
-## This backend is required to use the `native` style.
+## This backend also provides the `native` style.
 ## It requires Qt 5.15 or later to be installed. If Qt is not installed, the
 ## backend will not be operational
 backend-qt = ["i-slint-backend-selector/i-slint-backend-qt", "std"]
 
-## The GL backend uses the `winit` crate for the windowing system integration,
-## and the `femtovg` crate for the rendering. With this feature, all windowing
-## systems are supported. For a smaller build, omit this feature and select
-## one of the other specific `backend-gl-XX` features.
-backend-gl-all = ["i-slint-backend-selector/backend-gl-all", "std"]
-## Simliar to `backend-gl-all` this enables the GL backend but only with support for the
-## X Window System on Unix.
-backend-gl-x11 = ["i-slint-backend-selector/backend-gl-x11", "std"]
-## Simliar to `backend-gl-all` this enables the GL backend but only with support for the
-## Wayland window system on Unix.
-backend-gl-wayland = ["i-slint-backend-selector/backend-gl-wayland", "std"]
+## The [winit](https://crates.io/crates/log) crate is used for the event loop and windowing system integration.
+## It supports Windows, macOS, web browsers, X11 and Wayland. X11 and wayland are only available when
+## compiling for Linux or other Unix-like operating systems. With this feature, both X11 and Wayland are supported.
+## For a smaller build, omit this feature and select one of the other specific `backend-winit-XX` features.
+backend-winit = ["i-slint-backend-selector/backend-winit", "std"]
 
+## Simliar to `backend-winit` this enables the winit based event loop but only
+## with support for the X Window System on Unix.
+backend-winit-x11 = ["i-slint-backend-selector/backend-winit-x11", "std"]
+
+## Simliar to `backend-winit` this enables the winit based event loop but only
+## with support for the Wayland window system on Unix.
+backend-winit-wayland = ["i-slint-backend-selector/backend-winit-wayland", "std"]
+
+## Enable the `winit` backend and make it capable of renderer using the
+## [femtovg](https://crates.io/crates/femtovg) crate.
+renderer-winit-femtovg = ["i-slint-backend-selector/renderer-winit-femtovg", "std"]
+
+## (Experimental) Enable the `winit` backend and make it capable of renderer using [Skia](https://skia.org/)
+renderer-winit-skia = ["i-slint-backend-selector/renderer-winit-skia", "std"]
+
+## (Experimental) Same as `renderer-winit-skia`, but Skia will always use OpenGL.
+renderer-winit-skia-opengl = ["i-slint-backend-selector/renderer-winit-skia-opengl", "std"]
+
+## (Experimental) Enable the `winit` backend and make it capable of renderer using the software renderer
+renderer-winit-software = ["i-slint-backend-selector/renderer-winit-software"]
 
 [dependencies]
-i-slint-core = { version = "=0.2.2", path="../../../internal/core", default-features = false }
-slint-macros = { version = "=0.2.2", path = "../macros" }
-i-slint-backend-selector = { version = "=0.2.2", path="../../../internal/backends/selector" }
+i-slint-core = { version = "=0.3.2", path = "../../../internal/core", default-features = false }
+slint-macros = { version = "=0.3.2", path = "../macros" }
+i-slint-backend-selector = { version = "=0.3.2", path = "../../../internal/backends/selector" }
 
 const-field-offset = { version = "0.1.2", path = "../../../helper_crates/const-field-offset" }
 document-features = { version = "0.2.0", optional = true }
@@ -63,9 +125,16 @@ once_cell = { version = "1.5", default-features = false, features = ["alloc"] }
 pin-weak = { version = "1.1", default-features = false }
 num-traits = { version = "0.2", default-features = false }
 
+log = { version = "0.4.17", optional = true }
+
 [dev-dependencies]
 slint-build = { path = "../build" }
 
 [package.metadata.docs.rs]
-rustdoc-args = [ "--html-in-header", "docs/resources/slint-docs-preview.html", "--html-in-header", "docs/resources/slint-docs-highlight.html" ]
-features = ["document-features"]
+rustdoc-args = [
+  "--html-in-header",
+  "docs/resources/slint-docs-preview.html",
+  "--html-in-header",
+  "docs/resources/slint-docs-highlight.html",
+]
+features = ["document-features", "log"]

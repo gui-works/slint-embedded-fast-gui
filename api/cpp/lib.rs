@@ -4,9 +4,8 @@
 /*! This crate just expose the function used by the C++ integration */
 
 use core::ffi::c_void;
-use i_slint_backend_selector::backend;
-use i_slint_core::window::ffi::WindowRcOpaque;
-use i_slint_core::window::WindowRc;
+use i_slint_core::window::{ffi::WindowAdapterRcOpaque, WindowAdapter};
+use std::rc::Rc;
 
 #[doc(hidden)]
 #[cold]
@@ -18,15 +17,18 @@ pub fn use_modules() -> usize {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn slint_windowrc_init(out: *mut WindowRcOpaque) {
-    assert_eq!(core::mem::size_of::<WindowRc>(), core::mem::size_of::<WindowRcOpaque>());
-    core::ptr::write(out as *mut WindowRc, crate::backend().create_window());
+pub unsafe extern "C" fn slint_windowrc_init(out: *mut WindowAdapterRcOpaque) {
+    assert_eq!(
+        core::mem::size_of::<Rc<dyn WindowAdapter>>(),
+        core::mem::size_of::<WindowAdapterRcOpaque>()
+    );
+    let win = i_slint_backend_selector::with_platform(|b| b.create_window_adapter());
+    core::ptr::write(out as *mut Rc<dyn WindowAdapter>, win);
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn slint_run_event_loop() {
-    crate::backend()
-        .run_event_loop(i_slint_core::backend::EventLoopQuitBehavior::QuitOnLastWindowClosed);
+    i_slint_backend_selector::with_platform(|b| b.run_event_loop());
 }
 
 /// Will execute the given functor in the main thread
@@ -50,25 +52,29 @@ pub unsafe extern "C" fn slint_post_event(
     unsafe impl Send for UserData {}
     let ud = UserData { user_data, drop_user_data };
 
-    crate::backend().post_event(Box::new(move || {
+    i_slint_core::api::invoke_from_event_loop(move || {
         let ud = &ud;
         event(ud.user_data);
-    }));
+    })
+    .unwrap();
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn slint_quit_event_loop() {
-    crate::backend().quit_event_loop();
+    i_slint_core::api::quit_event_loop().unwrap();
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn slint_register_font_from_path(
+    win: *const WindowAdapterRcOpaque,
     path: &i_slint_core::SharedString,
     error_str: *mut i_slint_core::SharedString,
 ) {
+    let window_adapter = &*(win as *const Rc<dyn WindowAdapter>);
     core::ptr::write(
         error_str,
-        match crate::backend().register_font_from_path(std::path::Path::new(path.as_str())) {
+        match window_adapter.renderer().register_font_from_path(std::path::Path::new(path.as_str()))
+        {
             Ok(()) => Default::default(),
             Err(err) => err.to_string().into(),
         },
@@ -77,12 +83,14 @@ pub unsafe extern "C" fn slint_register_font_from_path(
 
 #[no_mangle]
 pub unsafe extern "C" fn slint_register_font_from_data(
+    win: *const WindowAdapterRcOpaque,
     data: i_slint_core::slice::Slice<'static, u8>,
     error_str: *mut i_slint_core::SharedString,
 ) {
+    let window_adapter = &*(win as *const Rc<dyn WindowAdapter>);
     core::ptr::write(
         error_str,
-        match crate::backend().register_font_from_memory(data.as_slice()) {
+        match window_adapter.renderer().register_font_from_memory(data.as_slice()) {
             Ok(()) => Default::default(),
             Err(err) => err.to_string().into(),
         },

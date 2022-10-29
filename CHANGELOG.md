@@ -3,11 +3,146 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Changed
+
 ### Added
 
- - Added `From<&str>` and `From<SharedString>` to `StandardListViewItem` to make creation and modification of `StandardListView`'s models easier.
+ - Added `Window::is_visible` 
 
 ### Fixed
+
+## [0.3.1] - 2022-10-28
+
+### Changed
+
+ - The property `Window::background` is now a brush instead of a color (allowing gradients).
+ - Switch to yeslogic-fontconfig-sys from servo-fontconfig dependency. This allows for fontconfig
+   to be a run-time dependency via dlopen.
+ - Skia renderer: Improvements to text input.
+
+### Added
+
+ - Added `slint::FilterModel`, `slint::MapModel` to the C++ API.
+ - Added `slint::SortModel` to Rust and C++ API.
+ - Added `VecModel::extend` and `VecModel::extend_from_slice`.
+ - Online editor: Added "Properties" and "Outline" tabs.
+ - Added initial support for input methods with pre-edit text.
+ - Added a dark theme for the Fluent style, which is automatically selected if the system
+   color scheme is dark.
+ - Added `fluent-light` and `fluent-dark` as explicit styles to select a light/dark variant,
+   regardless of the system color scheme setting.
+
+### Fixed
+
+ - TextInput now shows the text mouse cursor.
+ - In Flickable, added a small delay before passing the Press pointer event to the children.
+ - Online editor: Fixed "go to definition" across files.
+ - Fixed a panic in the slint compiler when visiting layout properties for loop analysis (#1659).
+ - Fixed compilation error in the generated code (#1733, #1735).
+
+## [0.3.0] - 2022-09-14
+
+### Breaking Changes
+
+ - `mod` now works on any numeric type, not only integers.
+ - Minimum rust version is now 1.60.
+ - The "backend-gl-*" Rust crate features for configuring the GL renderer have been
+   changed and split by renderer.
+ - `VecModel::remove` now returns the removed element.
+ - `slint::invoke_from_event_loop` and `slint::quit_event_loop` now return a Result.
+
+### Added
+
+ - Added the `platform` module providing API to use slint on bare metal with a software renderer.
+ - Added an experimental Skia renderer.
+ - `Button`: Add a `checkable` property that turns the button into a toggle
+   button. Use the new `checked` property to query whether the toggle button
+   is pressed down or not.
+ - Added support for `slint::Window::set_position` and `slint::Window::position` to set and get the
+   placement of the window on the screen.
+ - Added `slint::Window::scale_factor()` as getter to read the system device pixel ratio.
+ - Added support for `slint::Window::set_size` and `slint::Window::size` to set and get the
+   size of the window on the screen.
+ - Added `slint::Window::dispatch_event` and `slint::WindowEvent` to be able to manually
+   send a mouse or touch event to a window.
+ - Added `animation-tick()`.
+ - `SharedString` implements `std::fmt::Write` and added `slint::format!`.
+ - `Image` can now be rotated with the `rotation-*` properties.
+ - Use docking widgets and integration of slint-lsp into the [Online Code Editor](https://slint-ui.com/editor).
+
+
+### Fixed
+ - Fixed Ctrl+Backspace/Ctrl+Del not deleting words in text input elements.
+ - Resizing of live-preview window in the IDE integrations.
+ - Preferred size of the TabWidget in the fluent style take in account the size of the tabs (#1363).
+ - Fixed cursor behavior when typing the Enter key at the end of a TextEdit (#1318).
+ - Fixed a memory leak of images when using the GL backend.
+ - Fixed starting and stopping `slint::Timer` from withing their callback (#1532).
+
+## [0.2.5] - 2022-07-06
+
+### Changed
+
+ - Interpreter: Implement `TryFrom<Value>` instead of `TryInto for Value` (#1258)
+
+### Added
+
+ - Added the Model Adapters `FilterModel` and `MapModel`.
+ - Added `@radial-gradient(circle, ...)`
+ - Added `read-only` property to `TextInput`, `TextEdit` and `LineEdit`.
+ - VSCode extension can be installed as a web extension. (eg, from https://vscode.dev)
+ - LSP: completion of `@` macros
+ - LSP: completion of element that require an import
+ - Basic accessibility support using the `accessible-` properties
+
+### Fixed
+
+ - GL backend: Fixed animation sometimes not starting from input event (#1255)
+ - C++ fix compilation when writing to the model data
+ - Fix mouse exit events not triggered by scrolling a Flickable (#1107)
+
+## [0.2.4] - 2022-05-09
+
+ - Fixed crash when opening a native (Qt) ComboBox
+
+## [0.2.3] - 2022-05-09
+
+### Fixed
+
+ - Fixed crashes with the Qt backend in release mode. (#1230)
+ - Fixed panic when drop-shadow is used in a ListView (#1233)
+ - Fixed combining a brush and a color to always convert to brush, to avoid loosing gradient information (#1235)
+ - Fixed properties not having the right default value when set by some states (#1237)
+ - Fixed properties with multiples aliases, and default values.
+ - Enable fontdb's fontconfig feature to fix finding some fonts (#1240)
+
+## [0.2.2] - 2022-05-04
+
+### Changed
+ - On wasm, the input event are handled via a hidden `<input>` element, allowing the keyboard
+   to show on mobile platform
+ - The size of the window is kept when reloading a window in the preview (instead of being reset to the preferred size)
+ - Minimum rust version is now 1.59
+
+### Added
+
+ - Support for keyboard focus with the tab key
+ - Support more keyboard shortcut in the editing element
+ - Added `From<&str>` and `From<SharedString>` to `StandardListViewItem` to make creation and modification of `StandardListView`'s models easier.
+ - Added `on_close_requested` function to `Window` to register callbacks that are emitted when the user tries to close a window.
+ - Added `VecModel::set_vec` to replace the entire contents with new data.
+ - Added a `cache-rendering-hint` boolean property that can be applied to any element, to hint to the renderer that it should cache the element and its children
+   into a cached layer. This may speed up rendering of complex sub-trees if they rarely change.
+ - The `brighter` and `lighter` functions also work on values of type brush.
+ - Added a `reset` function to C++'s `Model`, Rust's `ModelNotify` and JS's `ModelPeer`
+ - Added a `row_data_tracked` function to `ModelExt` (an extension to the Model trait)
+
+### Fixed
+
+ - Fixed application of the `opacity` property evenly to child elements (#725).
+ - Windows: Fixed font lookup of strings including several scripts (eg, containing asian characters)
+ - Fixed PopupWindow in a repeater (#1113, #1132)
+ - LSP: do not always resize the preview window to its preferred each time the code is modified
 
 ## [0.2.1] - 2022-03-10
 
@@ -161,7 +296,7 @@ as well as the [Rust migration guide for the `sixtyfps` crate](api/rs/slint/migr
 ### Fixed
 
  - Fixed panic when using `TabWidget` with `Text` elements and the native style.
- - Fixed panic when caling `hide()` on a `sixtyfps::Window` from within a callback triggered by keyboard/mouse input
+ - Fixed panic when calling `hide()` on a `sixtyfps::Window` from within a callback triggered by keyboard/mouse input
    when using the GL backend.
  - Rust: The implementation of <code>ModelModel::set_row_data</code> now forward the call to the inner model
 
@@ -413,3 +548,9 @@ as well as the [Rust migration guide for the `sixtyfps` crate](api/rs/slint/migr
 [0.1.6]: https://github.com/slint-ui/slint/releases/tag/v0.1.6
 [0.2.0]: https://github.com/slint-ui/slint/releases/tag/v0.2.0
 [0.2.1]: https://github.com/slint-ui/slint/releases/tag/v0.2.1
+[0.2.2]: https://github.com/slint-ui/slint/releases/tag/v0.2.2
+[0.2.3]: https://github.com/slint-ui/slint/releases/tag/v0.2.3
+[0.2.4]: https://github.com/slint-ui/slint/releases/tag/v0.2.4
+[0.2.5]: https://github.com/slint-ui/slint/releases/tag/v0.2.5
+[0.3.0]: https://github.com/slint-ui/slint/releases/tag/v0.3.0
+[0.3.1]: https://github.com/slint-ui/slint/releases/tag/v0.3.1

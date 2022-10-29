@@ -45,8 +45,6 @@ pub trait SyntaxNodeVerify {
 /// Check that a node has the assumed children
 #[cfg(test)]
 macro_rules! verify_node {
-    // nothing to verify
-    ($node:ident, _) => {};
     // Some combination of children
     ($node:ident, [ $($t1:tt $($t2:ident)?),* ]) => {
         // Check that every children is there
@@ -97,8 +95,6 @@ macro_rules! verify_node {
 }
 
 macro_rules! node_accessors {
-    // nothing
-    (_) => {};
     // Some combination of children
     ([ $($t1:tt $($t2:ident)?),* ]) => {
         $(node_accessors!{@ $t1 $($t2)*} )*
@@ -359,14 +355,14 @@ declare_syntax! {
         // FIXME: the test should test that as alternative rather than several of them (but it can also be a literal)
         Expression-> [ ?Expression, ?FunctionCallExpression, ?IndexExpression, ?SelfAssignment,
                        ?ConditionalExpression, ?QualifiedName, ?BinaryExpression, ?Array, ?ObjectLiteral,
-                       ?UnaryOpExpression, ?CodeBlock, ?StringTemplate, ?AtImageUrl, ?AtLinearGradient,
+                       ?UnaryOpExpression, ?CodeBlock, ?StringTemplate, ?AtImageUrl, ?AtGradient,
                        ?MemberAccess ],
         /// Concatenate the Expressions to make a string (usually expended from a template string)
         StringTemplate -> [*Expression],
         /// `@image-url("foo.png")`
         AtImageUrl -> [],
-        /// `@linear-gradient(...)`
-        AtLinearGradient -> [*Expression],
+        /// `@linear-gradient(...)` or `@radial-gradient(...)`
+        AtGradient -> [*Expression],
         /// expression()
         FunctionCallExpression -> [*Expression],
         /// `expression[index]`
@@ -709,12 +705,12 @@ impl SyntaxToken {
                 rowan::NodeOrToken::Token(t) => Some(t),
             })
             .or_else(|| {
-                self.token.ancestors().find_map(|it| it.next_sibling_or_token()).and_then(|e| {
-                    match e {
+                self.token.parent_ancestors().find_map(|it| it.next_sibling_or_token()).and_then(
+                    |e| match e {
                         rowan::NodeOrToken::Node(n) => n.first_token(),
                         rowan::NodeOrToken::Token(t) => Some(t),
-                    }
-                })
+                    },
+                )
             })?;
         Some(SyntaxToken { token, source_file: self.source_file.clone() })
     }
@@ -882,6 +878,11 @@ impl Spanned for Option<SyntaxToken> {
     fn source_file(&self) -> Option<&SourceFile> {
         self.as_ref().and_then(|t| t.source_file())
     }
+}
+
+/// return true if experimental parser feature should be activated
+pub fn enable_experimental() -> bool {
+    std::env::var_os("SLINT_EXPERIMENTAL_SYNTAX").map_or(false, |x| !x.is_empty())
 }
 
 /// return the normalized identifier string of the first SyntaxKind::Identifier in this node

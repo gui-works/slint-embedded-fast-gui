@@ -11,7 +11,7 @@
     Some code in this main.rs file is duplicated with the syntax_updater, i guess it could
     be refactored in a separate utility crate or module or something.
 
-    The [`TokenWriter`] trait is meant to be able to support the LSP later as the
+    The [`writer::TokenWriter`] trait is meant to be able to support the LSP later as the
     LSP wants just the edits, not the full file
 */
 
@@ -26,13 +26,13 @@ mod fmt;
 mod writer;
 
 #[derive(clap::Parser)]
-#[clap(author, version, about, long_about = None)]
+#[command(author, version, about, long_about = None)]
 struct Cli {
-    #[clap(name = "path to .slint file(s)", parse(from_os_str))]
+    #[arg(name = "path to .slint file(s)", action)]
     paths: Vec<std::path::PathBuf>,
 
     /// modify the file inline instead of printing to stdout
-    #[clap(short, long)]
+    #[arg(short, long, action)]
     inline: bool,
 }
 
@@ -159,12 +159,10 @@ fn process_file(
     mut file: impl Write,
 ) -> std::io::Result<()> {
     match path.extension() {
-        Some(ext) if ext == "rs" => return process_rust_file(source, file),
-        Some(ext) if ext == "md" => return process_markdown_file(source, file),
+        Some(ext) if ext == "rs" => process_rust_file(source, file),
+        Some(ext) if ext == "md" => process_markdown_file(source, file),
         // Formatting .60 files because of backwards compatibility (project was recently renamed)
-        Some(ext) if ext == "slint" || ext == ".60" => {
-            return process_slint_file(source, path, file)
-        }
+        Some(ext) if ext == "slint" || ext == ".60" => process_slint_file(source, path, file),
         _ => {
             // This allows usage like `cat x.slint | slint-fmt /dev/stdin`
             if path.as_path() == Path::new("/dev/stdin") {

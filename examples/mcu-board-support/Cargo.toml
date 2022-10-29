@@ -1,0 +1,65 @@
+# Copyright © SixtyFPS GmbH <info@slint-ui.com>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+[package]
+name = "mcu-board-support"
+version = "0.3.2"
+authors = ["Slint Developers <info@slint-ui.com>"]
+edition = "2021"
+license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
+publish = false
+description = "Internal helper that includes support for different MCUs, for use in Slint examples"
+repository = "https://github.com/slint-ui/slint"
+homepage = "https://slint-ui.com"
+links = "mcu_board_support" # just so we can pass metadata to the slint build crate
+
+[lib]
+path = "lib.rs"
+
+[features]
+pico-st7789 = ["slint/unsafe-single-threaded", "rp-pico", "embedded-hal", "cortex-m-rt", "alloc-cortex-m", "fugit", "cortex-m", "cortex-m", "display-interface", "st7789", "defmt", "defmt-rtt",  "shared-bus", "slint/libm", "embedded-dma", "embedded-graphics", "euclid/libm"]
+stm32h735g = ["slint/unsafe-single-threaded", "embedded-hal", "cortex-m/critical-section-single-core", "cortex-m-rt","alloc-cortex-m", "embedded-time", "cortex-m", "stm32h7xx-hal/stm32h735", "defmt", "defmt-rtt", "embedded-display-controller", "ft5336", "panic-probe", "slint/libm"]
+esp32-s2-kaluga-1 = ["slint/unsafe-single-threaded", "esp32s2-hal", "embedded-hal", "xtensa-lx-rt", "esp-alloc", "esp-println", "display-interface", "display-interface-spi", "st7789", "slint/libm"]
+
+[dependencies]
+slint = { version = "=0.3.2", path = "../../api/rs/slint", default-features = false, features = ["compat-0-3-0"] }
+i-slint-core-macros = { version = "=0.3.2", path = "../../internal/core-macros" }
+
+derive_more = "0.99.5"
+embedded-graphics = { version = "0.7.1", optional = true }
+once_cell = { version = "1.9", default-features = false, features = ["alloc", "atomic-polyfill"] }
+pin-weak = { version = "1", default-features = false }
+rgb = "0.8.27"
+cfg-if = "1"
+
+alloc-cortex-m = { version = "0.4.1", optional = true }
+cortex-m-rt = { version = "0.7", optional = true }
+cortex-m = { version = "0.7.2", optional = true }
+display-interface = { version = "0.4.1", optional = true }
+embedded-hal = { version = "0.2.5", optional = true }
+embedded-dma = { version = "0.1.2", optional = true }
+# Use a git branch that has DMA support
+rp-pico = { version = "0.5.0", optional = true, git="https://github.com/slint-ui/rp-hal/", branch = "dma-0.6" }
+fugit = { version = "0.3.6", optional = true }
+shared-bus = { version = "0.2", optional = true }
+st7789 = { version = "0.7.0", optional = true }
+euclid = { version = "0.22", default-features = false, optional = true }
+
+stm32h7xx-hal = { version = "0.13.0", optional = true, features = ["log-rtt", "ltdc", "xspi"] }
+embedded-time = { version = "0.12.0", optional = true }
+embedded-display-controller = { version = "0.1.0", optional = true }
+# Use upstream git version to enable use of panic-probe (released version enforced panic-semihosting)
+ft5336 = { version = "0.1", git = "https://github.com/bobgates/ft5336", rev = "293730a225a68b6364857602f8fb62fd0beb8a26", optional = true }
+
+esp32s2-hal = { version = "0.2", optional = true }
+xtensa-lx-rt = { version = "0.13", features = ["esp32s2"], optional = true }
+display-interface-spi = { version = "0.4", optional = true }
+esp-alloc = { version = "0.1", optional = true }
+esp-println = { version = "0.3.0", features = ["esp32s2"], optional = true }
+
+defmt-rtt = { version = "0.4.0", optional = true }
+defmt = { version = "0.3.0", optional = true }
+panic-probe = { version = "0.3.0", optional = true, features = ["print-defmt"] }
+
+[build-dependencies]
+cfg-if = "1.0.0"

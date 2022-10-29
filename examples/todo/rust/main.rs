@@ -1,7 +1,7 @@
 // Copyright © SixtyFPS GmbH <info@slint-ui.com>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
-use slint::Model;
+use slint::{FilterModel, Model, SortModel};
 use std::rc::Rc;
 
 #[cfg(target_arch = "wasm32")]
@@ -45,6 +45,53 @@ pub fn main() {
         }
     });
 
+    let weak_window = main_window.as_weak();
+    main_window.on_popup_confirmed(move || {
+        let window = weak_window.unwrap();
+        window.hide();
+    });
+
+    {
+        let weak_window = main_window.as_weak();
+        let todo_model = todo_model.clone();
+        main_window.window().on_close_requested(move || {
+            let window = weak_window.unwrap();
+
+            if todo_model.iter().any(|t| !t.checked) {
+                window.invoke_show_confirm_popup();
+                slint::CloseRequestResponse::KeepWindowShown
+            } else {
+                slint::CloseRequestResponse::HideWindow
+            }
+        });
+    }
+
+    main_window.on_apply_sorting_and_filtering({
+        let weak_window = main_window.as_weak();
+        let todo_model = todo_model.clone();
+
+        move || {
+            let window = weak_window.unwrap();
+            window.set_todo_model(todo_model.clone().into());
+
+            if window.get_hide_done_items() {
+                window.set_todo_model(
+                    Rc::new(FilterModel::new(window.get_todo_model(), |e| !e.checked)).into(),
+                );
+            }
+
+            if window.get_is_sort_by_name() {
+                window.set_todo_model(
+                    Rc::new(SortModel::new(window.get_todo_model(), |lhs, rhs| {
+                        lhs.title.to_lowercase().cmp(&rhs.title.to_lowercase())
+                    }))
+                    .into(),
+                );
+            }
+        }
+    });
+
+    main_window.set_show_header(true);
     main_window.set_todo_model(todo_model.into());
 
     main_window.run();

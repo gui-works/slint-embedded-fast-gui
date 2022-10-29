@@ -5,9 +5,10 @@
 This module contains brush related types for the run-time library.
 */
 
-use super::{Color, Point};
+use super::Color;
 use crate::properties::InterpolatedPropertyValue;
 use crate::SharedVector;
+use euclid::default::Point2D;
 
 #[cfg(not(feature = "std"))]
 use num_traits::float::Float;
@@ -25,6 +26,9 @@ pub enum Brush {
     /// The linear gradient variant of a brush describes the gradient stops for a fill
     /// where all color stops are along a line that's rotated by the specified angle.
     LinearGradient(LinearGradientBrush),
+    /// The radial gradient variant of a brush describes a circle variant centered
+    /// in the middle
+    RadialGradient(RadialGradientBrush),
 }
 
 /// Construct a brush with transparent color
@@ -43,6 +47,9 @@ impl Brush {
             Brush::LinearGradient(gradient) => {
                 gradient.stops().next().map(|stop| stop.color).unwrap_or_default()
             }
+            Brush::RadialGradient(gradient) => {
+                gradient.stops().next().map(|stop| stop.color).unwrap_or_default()
+            }
         }
     }
 
@@ -58,6 +65,48 @@ impl Brush {
         match self {
             Brush::SolidColor(c) => c.alpha() == 0,
             Brush::LinearGradient(_) => false,
+            Brush::RadialGradient(_) => false,
+        }
+    }
+
+    /// Returns a new version of this brush that has the brightness increased
+    /// by the specified factor. This is done by calling [`Color::brighter`] on
+    /// all the colors of this brush.
+    #[must_use]
+    pub fn brighter(&self, factor: f32) -> Self {
+        match self {
+            Brush::SolidColor(c) => Brush::SolidColor(c.brighter(factor)),
+            Brush::LinearGradient(g) => Brush::LinearGradient(LinearGradientBrush::new(
+                g.angle(),
+                g.stops().map(|s| GradientStop {
+                    color: s.color.brighter(factor),
+                    position: s.position,
+                }),
+            )),
+            Brush::RadialGradient(g) => {
+                Brush::RadialGradient(RadialGradientBrush::new_circle(g.stops().map(|s| {
+                    GradientStop { color: s.color.brighter(factor), position: s.position }
+                })))
+            }
+        }
+    }
+
+    /// Returns a new version of this brush that has the brightness decreased
+    /// by the specified factor. This is done by calling [`Color::darker`] on
+    /// all the color of this brush.
+    #[must_use]
+    pub fn darker(&self, factor: f32) -> Self {
+        match self {
+            Brush::SolidColor(c) => Brush::SolidColor(c.darker(factor)),
+            Brush::LinearGradient(g) => Brush::LinearGradient(LinearGradientBrush::new(
+                g.angle(),
+                g.stops()
+                    .map(|s| GradientStop { color: s.color.darker(factor), position: s.position }),
+            )),
+            Brush::RadialGradient(g) => Brush::RadialGradient(RadialGradientBrush::new_circle(
+                g.stops()
+                    .map(|s| GradientStop { color: s.color.darker(factor), position: s.position }),
+            )),
         }
     }
 }
@@ -94,6 +143,23 @@ impl LinearGradientBrush {
     }
 }
 
+/// The RadialGradientBrush describes a way of filling a shape with a circular gradient
+#[derive(Clone, PartialEq, Debug)]
+#[repr(transparent)]
+pub struct RadialGradientBrush(SharedVector<GradientStop>);
+
+impl RadialGradientBrush {
+    /// Creates a new circle radial gradient, centered in the middle and described
+    /// by the provided color stops.
+    pub fn new_circle(stops: impl IntoIterator<Item = GradientStop>) -> Self {
+        Self(stops.into_iter().collect())
+    }
+    /// Returns the color stops of the linear gradient.
+    pub fn stops(&self) -> impl Iterator<Item = &GradientStop> {
+        self.0.iter()
+    }
+}
+
 /// GradientStop describes a single color stop in a gradient. The colors between multiple
 /// stops are interpolated.
 #[repr(C)]
@@ -106,13 +172,13 @@ pub struct GradientStop {
 }
 
 /// Returns the start / end points of a gradient within the [-0.5; 0.5] unit square, based on the angle (in degree).
-pub fn line_for_angle(angle: f32) -> (Point, Point) {
+pub fn line_for_angle(angle: f32) -> (Point2D<f32>, Point2D<f32>) {
     let angle = angle.to_radians();
     let r = (angle.sin().abs() + angle.cos().abs()) / 2.;
     let (y, x) = (angle - core::f32::consts::PI / 2.).sin_cos();
     let (y, x) = (y * r, x * r);
-    let start = Point::new(0.5 - x, 0.5 - y);
-    let end = Point::new(0.5 + x, 0.5 + y);
+    let start = Point2D::new(0.5 - x, 0.5 - y);
+    let end = Point2D::new(0.5 + x, 0.5 + y);
     (start, end)
 }
 
@@ -142,8 +208,8 @@ impl InterpolatedPropertyValue for Brush {
                         let angle = &mut iter.next().unwrap().position;
                         *angle = angle.interpolate(&rhs.angle(), t);
                     }
-                    let mut rhs_stops = rhs.stops();
-                    while let (Some(s1), Some(s2)) = (iter.next(), rhs_stops.next()) {
+                    for s2 in rhs.stops() {
+                        let s1 = iter.next().unwrap();
                         s1.color = s1.color.interpolate(&s2.color, t);
                         s1.position = s1.position.interpolate(&s2.position, t);
                     }
@@ -151,6 +217,46 @@ impl InterpolatedPropertyValue for Brush {
                         x.position = x.position.interpolate(&1.0, t);
                     }
                     Brush::LinearGradient(new_grad)
+                }
+            }
+            (Brush::SolidColor(col), Brush::RadialGradient(grad)) => {
+                let mut new_grad = grad.clone();
+                for x in new_grad.0.make_mut_slice().iter_mut() {
+                    x.color = col.interpolate(&x.color, t);
+                }
+                Brush::RadialGradient(new_grad)
+            }
+            (a @ Brush::RadialGradient(_), b @ Brush::SolidColor(_)) => {
+                Self::interpolate(b, a, 1. - t)
+            }
+            (Brush::RadialGradient(lhs), Brush::RadialGradient(rhs)) => {
+                if lhs.0.len() < rhs.0.len() {
+                    Self::interpolate(target_value, self, 1. - t)
+                } else {
+                    let mut new_grad = lhs.clone();
+                    let mut iter = new_grad.0.make_mut_slice().iter_mut();
+                    let mut last_color = Color::default();
+                    for s2 in rhs.stops() {
+                        let s1 = iter.next().unwrap();
+                        last_color = s2.color;
+                        s1.color = s1.color.interpolate(&s2.color, t);
+                        s1.position = s1.position.interpolate(&s2.position, t);
+                    }
+                    for x in iter {
+                        x.position = x.position.interpolate(&1.0, t);
+                        x.color = x.color.interpolate(&last_color, t);
+                    }
+                    Brush::RadialGradient(new_grad)
+                }
+            }
+            (a @ Brush::LinearGradient(_), b @ Brush::RadialGradient(_))
+            | (a @ Brush::RadialGradient(_), b @ Brush::LinearGradient(_)) => {
+                // Just go to an intermediate color.
+                let color = Color::interpolate(&b.color(), &a.color(), t);
+                if t < 0.5 {
+                    Self::interpolate(a, &Brush::SolidColor(color), t * 2.)
+                } else {
+                    Self::interpolate(&Brush::SolidColor(color), b, (t - 0.5) * 2.)
                 }
             }
         }

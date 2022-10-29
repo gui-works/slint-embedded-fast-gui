@@ -10,45 +10,39 @@ on:
 
 jobs:
   docs:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     env:
       # Allow deprecated warning because we are using nightly and some things might be deprecated in nightly
       # for which the stable alternative is not yet available.
       # Allow suspicious-auto-trait-impls to work around https://github.com/Diggsey/scoped-tls-hkt/issues/2
-      # RUSTFLAGS: -D warnings -W deprecated 
+      # RUSTFLAGS: -D warnings -W deprecated
       RUSTDOCFLAGS: --html-in-header=/home/runner/work/slint/slint/docs/resources/slint-docs-preview.html --html-in-header=/home/runner/work/slint/slint/docs/resources/slint-docs-highlight.html -D warnings -W deprecated -W suspicious-auto-trait-impls
       SLINT_NO_QT: 1
       CARGO_INCREMENTAL: false
-      MDBOOK_VERSION: 0.4.10
-      MDBOOK_LINKCHECK_VERSION: 0.7.4
     steps:
     - uses: actions/checkout@v2
     - name: Set up rgb crate rustdoc link
       run: |
         rgb_version=`grep 'rgb = '  internal/core/Cargo.toml | sed 's/^.*"\(.*\)"/\1/'`
         echo "RUSTDOCFLAGS=$RUSTDOCFLAGS --extern-html-root-url rgb=https://docs.rs/rgb/$rgb_version/ -Z unstable-options" >> $GITHUB_ENV
-    - name: Setup Node.js
-      uses: actions/setup-node@v1
-      with:
-        node-version: '12'
+    - uses: ./.github/actions/install-nodejs
     - name: Cache mdbook and mdbook-linkcheck
       uses: actions/cache@v2
       with:
         path: |
            ~/.cargo/bin/mdbook
            ~/.cargo/bin/mdbook-linkcheck
-        key: ${{ runner.os }}-${{ github.job }}-mdbook-${{ env.MDBOOK_VERSION }}-${{ env.MDBOOK_LINKCHECK_VERSION }}
-    - name: Install nightly
-      uses: actions-rs/toolchain@v1
+        key: ${{ runner.os }}-${{ github.job }}-mdbook
+    - uses: ./.github/actions/setup-rust
       with:
-          toolchain: nightly
-    - uses: Swatinem/rust-cache@v1
+        toolchain: nightly
+        components: rustfmt
     - name: Install mdbook
-      run: cargo install mdbook --version ${{ env.MDBOOK_VERSION }} || true
+      run: cargo install mdbook || true
     - name: Install mdbook-linkcheck
-      run: cargo install mdbook-linkcheck --version ${{ env.MDBOOK_LINKCHECK_VERSION }} || true
-    - name: Install doxygen
-      run: sudo apt-get install doxygen
+      run: cargo install mdbook-linkcheck || true
+    - name: Install apt dependencies
+      run: sudo apt-get install doxygen clang-format
     - name: Upgrade pip and install pipenv
       run: |
         python -m pip install --upgrade pip
@@ -58,19 +52,28 @@ jobs:
       id: pipenv-cache
       with:
         path: ~/.local/share/virtualenvs
-        key: ${{ runner.os }}-pipenv-${{ hashFiles('**/Pipfile') }}
+        key: ${{ runner.os }}-pipenv-v1-${{ hashFiles('**/Pipfile') }}
         restore-keys: |
-          ${{ runner.os }}-pipenv-
-    - name: Remove docs from cache # Avoid stale docs
+          ${{ runner.os }}-pipenv-v1
+    - name: Remove docs from cache  # Avoid stale docs
       run: |
           rm -rf target/doc target/cppdocs api/node/docs
-    - name: Check formatting
+    - name: Check Rust formatting
       uses: actions-rs/cargo@v1
       with:
           command: fmt
           args: -- --check
+    - name: Check C++ formatting
+      run: |
+        find  -iname \*.h -o -iname \*.cpp | xargs clang-format -i
+        git diff --exit-code
     - name: Check license headers
       run: cargo xtask check_license_headers --show-all
+    - name: Check Enum docs
+      run: |
+        cargo xtask enumdocs
+        echo "Check that the docs were actual. If there is a diff you need to run 'cargo xtask enumdocs'"
+        git diff --exit-code
     - name: Check reuse compliance
       run: cargo xtask check_reuse_compliance
     - name: Build Cpp docs
@@ -102,6 +105,12 @@ jobs:
               api/node/docs
               docs/tutorial/rust/book/html
               docs/tutorial/cpp/book/html
+    - name: "Check for docs warnings in internal crates"
+      uses: actions-rs/cargo@v1
+      with:
+          command: doc
+          toolchain: nightly
+          args: --workspace --no-deps --all-features --exclude slint-node --exclude mcu-board-support --exclude printerdemo_mcu --exclude carousel --exclude test-* --exclude plotter
     - name: Clean cache # Don't cache docs to avoid them including removed classes being published
       run: |
           rm -rf target/doc target/cppdocs api/node/docs docs/tutorial/rust/book docs/tutorial/cpp/book

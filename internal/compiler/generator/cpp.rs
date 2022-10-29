@@ -4,7 +4,7 @@
 /*! module for the C++ code generator
 */
 
-// cSpell:ignore cstdlib cmath constexpr nullptr decltype intptr uintptr
+// cSpell:ignore cmath constexpr cstdlib decltype intptr itertools nullptr prepended struc subcomponent uintptr vals
 
 use std::fmt::Write;
 
@@ -332,7 +332,6 @@ impl CppType for Type {
 
             Type::Array(i) => Some(format!("std::shared_ptr<slint::Model<{}>>", i.cpp_type()?)),
             Type::Image => Some("slint::Image".to_owned()),
-            Type::Builtin(elem) => elem.native_class.cpp_type.clone(),
             Type::Enumeration(enumeration) => {
                 Some(format!("slint::cbindgen_private::{}", ident(&enumeration.name)))
             }
@@ -426,7 +425,7 @@ fn handle_property_init(
         let init_expr =
             compile_expression_wrap_return(&binding_expression.expression.borrow(), ctx);
 
-        init.push(if binding_expression.is_constant {
+        init.push(if binding_expression.is_constant && !binding_expression.is_state_info {
             format!("{}.set({});", prop_access, init_expr)
         } else {
             let binding_code = format!(
@@ -616,7 +615,7 @@ fn generate_public_component(file: &mut File, component: &llr::PublicComponent) 
         Declaration::Var(Var {
             ty: "slint::Window".into(),
             name: "m_window".into(),
-            init: Some("slint::Window{slint::private_api::WindowRc()}".into()),
+            init: Some("slint::Window{slint::private_api::WindowAdapterRc()}".into()),
             ..Default::default()
         }),
     ));
@@ -700,7 +699,7 @@ fn generate_public_component(file: &mut File, component: &llr::PublicComponent) 
         }),
     ));
 
-    component_struct.friends.push("slint::private_api::WindowRc".into());
+    component_struct.friends.push("slint::private_api::WindowAdapterRc".into());
 
     component_struct
         .friends
@@ -832,8 +831,8 @@ fn generate_item_tree(
             let item_array_index = item_array.len() as u32;
 
             item_tree_array.push(format!(
-                "slint::private_api::make_item_node({}, {}, {}, {})",
-                children_count, children_index, parent_index, item_array_index,
+                "slint::private_api::make_item_node({}, {}, {}, {}, {})",
+                children_count, children_index, parent_index, item_array_index, node.is_accessible
             ));
             item_array.push(format!(
                 "{{ {}, {} offsetof({}, {}) }}",
@@ -848,15 +847,25 @@ fn generate_item_tree(
     let mut visit_children_statements = vec![
         "static const auto dyn_visit = [] (const uint8_t *base,  [[maybe_unused]] slint::private_api::TraversalOrder order, [[maybe_unused]] slint::private_api::ItemVisitorRefMut visitor, [[maybe_unused]] uintptr_t dyn_index) -> uint64_t {".to_owned(),
         format!("    [[maybe_unused]] auto self = reinterpret_cast<const {}*>(base);", item_tree_class_name)];
+    let mut subtree_range_statement = vec!["    std::abort();".into()];
+    let mut subtree_component_statement = vec!["    std::abort();".into()];
 
     if target_struct.members.iter().any(|(_, declaration)| {
         matches!(&declaration, Declaration::Function(func @ Function { .. }) if func.name == "visit_dynamic_children")
     }) {
         visit_children_statements
             .push("    return self->visit_dynamic_children(dyn_index, order, visitor);".into());
+        subtree_range_statement = vec![
+                format!("auto self = reinterpret_cast<const {}*>(component.instance);", item_tree_class_name),
+                "return self->subtree_range(dyn_index);".to_owned(),
+        ];
+        subtree_component_statement = vec![
+                format!("auto self = reinterpret_cast<const {}*>(component.instance);", item_tree_class_name),
+                "self->subtree_component(dyn_index, subtree_index, result);".to_owned(),
+        ];
     } else {
         visit_children_statements.push("    std::abort();".into());
-    }
+     }
 
     visit_children_statements.extend([
         "};".into(),
@@ -891,6 +900,28 @@ fn generate_item_tree(
     target_struct.members.push((
         Access::Private,
         Declaration::Function(Function {
+            name: "get_subtree_range".into(),
+            signature: "([[maybe_unused]] slint::private_api::ComponentRef component, [[maybe_unused]] uintptr_t dyn_index) -> slint::private_api::IndexRange".into(),
+            is_static: true,
+            statements: Some(subtree_range_statement),
+            ..Default::default()
+        }),
+    ));
+
+    target_struct.members.push((
+        Access::Private,
+        Declaration::Function(Function {
+            name: "get_subtree_component".into(),
+            signature: "([[maybe_unused]] slint::private_api::ComponentRef component, [[maybe_unused]] uintptr_t dyn_index, [[maybe_unused]] uintptr_t subtree_index, [[maybe_unused]] slint::private_api::ComponentWeak *result) -> void".into(),
+            is_static: true,
+            statements: Some(subtree_component_statement),
+            ..Default::default()
+        }),
+    ));
+
+    target_struct.members.push((
+        Access::Private,
+        Declaration::Function(Function {
             name: "get_item_tree".into(),
             signature: "(slint::private_api::ComponentRef) -> slint::cbindgen_private::Slice<slint::private_api::ItemTreeNode>".into(),
             is_static: true,
@@ -901,35 +932,43 @@ fn generate_item_tree(
         }),
     ));
 
-    let parent_item_from_parent_component = if let Some(parent_index) =
-        parent_ctx.as_ref().and_then(|parent| {
+    let parent_item_from_parent_component = parent_ctx.as_ref()
+        .and_then(|parent| {
             parent
                 .repeater_index
                 .map(|idx| parent.ctx.current_sub_component.unwrap().repeated[idx].index_in_tree)
-        }) {
-        format!(
-            // that does not work when the parent is not a component with a ComponentVTable
-            //"   *result = slint::private_api::parent_item(self->parent->self_weak.into_dyn(), self->parent->get_item_tree(), {});",
-            "self->parent->self_weak.vtable()->parent_item(self->parent->self_weak.lock()->borrow(), {}, result);",
-            parent_index,
-        )
-    } else {
-        "".to_owned()
-    };
+        }).map(|parent_index|
+            vec![
+                format!(
+                    "auto self = reinterpret_cast<const {}*>(component.instance);",
+                    item_tree_class_name,
+                ),
+                format!(
+                    "*result = {{ self->parent->self_weak, self->parent->tree_index_of_first_child + {} - 1 }};",
+                    parent_index,
+                )
+            ])
+        .unwrap_or_default();
     target_struct.members.push((
         Access::Private,
         Declaration::Function(Function {
-            name: "parent_item".into(),
-            signature: "(slint::private_api::ComponentRef component, uintptr_t index, slint::private_api::ItemWeak *result) -> void".into(),
+            name: "parent_node".into(),
+            signature: "([[maybe_unused]] slint::private_api::ComponentRef component, [[maybe_unused]] slint::private_api::ItemWeak *result) -> void".into(),
             is_static: true,
-            statements: Some(vec![
-                format!("auto self = reinterpret_cast<const {}*>(component.instance);", item_tree_class_name),
-                "if (index == 0) {".into(),
-                parent_item_from_parent_component,
-                "   return;".into(),
-                "}".into(),
-                "*result = slint::private_api::parent_item(self->self_weak.into_dyn(), get_item_tree(component), index);".into(),
-            ]),
+            statements: Some(parent_item_from_parent_component,),
+            ..Default::default()
+        }),
+    ));
+
+    // Statements will be overridden for repeated components!
+    target_struct.members.push((
+        Access::Private,
+        Declaration::Function(Function {
+            name: "subtree_index".into(),
+            signature: "([[maybe_unused]] slint::private_api::ComponentRef component) -> uintptr_t"
+                .into(),
+            is_static: true,
+            statements: Some(vec!["return std::numeric_limits<uintptr_t>::max();".into()]),
             ..Default::default()
         }),
     ));
@@ -983,6 +1022,38 @@ fn generate_item_tree(
     ));
 
     target_struct.members.push((
+        Access::Private,
+        Declaration::Function(Function {
+            name: "accessible_role".into(),
+            signature:
+                "([[maybe_unused]] slint::private_api::ComponentRef component, uintptr_t index) -> slint::cbindgen_private::AccessibleRole"
+                    .into(),
+            is_static: true,
+            statements: Some(vec![format!(
+                "return reinterpret_cast<const {}*>(component.instance)->accessible_role(index);",
+                item_tree_class_name
+            )]),
+            ..Default::default()
+        }),
+    ));
+
+    target_struct.members.push((
+        Access::Private,
+        Declaration::Function(Function {
+            name: "accessible_string_property".into(),
+            signature:
+                "([[maybe_unused]] slint::private_api::ComponentRef component, uintptr_t index, slint::cbindgen_private::AccessibleStringProperty what, slint::SharedString *result) -> void"
+                    .into(),
+            is_static: true,
+            statements: Some(vec![format!(
+                "*result = reinterpret_cast<const {}*>(component.instance)->accessible_string_property(index, what);",
+                item_tree_class_name
+            )]),
+            ..Default::default()
+        }),
+    ));
+
+    target_struct.members.push((
         Access::Public,
         Declaration::Var(Var {
             ty: "static const slint::private_api::ComponentVTable".to_owned(),
@@ -995,9 +1066,12 @@ fn generate_item_tree(
         ty: "const slint::private_api::ComponentVTable".to_owned(),
         name: format!("{}::static_vtable", item_tree_class_name),
         init: Some(format!(
-            "{{ visit_children, get_item_ref, get_item_tree, parent_item,  layout_info, slint::private_api::drop_in_place<{}>, slint::private_api::dealloc }}",
-            item_tree_class_name)
-        ),
+            "{{ visit_children, get_item_ref, get_subtree_range, get_subtree_component, \
+                get_item_tree, parent_node, subtree_index, layout_info, \
+                accessible_role, accessible_string_property, \
+                slint::private_api::drop_in_place<{}>, slint::private_api::dealloc }}",
+            item_tree_class_name
+        )),
         ..Default::default()
     }));
 
@@ -1029,7 +1103,10 @@ fn generate_item_tree(
     }
 
     create_code.extend([
-        format!("{}->m_window.window_handle().init_items(self, self->item_array());", root_access),
+        format!(
+            "{}->m_window.window_handle().register_component(self, self->item_array());",
+            root_access
+        ),
         format!("self->init({}, self->self_weak, 0, 1 {});", root_access, init_parent_parameters),
         format!("return slint::ComponentHandle<{0}>{{ self_rc }};", target_struct.name),
     ]);
@@ -1052,7 +1129,7 @@ fn generate_item_tree(
     let mut destructor = vec!["auto self = this;".to_owned()];
 
     destructor.push(format!(
-        "{}->m_window.window_handle().free_graphics_resources(self, item_array());",
+        "{}->m_window.window_handle().unregister_component(self, item_array());",
         root_access
     ));
 
@@ -1181,8 +1258,9 @@ fn generate_sub_component(
     }
 
     let mut children_visitor_cases = Vec::new();
+    let mut subtrees_ranges_cases = Vec::new();
+    let mut subtrees_components_cases = Vec::new();
 
-    let mut subcomponent_init_code = Vec::new();
     for sub in &component.sub_components {
         let field_name = ident(&sub.name);
         let local_tree_index: u32 = sub.index_in_tree as _;
@@ -1201,7 +1279,7 @@ fn generate_sub_component(
             format!("tree_index_of_first_child + {} - 1", local_index_of_first_child)
         };
 
-        subcomponent_init_code.push(format!(
+        init.push(format!(
             "this->{}.init(root, self_weak.into_dyn(), {}, {});",
             field_name, global_index, global_children
         ));
@@ -1218,6 +1296,23 @@ fn generate_sub_component(
             children_visitor_cases.push(format!(
                 "\n        {case_code} {{
                         return self->{id}.visit_dynamic_children(dyn_index - {base}, order, visitor);
+                    }}",
+                case_code = case_code,
+                id = field_name,
+                base = repeater_offset,
+            ));
+            subtrees_ranges_cases.push(format!(
+                "\n        {case_code} {{
+                        return self->{id}.subtree_range(dyn_index - {base});
+                    }}",
+                case_code = case_code,
+                id = field_name,
+                base = repeater_offset,
+            ));
+            subtrees_components_cases.push(format!(
+                "\n        {case_code} {{
+                        self->{id}.subtree_component(dyn_index - {base}, subtree_index, result);
+                        return;
                     }}",
                 case_code = case_code,
                 id = field_name,
@@ -1321,9 +1416,28 @@ fn generate_sub_component(
             i = idx,
             e_u = ensure_updated,
         ));
+        subtrees_ranges_cases.push(format!(
+            "\n        case {i}: {{
+                {e_u}
+                return self->{id}.index_range();
+            }}",
+            i = idx,
+            e_u = ensure_updated,
+            id = repeater_id,
+        ));
+        subtrees_components_cases.push(format!(
+            "\n        case {i}: {{
+                {e_u}
+                *result = self->{id}.component_at(subtree_index);
+                return;
+            }}",
+            i = idx,
+            e_u = ensure_updated,
+            id = repeater_id,
+        ));
 
         target_struct.members.push((
-            Access::Private,
+            field_access,
             Declaration::Var(Var {
                 ty: format!(
                     "slint::private_api::Repeater<class {}, {}>",
@@ -1336,7 +1450,6 @@ fn generate_sub_component(
         ));
     }
 
-    init.extend(subcomponent_init_code);
     init.extend(properties_init_code);
     init.extend(component.init_code.iter().map(|e| compile_expression(&e.borrow(), &ctx)));
 
@@ -1368,6 +1481,72 @@ fn generate_sub_component(
         }),
     ));
 
+    let mut accessible_function = |name: &str,
+                                   signature: &str,
+                                   forward_args: &str,
+                                   code: Vec<String>| {
+        let mut code = ["[[maybe_unused]] auto self = this;".into()]
+            .into_iter()
+            .chain(code.into_iter())
+            .collect::<Vec<_>>();
+
+        let mut else_ = "";
+        for sub in &component.sub_components {
+            let sub_items_count = sub.ty.child_item_count();
+            code.push(format!("{else_}if (index == {}) {{", sub.index_in_tree,));
+            code.push(format!("    return self->{}.{name}(0{forward_args});", ident(&sub.name)));
+            if sub_items_count > 1 {
+                code.push(format!(
+                    "}} else if (index >= {} && index < {}) {{",
+                    sub.index_of_first_child_in_tree,
+                    sub.index_of_first_child_in_tree + sub_items_count - 1
+                ));
+                code.push(format!(
+                    "    return self->{}.{name}(index - {}{forward_args});",
+                    ident(&sub.name),
+                    sub.index_of_first_child_in_tree - 1
+                ));
+            }
+            else_ = "} else ";
+        }
+        code.push(format!("{else_}return {{}};"));
+        target_struct.members.push((
+            field_access,
+            Declaration::Function(Function {
+                name: name.into(),
+                signature: signature.into(),
+                statements: Some(code),
+                ..Default::default()
+            }),
+        ));
+    };
+
+    let mut accessible_role_cases = vec!["switch (index) {".into()];
+    let mut accessible_string_cases = vec!["switch ((index << 8) | uintptr_t(what)) {".into()];
+    for ((index, what), expr) in &component.accessible_prop {
+        let expr = compile_expression(&expr.borrow(), &ctx);
+        if what == "Role" {
+            accessible_role_cases.push(format!("    case {index}: return {expr};"));
+        } else {
+            accessible_string_cases.push(format!("    case ({index} << 8) | uintptr_t(slint::cbindgen_private::AccessibleStringProperty::{what}): return {expr};"));
+        }
+    }
+    accessible_role_cases.push("}".into());
+    accessible_string_cases.push("}".into());
+
+    accessible_function(
+        "accessible_role",
+        "(uintptr_t index) const -> slint::cbindgen_private::AccessibleRole",
+        "",
+        accessible_role_cases,
+    );
+    accessible_function(
+        "accessible_string_property",
+        "(uintptr_t index, slint::cbindgen_private::AccessibleStringProperty what) const -> slint::SharedString",
+        ", what",
+        accessible_string_cases,
+    );
+
     if !children_visitor_cases.is_empty() {
         target_struct.members.push((
             field_access,
@@ -1377,6 +1556,32 @@ fn generate_sub_component(
                 statements: Some(vec![
                     "    auto self = this;".to_owned(),
                     format!("    switch(dyn_index) {{ {} }};", children_visitor_cases.join("")),
+                    "    std::abort();".to_owned(),
+                ]),
+                ..Default::default()
+            }),
+        ));
+        target_struct.members.push((
+            field_access,
+            Declaration::Function(Function {
+                name: "subtree_range".into(),
+                signature: "(uintptr_t dyn_index) const -> slint::private_api::IndexRange".into(),
+                statements: Some(vec![
+                    "[[maybe_unused]] auto self = this;".to_owned(),
+                    format!("    switch(dyn_index) {{ {} }};", subtrees_ranges_cases.join("")),
+                    "    std::abort();".to_owned(),
+                ]),
+                ..Default::default()
+            }),
+        ));
+        target_struct.members.push((
+            field_access,
+            Declaration::Function(Function {
+                name: "subtree_component".into(),
+                signature: "(uintptr_t dyn_index, [[maybe_unused]] uintptr_t subtree_index, [[maybe_unused]] slint::private_api::ComponentWeak *result) const -> void".into(),
+                statements: Some(vec![
+                    "[[maybe_unused]] auto self = this;".to_owned(),
+                    format!("    switch(dyn_index) {{ {} }};", subtrees_components_cases.join("")),
                     "    std::abort();".to_owned(),
                 ]),
                 ..Default::default()
@@ -1399,7 +1604,7 @@ fn generate_repeated_component(
         &repeated.sub_tree,
         root,
         Some(parent_ctx.clone()),
-        repeater_id,
+        repeater_id.clone(),
         Access::Public,
         file,
     );
@@ -1475,6 +1680,25 @@ fn generate_repeated_component(
                 ..Function::default()
             }),
         ));
+    }
+
+    if let Some(index_prop) = repeated.index_prop {
+        // Override default subtree_index function implementation
+        let subtree_index_func = repeater_struct
+            .members
+            .iter_mut()
+            .find(|(_, d)| matches!(d, Declaration::Function(f) if f.name == "subtree_index"));
+
+        if let Declaration::Function(f) = &mut subtree_index_func.unwrap().1 {
+            let index = access_prop(&index_prop);
+            f.statements = Some(vec![
+                format!(
+                    "auto self = reinterpret_cast<const {}*>(component.instance);",
+                    repeater_id
+                ),
+                format!("return {}.get();", index),
+            ]);
+        }
     }
 
     file.definitions.extend(repeater_struct.extract_definitions().collect::<Vec<_>>());
@@ -1962,7 +2186,7 @@ fn compile_expression(expr: &llr::Expression, ctx: &EvaluationContext) -> String
                     '≥' => ">=",
                     '&' => "&&",
                     '|' => "||",
-                    '/' => "/(double)",
+                    '/' => "/(float)",
                     _ => op.encode_utf8(&mut buffer),
                 },
             )
@@ -1976,10 +2200,7 @@ fn compile_expression(expr: &llr::Expression, ctx: &EvaluationContext) -> String
                 crate::expression_tree::ImageReference::AbsolutePath(path) => format!(r#"slint::Image::load_from_path(slint::SharedString(u8"{}"))"#, escape_string(path.as_str())),
                 crate::expression_tree::ImageReference::EmbeddedData { resource_id, extension } => {
                     let symbol = format!("slint_embedded_resource_{}", resource_id);
-                    format!(
-                        r#"slint::Image(slint::cbindgen_private::types::ImageInner::ImageInner_EmbeddedData(slint::cbindgen_private::Slice<uint8_t>{{std::data({}), std::size({})}}, slint::cbindgen_private::Slice<uint8_t>{{const_cast<uint8_t *>(reinterpret_cast<const uint8_t *>(u8"{}")), {}}}))"#,
-                        symbol, symbol, escape_string(extension), extension.as_bytes().len()
-                    )
+                    format!(r#"slint::private_api::load_image_from_embedded_data({symbol}, "{}")"#, escape_string(extension))
                 }
                 crate::expression_tree::ImageReference::EmbeddedTexture{..} => todo!(),
             }
@@ -2055,8 +2276,23 @@ fn compile_expression(expr: &llr::Expression, ctx: &EvaluationContext) -> String
                 stops_it.join(", "), angle, stops.len()
             )
         }
+        Expression::RadialGradient{ stops} => {
+            let mut stops_it = stops.iter().map(|(color, stop)| {
+                let color = compile_expression(color, ctx);
+                let position = compile_expression(stop, ctx);
+                format!("slint::private_api::GradientStop{{ {}, {}, }}", color, position)
+            });
+            format!(
+                "[&] {{ const slint::private_api::GradientStop stops[] = {{ {} }}; return slint::Brush(slint::private_api::RadialGradientBrush(stops, {})); }}()",
+                stops_it.join(", "), stops.len()
+            )
+        }
         Expression::EnumerationValue(value) => {
-            format!("slint::cbindgen_private::{}::{}", value.enumeration.name, ident(&value.to_string()))
+            format!(
+                "slint::cbindgen_private::{}::{}",
+                value.enumeration.name,
+                ident(&value.to_pascal_case()),
+            )
         }
         Expression::ReturnStatement(Some(expr)) => format!(
             "throw slint::private_api::ReturnWrapper<{}>({})",
@@ -2119,14 +2355,11 @@ fn compile_builtin_function_call(
             let window = access_window_field(ctx);
             format!("{}.scale_factor()", window)
         }
+        BuiltinFunction::AnimationTick => "slint::cbindgen_private::slint_animation_tick()".into(),
         BuiltinFunction::Debug => {
             format!("std::cout << {} << std::endl;", a.join("<<"))
         }
-        BuiltinFunction::Mod => format!(
-            "static_cast<int>({}) % static_cast<int>({})",
-            a.next().unwrap(),
-            a.next().unwrap()
-        ),
+        BuiltinFunction::Mod => format!("std::fmod({}, {})", a.next().unwrap(), a.next().unwrap()),
         BuiltinFunction::Round => format!("std::round({})", a.next().unwrap()),
         BuiltinFunction::Ceil => format!("std::ceil({})", a.next().unwrap()),
         BuiltinFunction::Floor => format!("std::floor({})", a.next().unwrap()),
@@ -2188,20 +2421,32 @@ fn compile_builtin_function_call(
                 a = a.next().unwrap(),
             )
         }
+        BuiltinFunction::DarkColorScheme => {
+            format!("{}.dark_color_scheme()", access_window_field(ctx))
+        }
         BuiltinFunction::ShowPopupWindow => {
             if let [llr::Expression::NumberLiteral(popup_index), x, y, llr::Expression::PropertyReference(parent_ref)] =
                 arguments
             {
+                let mut parent_ctx = ctx;
+                let mut component_access = "self".into();
+
+                if let llr::PropertyReference::InParent { level, .. } = parent_ref {
+                    for _ in 0..level.get() {
+                        component_access = format!("{}->parent", component_access);
+                        parent_ctx = parent_ctx.parent.as_ref().unwrap().ctx;
+                    }
+                };
+
                 let window = access_window_field(ctx);
-                let current_sub_component = ctx.current_sub_component.unwrap();
+                let current_sub_component = parent_ctx.current_sub_component.unwrap();
                 let popup_window_id =
                     ident(&current_sub_component.popup_windows[*popup_index as usize].root.name);
                 let parent_component = access_item_rc(parent_ref, ctx);
                 let x = compile_expression(x, ctx);
                 let y = compile_expression(y, ctx);
                 format!(
-                    "{}.show_popup<{}>(self, {{ {}, {} }}, {{ {} }})",
-                    window, popup_window_id, x, y, parent_component,
+                    "{window}.show_popup<{popup_window_id}>({component_access}, {{ static_cast<float>({x}), static_cast<float>({y}) }}, {{ {parent_component} }})"
                 )
             } else {
                 panic!("internal error: invalid args to ShowPopupWindow {:?}", arguments)
@@ -2209,7 +2454,8 @@ fn compile_builtin_function_call(
         }
         BuiltinFunction::RegisterCustomFontByPath => {
             if let [llr::Expression::StringLiteral(path)] = arguments {
-                format!("slint::private_api::register_font_from_path(\"{}\");", escape_string(path))
+                let window = access_window_field(ctx);
+                format!("{window}.register_font_from_path(\"{}\");", escape_string(path))
             } else {
                 panic!(
                     "internal error: argument to RegisterCustomFontByPath must be a string literal"
@@ -2218,12 +2464,10 @@ fn compile_builtin_function_call(
         }
         BuiltinFunction::RegisterCustomFontByMemory => {
             if let [llr::Expression::NumberLiteral(resource_id)] = &arguments {
+                let window = access_window_field(ctx);
                 let resource_id: usize = *resource_id as _;
                 let symbol = format!("slint_embedded_resource_{}", resource_id);
-                format!(
-                    "slint::private_api::register_font_from_data({}, std::size({}));",
-                    symbol, symbol
-                )
+                format!("{window}.register_font_from_data({symbol}, std::size({symbol}));")
             } else {
                 panic!("internal error: invalid args to RegisterCustomFontByMemory {:?}", arguments)
             }
@@ -2265,39 +2509,47 @@ fn box_layout_function(
     for item in elements {
         match item {
             Either::Left(value) => {
-                push_code +=
-                    &format!("cells_vector.push_back({{ {} }});", compile_expression(value, ctx));
+                write!(
+                    push_code,
+                    "cells_vector.push_back({{ {} }});",
+                    compile_expression(value, ctx)
+                )
+                .unwrap();
             }
             Either::Right(repeater) => {
-                push_code += &format!("self->repeater_{}.ensure_updated(self);", repeater);
+                write!(push_code, "self->repeater_{}.ensure_updated(self);", repeater).unwrap();
 
                 if let Some(ri) = &repeated_indices {
-                    push_code +=
-                        &format!("{}_array[{}] = cells_vector.size();", ri, repeater_idx * 2);
-                    push_code += &format!(
+                    write!(push_code, "{}_array[{}] = cells_vector.size();", ri, repeater_idx * 2)
+                        .unwrap();
+                    write!(push_code,
                         "{ri}_array[{c}] = self->repeater_{id}.inner ? self->repeater_{id}.inner->data.size() : 0;",
                         ri = ri,
                         c = repeater_idx * 2 + 1,
                         id = repeater,
-                    );
+                    ).unwrap();
                 }
                 repeater_idx += 1;
-                push_code += &format!(
+                write!(
+                    push_code,
                     "if (self->repeater_{id}.inner) \
                         for (auto &&sub_comp : self->repeater_{id}.inner->data) \
                            cells_vector.push_back((*sub_comp.ptr)->box_layout_data({o}));",
                     id = repeater,
                     o = to_cpp_orientation(orientation),
-                );
+                )
+                .unwrap();
             }
         }
     }
 
     let ri = repeated_indices.as_ref().map_or(String::new(), |ri| {
-        push_code += &format!(
+        write!(
+            push_code,
             "slint::cbindgen_private::Slice<int> {ri}{{ {ri}_array.data(), {ri}_array.size() }};",
             ri = ri
-        );
+        )
+        .unwrap();
         format!("std::array<int, {}> {}_array;", 2 * repeater_idx, ri)
     });
     format!(

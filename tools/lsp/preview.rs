@@ -1,22 +1,16 @@
 // Copyright © SixtyFPS GmbH <info@slint-ui.com>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
+use crate::lsp_ext::{Health, ServerStatusNotification, ServerStatusParams};
+use lsp_types::notification::Notification;
 use once_cell::sync::Lazy;
+use slint_interpreter::ComponentHandle;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::Wake;
-
-use lsp_server::Message;
-use lsp_types::notification::Notification;
-
-use clap::Parser;
-
-use crate::lsp_ext::{Health, ServerStatusNotification, ServerStatusParams};
-
-use slint_interpreter::ComponentHandle;
 
 #[derive(PartialEq)]
 enum RequestedGuiEventLoopState {
@@ -46,7 +40,7 @@ unsafe impl Sync for FutureRunner {}
 
 impl Wake for FutureRunner {
     fn wake(self: Arc<Self>) {
-        i_slint_backend_selector::backend().post_event(Box::new(move || {
+        i_slint_core::api::invoke_from_event_loop(move || {
             let waker = self.clone().into();
             let mut cx = std::task::Context::from_waker(&waker);
             let mut fut_opt = self.fut.lock().unwrap();
@@ -56,7 +50,8 @@ impl Wake for FutureRunner {
                     std::task::Poll::Pending => {}
                 }
             }
-        }));
+        })
+        .unwrap();
     }
 }
 
@@ -90,19 +85,24 @@ pub fn start_ui_event_loop() {
         }
 
         if *state_requested == RequestedGuiEventLoopState::StartLoop {
+            // make sure the backend is initialized
+            i_slint_backend_selector::with_platform(|_| {});
             // Send an event so that once the loop is started, we notify the LSP thread that it can send more events
-            i_slint_backend_selector::backend().post_event(Box::new(|| {
+            i_slint_core::api::invoke_from_event_loop(|| {
                 let mut state_request = GUI_EVENT_LOOP_STATE_REQUEST.lock().unwrap();
                 if *state_request == RequestedGuiEventLoopState::StartLoop {
                     *state_request = RequestedGuiEventLoopState::LoopStated;
                     GUI_EVENT_LOOP_NOTIFIER.notify_one();
                 }
-            }))
+            })
+            .unwrap();
         }
     }
 
-    i_slint_backend_selector::backend()
-        .run_event_loop(i_slint_core::backend::EventLoopQuitBehavior::QuitOnlyExplicitly);
+    i_slint_backend_selector::with_platform(|b| {
+        b.set_event_loop_quit_on_last_window_closed(false);
+        b.run_event_loop()
+    });
 }
 
 pub fn quit_ui_event_loop() {
@@ -114,9 +114,7 @@ pub fn quit_ui_event_loop() {
         GUI_EVENT_LOOP_NOTIFIER.notify_one();
     }
 
-    i_slint_backend_selector::backend().post_event(Box::new(|| {
-        i_slint_backend_selector::backend().quit_event_loop();
-    }));
+    i_slint_core::api::quit_event_loop().unwrap();
 
     // Make sure then sender channel gets dropped
     if let Some(cache) = CONTENT_CACHE.get() {
@@ -131,7 +129,7 @@ pub enum PostLoadBehavior {
 }
 
 pub fn load_preview(
-    sender: crossbeam_channel::Sender<Message>,
+    sender: crate::ServerNotifier,
     component: PreviewComponent,
     post_load_behavior: PostLoadBehavior,
 ) {
@@ -161,7 +159,7 @@ struct ContentCache {
     source_code: HashMap<PathBuf, String>,
     dependency: HashSet<PathBuf>,
     current: PreviewComponent,
-    sender: Option<crossbeam_channel::Sender<Message>>,
+    sender: Option<crate::ServerNotifier>,
 }
 
 static CONTENT_CACHE: once_cell::sync::OnceCell<Mutex<ContentCache>> =
@@ -190,7 +188,7 @@ fn get_file_from_cache(path: PathBuf) -> Option<String> {
 }
 
 async fn reload_preview(
-    sender: crossbeam_channel::Sender<Message>,
+    sender: crate::ServerNotifier,
     preview_component: PreviewComponent,
     post_load_behavior: PostLoadBehavior,
 ) {
@@ -203,11 +201,15 @@ async fn reload_preview(
     }
 
     let mut builder = slint_interpreter::ComponentCompiler::default();
-    let cli_args = super::Cli::parse();
-    if !cli_args.style.is_empty() {
-        builder.set_style(cli_args.style)
-    };
-    builder.set_include_paths(cli_args.include_paths);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use clap::Parser;
+        let cli_args = super::Cli::parse();
+        if !cli_args.style.is_empty() {
+            builder.set_style(cli_args.style)
+        };
+        builder.set_include_paths(cli_args.include_paths);
+    }
 
     builder.set_file_loader(|path| {
         let path = path.to_owned();
@@ -257,7 +259,7 @@ async fn reload_preview(
 
 fn notify_diagnostics(
     diagnostics: &[slint_interpreter::Diagnostic],
-    sender: &crossbeam_channel::Sender<Message>,
+    sender: &crate::ServerNotifier,
 ) -> Option<()> {
     let mut lsp_diags: HashMap<lsp_types::Url, Vec<lsp_types::Diagnostic>> = Default::default();
     for d in diagnostics {
@@ -270,20 +272,20 @@ fn notify_diagnostics(
 
     for (uri, diagnostics) in lsp_diags {
         sender
-            .send(Message::Notification(lsp_server::Notification::new(
+            .send_notification(
                 "textDocument/publishDiagnostics".into(),
                 lsp_types::PublishDiagnosticsParams { uri, diagnostics, version: None },
-            )))
+            )
             .ok()?;
     }
     Some(())
 }
 
-fn send_notification(sender: &crossbeam_channel::Sender<Message>, arg: &str, health: Health) {
+fn send_notification(sender: &crate::ServerNotifier, arg: &str, health: Health) {
     sender
-        .send(Message::Notification(lsp_server::Notification::new(
+        .send_notification(
             ServerStatusNotification::METHOD.into(),
             ServerStatusParams { health, quiescent: false, message: Some(arg.into()) },
-        )))
+        )
         .unwrap_or_else(|e| eprintln!("Error sending notification: {:?}", e));
 }

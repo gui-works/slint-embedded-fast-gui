@@ -13,6 +13,8 @@ export LineEditInner := Rectangle {
     property enabled <=> input.enabled;
     property has-focus <=> input.has-focus;
     property input-type <=> input.input-type;
+    property horizontal-alignment <=> input.horizontal-alignment;
+    property read-only <=> input.read-only;
     min-height: input.preferred-height;
     min-width: max(50px, placeholder.min-width);
     clip: true;
@@ -38,7 +40,7 @@ export LineEditInner := Rectangle {
     placeholder := Text {
         height: 100%; width: 100%;
         vertical-alignment: center;
-        text: root.text == "" ? root.placeholder-text : "";
+        text: (root.text == "" && input.preedit-text == "") ? root.placeholder-text : "";
     }
 }
 
@@ -48,6 +50,8 @@ export TextEdit := ScrollView {
     has-focus <=> input.has-focus;
     enabled <=> input.enabled;
     property <TextWrap> wrap <=> input.wrap;
+    property horizontal-alignment <=> input.horizontal-alignment;
+    property read-only <=> input.read-only;
     callback edited(string);
     forward-focus: input;
 
@@ -62,6 +66,7 @@ export TextEdit := ScrollView {
     }
 
     input := TextInput {
+        enabled: true;
         edited => { root.edited(self.text); }
         color: enabled ? StyleMetrics.textedit-text-color : StyleMetrics.textedit-text-color-disabled;
         single-line: false;
@@ -94,11 +99,11 @@ export AboutSlint := Rectangle {
             horizontal-alignment: center;
         }
         Image {
-            source: NativeStyleMetrics.dark-style ? @image-url("slint-logo-dark.svg") : @image-url("slint-logo-light.svg");
+            source: StyleMetrics.dark-color-scheme ? @image-url("slint-logo-dark.svg") : @image-url("slint-logo-light.svg");
             preferred-width: 256px;
         }
         Text {
-            text: "Version 0.2.2\nhttps://slint-ui.com/";
+            text: "Version 0.3.2\nhttps://slint-ui.com/";
             font-size: 10px;
             horizontal-alignment: center;
         }

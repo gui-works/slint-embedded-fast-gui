@@ -6,7 +6,8 @@
 //! Rectangles which do not draw anything and have no x or y don't need to be in
 //! the item tree, we can just remove them.
 
-use crate::{langtype::Type, object_tree::*};
+use crate::langtype::ElementType;
+use crate::object_tree::*;
 use std::rc::Rc;
 
 pub fn optimize_useless_rectangles(root_component: &Rc<Component>) {
@@ -36,12 +37,20 @@ pub fn optimize_useless_rectangles(root_component: &Rc<Component>) {
 /// Check that this is a element we can optimize
 fn can_optimize(elem: &ElementRc) -> bool {
     let e = elem.borrow();
-    if e.is_flickable_viewport {
+    if e.is_flickable_viewport || e.has_popup_child {
         return false;
     };
 
+    if e.child_of_layout {
+        // The `LayoutItem` still has reference to this component, so we cannot remove it
+        return false;
+    }
+
     let base_type = match &e.base_type {
-        Type::Builtin(base_type) if base_type.name == "Rectangle" => base_type,
+        ElementType::Builtin(base_type) if base_type.name == "Rectangle" => base_type,
+        ElementType::Builtin(base_type) if base_type.native_class.class_name == "Empty" => {
+            base_type
+        }
         _ => return false,
     };
 

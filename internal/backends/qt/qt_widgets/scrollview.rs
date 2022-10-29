@@ -9,28 +9,28 @@ use super::*;
 #[derive(FieldOffsets, Default, SlintElement)]
 #[pin]
 pub struct NativeScrollView {
-    pub x: Property<f32>,
-    pub y: Property<f32>,
-    pub width: Property<f32>,
-    pub height: Property<f32>,
-    pub horizontal_max: Property<f32>,
-    pub horizontal_page_size: Property<f32>,
-    pub horizontal_value: Property<f32>,
-    pub vertical_max: Property<f32>,
-    pub vertical_page_size: Property<f32>,
-    pub vertical_value: Property<f32>,
+    pub x: Property<LogicalLength>,
+    pub y: Property<LogicalLength>,
+    pub width: Property<LogicalLength>,
+    pub height: Property<LogicalLength>,
+    pub horizontal_max: Property<LogicalLength>,
+    pub horizontal_page_size: Property<LogicalLength>,
+    pub horizontal_value: Property<LogicalLength>,
+    pub vertical_max: Property<LogicalLength>,
+    pub vertical_page_size: Property<LogicalLength>,
+    pub vertical_value: Property<LogicalLength>,
     pub cached_rendering_data: CachedRenderingData,
-    pub native_padding_left: Property<f32>,
-    pub native_padding_right: Property<f32>,
-    pub native_padding_top: Property<f32>,
-    pub native_padding_bottom: Property<f32>,
+    pub native_padding_left: Property<LogicalLength>,
+    pub native_padding_right: Property<LogicalLength>,
+    pub native_padding_top: Property<LogicalLength>,
+    pub native_padding_bottom: Property<LogicalLength>,
     pub enabled: Property<bool>,
     pub has_focus: Property<bool>,
     data: Property<NativeSliderData>,
 }
 
 impl Item for NativeScrollView {
-    fn init(self: Pin<&Self>, _window: &WindowRc) {
+    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {
         let paddings = Rc::pin(Property::default());
 
         paddings.as_ref().set_binding(move || {
@@ -65,32 +65,40 @@ impl Item for NativeScrollView {
 
         self.native_padding_left.set_binding({
             let paddings = paddings.clone();
-            move || paddings.as_ref().get().left as _
+            move || LogicalLength::new(paddings.as_ref().get().left as _)
         });
         self.native_padding_right.set_binding({
             let paddings = paddings.clone();
-            move || paddings.as_ref().get().right as _
+            move || LogicalLength::new(paddings.as_ref().get().right as _)
         });
         self.native_padding_top.set_binding({
             let paddings = paddings.clone();
-            move || paddings.as_ref().get().top as _
+            move || LogicalLength::new(paddings.as_ref().get().top as _)
         });
         self.native_padding_bottom.set_binding({
             let paddings = paddings;
-            move || paddings.as_ref().get().bottom as _
+            move || LogicalLength::new(paddings.as_ref().get().bottom as _)
         });
     }
 
-    fn geometry(self: Pin<&Self>) -> Rect {
-        euclid::rect(self.x(), self.y(), self.width(), self.height())
+    fn geometry(self: Pin<&Self>) -> LogicalRect {
+        LogicalRect::new(
+            LogicalPoint::from_lengths(self.x(), self.y()),
+            LogicalSize::from_lengths(self.width(), self.height()),
+        )
     }
 
-    fn layout_info(self: Pin<&Self>, orientation: Orientation, _window: &WindowRc) -> LayoutInfo {
+    fn layout_info(
+        self: Pin<&Self>,
+        orientation: Orientation,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+    ) -> LayoutInfo {
         LayoutInfo {
             min: match orientation {
                 Orientation::Horizontal => self.native_padding_left() + self.native_padding_right(),
                 Orientation::Vertical => self.native_padding_top() + self.native_padding_bottom(),
-            },
+            }
+            .get(),
             stretch: 1.,
             ..LayoutInfo::default()
         }
@@ -99,7 +107,7 @@ impl Item for NativeScrollView {
     fn input_event_filter_before_children(
         self: Pin<&Self>,
         _: MouseEvent,
-        _window: &WindowRc,
+        _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
         InputEventFilterResult::ForwardEvent
@@ -108,26 +116,26 @@ impl Item for NativeScrollView {
     fn input_event(
         self: Pin<&Self>,
         event: MouseEvent,
-        _window: &WindowRc,
+        _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &i_slint_core::items::ItemRc,
     ) -> InputEventResult {
         let size: qttypes::QSize = get_size!(self);
         let mut data = self.data();
         let active_controls = data.active_controls;
         let pressed = data.pressed;
-        let left = self.native_padding_left();
-        let right = self.native_padding_right();
-        let top = self.native_padding_top();
-        let bottom = self.native_padding_bottom();
+        let left = self.native_padding_left().get();
+        let right = self.native_padding_right().get();
+        let top = self.native_padding_top().get();
+        let bottom = self.native_padding_bottom().get();
 
         let mut handle_scrollbar = |horizontal: bool,
                                     pos: qttypes::QPoint,
                                     size: qttypes::QSize,
-                                    value_prop: Pin<&Property<f32>>,
+                                    value_prop: Pin<&Property<LogicalLength>>,
                                     page_size: i32,
                                     max: i32| {
             let pressed: bool = data.pressed != 0;
-            let value: i32 = value_prop.get() as i32;
+            let value: i32 = value_prop.get().get() as i32;
             let new_control = cpp!(unsafe [
                 pos as "QPoint",
                 value as "int",
@@ -158,7 +166,7 @@ impl Item for NativeScrollView {
             let (pos, size) = if horizontal { (pos.x, size.width) } else { (pos.y, size.height) };
 
             let result = match event {
-                MouseEvent::MousePressed { .. } => {
+                MouseEvent::Pressed { .. } => {
                     data.pressed = if horizontal { 1 } else { 2 };
                     if new_control == SC_ScrollBarSlider {
                         data.pressed_x = pos as f32;
@@ -167,11 +175,11 @@ impl Item for NativeScrollView {
                     data.active_controls = new_control;
                     InputEventResult::GrabMouse
                 }
-                MouseEvent::MouseExit => {
+                MouseEvent::Exit => {
                     data.pressed = 0;
                     InputEventResult::EventIgnored
                 }
-                MouseEvent::MouseReleased { .. } => {
+                MouseEvent::Released { .. } => {
                     data.pressed = 0;
                     let new_val = cpp!(unsafe [active_controls as "int", value as "int", max as "int", page_size as "int"] -> i32 as "int" {
                         switch (active_controls) {
@@ -191,22 +199,22 @@ impl Item for NativeScrollView {
                                 return -value;
                         }
                     });
-                    value_prop.set(-(new_val.min(max).max(0) as f32));
+                    value_prop.set(LogicalLength::new(-(new_val.min(max).max(0) as f32)));
                     InputEventResult::EventIgnored
                 }
-                MouseEvent::MouseMoved { .. } => {
+                MouseEvent::Moved { .. } => {
                     if data.pressed != 0 && data.active_controls == SC_ScrollBarSlider {
                         let max = max as f32;
                         let new_val = data.pressed_val
                             + ((pos as f32) - data.pressed_x) * (max + (page_size as f32))
                                 / size as f32;
-                        value_prop.set(-new_val.min(max).max(0.));
+                        value_prop.set(LogicalLength::new(-new_val.min(max).max(0.)));
                         InputEventResult::GrabMouse
                     } else {
                         InputEventResult::EventAccepted
                     }
                 }
-                MouseEvent::MouseWheel { .. } => {
+                MouseEvent::Wheel { .. } => {
                     // TODO
                     InputEventResult::EventAccepted
                 }
@@ -215,7 +223,7 @@ impl Item for NativeScrollView {
             result
         };
 
-        let pos = event.pos().unwrap_or_default();
+        let pos = event.position().unwrap_or_default();
 
         if pressed == 2 || (pressed == 0 && pos.x > (size.width as f32 - right)) {
             handle_scrollbar(
@@ -229,8 +237,8 @@ impl Item for NativeScrollView {
                     height: (size.height as f32 - (bottom + top)) as _,
                 },
                 Self::FIELD_OFFSETS.vertical_value.apply_pin(self),
-                self.vertical_page_size() as i32,
-                self.vertical_max() as i32,
+                self.vertical_page_size().get() as i32,
+                self.vertical_max().get() as i32,
             )
         } else if pressed == 1 || pos.y > (size.height as f32 - bottom) {
             handle_scrollbar(
@@ -244,19 +252,29 @@ impl Item for NativeScrollView {
                     height: (bottom - top) as _,
                 },
                 Self::FIELD_OFFSETS.horizontal_value.apply_pin(self),
-                self.horizontal_page_size() as i32,
-                self.horizontal_max() as i32,
+                self.horizontal_page_size().get() as i32,
+                self.horizontal_max().get() as i32,
             )
         } else {
             Default::default()
         }
     }
 
-    fn key_event(self: Pin<&Self>, _: &KeyEvent, _window: &WindowRc) -> KeyEventResult {
+    fn key_event(
+        self: Pin<&Self>,
+        _: &KeyEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> KeyEventResult {
         KeyEventResult::EventIgnored
     }
 
-    fn focus_event(self: Pin<&Self>, _: &FocusEvent, _window: &WindowRc) -> FocusEventResult {
+    fn focus_event(
+        self: Pin<&Self>,
+        _: &FocusEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> FocusEventResult {
         FocusEventResult::FocusIgnored
     }
 
@@ -264,15 +282,15 @@ impl Item for NativeScrollView {
 
         let data = this.data();
         let margins = qttypes::QMargins {
-            left: this.native_padding_left() as _,
-            top: this.native_padding_top() as _,
-            right: this.native_padding_right() as _,
-            bottom: this.native_padding_bottom() as _,
+            left: this.native_padding_left().get() as _,
+            top: this.native_padding_top().get() as _,
+            right: this.native_padding_right().get() as _,
+            bottom: this.native_padding_bottom().get() as _,
         };
         let enabled: bool = this.enabled();
         let has_focus: bool = this.has_focus();
         let frame_around_contents = cpp!(unsafe [
-            painter as "QPainter*",
+            painter as "QPainterPtr*",
             widget as "QWidget*",
             size as "QSize",
             dpr as "float",
@@ -303,13 +321,13 @@ impl Item for NativeScrollView {
             QSize corner_size = QSize(margins.right() - margins.left(), margins.bottom() - margins.top());
             if (foac) {
                 frameOption.rect = QRect(QPoint(), (size / dpr) - corner_size);
-                qApp->style()->drawControl(QStyle::CE_ShapedFrame, &frameOption, painter, widget);
+                qApp->style()->drawControl(QStyle::CE_ShapedFrame, &frameOption, painter->get(), widget);
                 frameOption.rect = QRect(frameOption.rect.bottomRight() + QPoint(1, 1), corner_size);
-                qApp->style()->drawPrimitive(QStyle::PE_PanelScrollAreaCorner, &frameOption, painter, widget);
+                qApp->style()->drawPrimitive(QStyle::PE_PanelScrollAreaCorner, &frameOption, painter->get(), widget);
             } else {
-                qApp->style()->drawControl(QStyle::CE_ShapedFrame, &frameOption, painter, widget);
+                qApp->style()->drawControl(QStyle::CE_ShapedFrame, &frameOption, painter->get(), widget);
                 frameOption.rect = QRect(frameOption.rect.bottomRight() + QPoint(1, 1) - QPoint(margins.right(), margins.bottom()), corner_size);
-                qApp->style()->drawPrimitive(QStyle::PE_PanelScrollAreaCorner, &frameOption, painter, widget);
+                qApp->style()->drawPrimitive(QStyle::PE_PanelScrollAreaCorner, &frameOption, painter->get(), widget);
             }
             return foac;
         });
@@ -323,7 +341,7 @@ impl Item for NativeScrollView {
                               pressed: bool,
                               initial_state: i32| {
             cpp!(unsafe [
-                painter as "QPainter*",
+                painter as "QPainterPtr*",
                 widget as "QWidget*",
                 value as "int",
                 page_size as "int",
@@ -336,6 +354,7 @@ impl Item for NativeScrollView {
                 has_focus as "bool",
                 initial_state as "int"
             ] {
+                QPainter *painter_ = painter->get();
                 auto r = rect.toAlignedRect();
                 // The mac style may crash on invalid rectangles (#595)
                 if (!r.isValid())
@@ -345,11 +364,11 @@ impl Item for NativeScrollView {
             #if defined(Q_OS_MAC)
                 QImage scrollbar_image(r.size(), QImage::Format_ARGB32_Premultiplied);
                 scrollbar_image.fill(Qt::transparent);
-                {QPainter p(&scrollbar_image); QPainter *painter = &p;
+                {QPainter p(&scrollbar_image); QPainter *painter_ = &p;
             #else
-                painter->save();
-                auto cleanup = qScopeGuard([&] { painter->restore(); });
-                painter->translate(r.topLeft()); // There is bugs in the styles if the scrollbar is not in (0,0)
+                painter_->save();
+                auto cleanup = qScopeGuard([&] { painter_->restore(); });
+                painter_->translate(r.topLeft()); // There is bugs in the styles if the scrollbar is not in (0,0)
             #endif
                 QStyleOptionSlider option;
                 option.state |= QStyle::State(initial_state);
@@ -366,10 +385,10 @@ impl Item for NativeScrollView {
                 }
 
                 auto style = qApp->style();
-                style->drawComplexControl(QStyle::CC_ScrollBar, &option, painter, widget);
+                style->drawComplexControl(QStyle::CC_ScrollBar, &option, painter_, widget);
             #if defined(Q_OS_MAC)
                 }
-                painter->drawImage(r.topLeft(), scrollbar_image);
+                (painter_)->drawImage(r.topLeft(), scrollbar_image);
             #endif
             });
         };
@@ -384,9 +403,9 @@ impl Item for NativeScrollView {
                 width: scrollbars_width as _,
                 height: ((size.height as f32 / dpr) - if frame_around_contents { scrollbars_height } else { (margins.bottom + margins.top) as f32 }) as _,
             },
-            this.vertical_value() as i32,
-            this.vertical_page_size() as i32,
-            this.vertical_max() as i32,
+            this.vertical_value().get() as i32,
+            this.vertical_page_size().get() as i32,
+            this.vertical_max().get() as i32,
             data.active_controls,
             data.pressed == 2,
             initial_state
@@ -399,9 +418,9 @@ impl Item for NativeScrollView {
                 width: ((size.width as f32 / dpr) - if frame_around_contents { scrollbars_width } else { (margins.left + margins.right) as _ }) as _,
                 height: (scrollbars_height) as _,
             },
-            this.horizontal_value() as i32,
-            this.horizontal_page_size() as i32,
-            this.horizontal_max() as i32,
+            this.horizontal_value().get() as i32,
+            this.horizontal_page_size().get() as i32,
+            this.horizontal_max().get() as i32,
             data.active_controls,
             data.pressed == 1,
             initial_state

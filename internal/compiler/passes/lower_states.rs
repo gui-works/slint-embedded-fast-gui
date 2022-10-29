@@ -6,11 +6,12 @@
 use crate::diagnostics::BuildDiagnostics;
 use crate::diagnostics::SourceLocation;
 use crate::expression_tree::*;
+use crate::langtype::ElementType;
 use crate::langtype::Type;
 use crate::object_tree::*;
 use std::cell::RefCell;
-use std::collections::HashSet;
-use std::{collections::HashMap, rc::Rc};
+use std::collections::{HashMap, HashSet};
+use std::rc::{Rc, Weak};
 
 pub fn lower_states(
     component: &Rc<Component>,
@@ -69,6 +70,13 @@ fn lower_state_in_element(
                     continue;
                 }
                 ExpressionForProperty::Expression(e) => e,
+                ExpressionForProperty::InvalidBecauseOfIssue1461 => {
+                    diag.push_error(
+                        format!("Internal error: The expression for the default state currently cannot be represented: https://github.com/slint-ui/slint/issues/1461\nAs a workaround, add a binding for property {}", ne.name()),
+                        &node
+                    );
+                    continue;
+                }
             };
             let new_expr = Expression::Condition {
                 condition: Box::new(Expression::BinaryExpression {
@@ -84,7 +92,9 @@ fn lower_state_in_element(
                     e.get_mut().get_mut().expression = new_expr
                 }
                 std::collections::btree_map::Entry::Vacant(e) => {
-                    e.insert(RefCell::new(new_expr.into()));
+                    let mut r = BindingExpression::from(new_expr);
+                    r.priority = 1;
+                    e.insert(r.into());
                 }
             };
         }
@@ -180,11 +190,14 @@ fn compute_state_property_name(root_element: &ElementRc) -> String {
 enum ExpressionForProperty {
     TwoWayBinding,
     Expression(Expression),
+    /// Workaround: the expression can't be represented with the current data structure, so make it an error for now.
+    InvalidBecauseOfIssue1461,
 }
 
 /// Return the expression binding currently associated to the given property
 fn expression_for_property(element: &ElementRc, name: &str) -> ExpressionForProperty {
     let mut element_it = Some(element.clone());
+    let mut in_base = false;
     while let Some(element) = element_it {
         if let Some(e) = element.borrow().bindings.get(name) {
             let e = e.borrow();
@@ -192,16 +205,41 @@ fn expression_for_property(element: &ElementRc, name: &str) -> ExpressionForProp
                 return ExpressionForProperty::TwoWayBinding;
             }
             if !matches!(e.expression, Expression::Invalid) {
+                if in_base {
+                    // Check that the expresison is valid in the new scope
+                    let mut has_invalid = false;
+                    e.expression.visit_recursive(&mut |ex| match ex {
+                        Expression::CallbackReference(nr) | Expression::PropertyReference(nr) => {
+                            let e = nr.element();
+                            if !Rc::ptr_eq(&e, &element)
+                                && Weak::ptr_eq(
+                                    &e.borrow().enclosing_component,
+                                    &element.borrow().enclosing_component,
+                                )
+                            {
+                                has_invalid = true;
+                            }
+                        }
+                        _ => (),
+                    });
+                    if has_invalid {
+                        return ExpressionForProperty::InvalidBecauseOfIssue1461;
+                    }
+                }
+
                 return ExpressionForProperty::Expression(e.expression.clone());
             }
         }
-        element_it = if let Type::Component(base) = &element.borrow().base_type {
+        element_it = if let ElementType::Component(base) = &element.borrow().base_type {
+            in_base = true;
             Some(base.root_element.clone())
         } else {
             None
         };
     }
-    ExpressionForProperty::Expression(Expression::default_value_for_type(
-        &element.borrow().lookup_property(name).property_type,
-    ))
+    let expr = super::materialize_fake_properties::initialize(element, name).unwrap_or_else(|| {
+        Expression::default_value_for_type(&element.borrow().lookup_property(name).property_type)
+    });
+
+    ExpressionForProperty::Expression(expr)
 }

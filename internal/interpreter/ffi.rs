@@ -4,19 +4,20 @@
 use crate::dynamic_component::ErasedComponentBox;
 
 use super::*;
+use core::ptr::NonNull;
 use i_slint_core::model::{Model, ModelNotify, SharedVectorModel};
 use i_slint_core::slice::Slice;
-use i_slint_core::window::{WindowHandleAccess, WindowRc};
+use i_slint_core::window::WindowAdapter;
 use std::ffi::c_void;
 use vtable::VRef;
 
 #[repr(C)]
 #[cfg(target_pointer_width = "64")]
-pub struct ValueOpaque([usize; 7]);
+pub struct ValueOpaque([usize; 8]);
 #[repr(C)]
 #[cfg(target_pointer_width = "32")]
 #[repr(align(8))]
-pub struct ValueOpaque([usize; 10]);
+pub struct ValueOpaque([usize; 11]);
 /// Asserts that ValueOpaque is as large as Value and has the same alignment, to make transmute safe.
 const _: [(); std::mem::size_of::<ValueOpaque>()] = [(); std::mem::size_of::<Value>()];
 const _: [(); std::mem::align_of::<ValueOpaque>()] = [(); std::mem::align_of::<Value>()];
@@ -110,10 +111,17 @@ pub unsafe extern "C" fn slint_interpreter_value_new_image(img: &Image, val: *mu
 /// Construct a new Value containing a model in the given memory location
 #[no_mangle]
 pub unsafe extern "C" fn slint_interpreter_value_new_model(
-    model: vtable::VBox<ModelAdaptorVTable>,
+    model: NonNull<u8>,
+    vtable: &ModelAdaptorVTable,
     val: *mut ValueOpaque,
 ) {
-    std::ptr::write(val as *mut Value, Value::Model(ModelRc::new(ModelAdaptorWrapper(model))))
+    std::ptr::write(
+        val as *mut Value,
+        Value::Model(ModelRc::new(ModelAdaptorWrapper(vtable::VBox::from_raw(
+            NonNull::from(vtable),
+            model,
+        )))),
+    )
 }
 
 #[no_mangle]
@@ -539,9 +547,9 @@ pub extern "C" fn slint_interpreter_component_instance_show(
     generativity::make_guard!(guard);
     let comp = inst.unerase(guard);
     if is_visible {
-        comp.borrow_instance().window().show();
+        comp.borrow_instance().window_adapter().show();
     } else {
-        comp.borrow_instance().window().hide();
+        comp.borrow_instance().window_adapter().hide();
     }
 }
 
@@ -552,13 +560,13 @@ pub extern "C" fn slint_interpreter_component_instance_show(
 #[no_mangle]
 pub unsafe extern "C" fn slint_interpreter_component_instance_window(
     inst: &ErasedComponentBox,
-    out: *mut *const i_slint_core::window::ffi::WindowRcOpaque,
+    out: *mut *const i_slint_core::window::ffi::WindowAdapterRcOpaque,
 ) {
     assert_eq!(
-        core::mem::size_of::<WindowRc>(),
-        core::mem::size_of::<i_slint_core::window::ffi::WindowRcOpaque>()
+        core::mem::size_of::<Rc<dyn WindowAdapter>>(),
+        core::mem::size_of::<i_slint_core::window::ffi::WindowAdapterRcOpaque>()
     );
-    core::ptr::write(out as *mut *const WindowRc, inst.window().window_handle() as *const _)
+    core::ptr::write(out as *mut *const Rc<dyn WindowAdapter>, inst.window_adapter() as *const _)
 }
 
 /// Instantiate an instance from a definition.
@@ -656,6 +664,11 @@ pub unsafe extern "C" fn slint_interpreter_model_notify_row_added(
     count: usize,
 ) {
     notify.as_model_notify().row_added(row, count);
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn slint_interpreter_model_notify_reset(notify: &ModelNotifyOpaque) {
+    notify.as_model_notify().reset();
 }
 
 #[no_mangle]

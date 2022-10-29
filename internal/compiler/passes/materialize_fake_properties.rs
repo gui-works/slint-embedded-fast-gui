@@ -7,7 +7,7 @@
 
 use crate::diagnostics::Spanned;
 use crate::expression_tree::{BindingExpression, Expression, Unit};
-use crate::langtype::Type;
+use crate::langtype::{ElementType, Type};
 use crate::layout::Orientation;
 use crate::namedreference::NamedReference;
 use crate::object_tree::*;
@@ -61,7 +61,9 @@ pub fn materialize_fake_properties(component: &Rc<Component>) {
             let span = elem_mut.to_source_location();
             match elem_mut.bindings.entry(nr.name().into()) {
                 std::collections::btree_map::Entry::Vacant(e) => {
-                    e.insert(BindingExpression::new_with_span(init_expr, span).into());
+                    let mut binding = BindingExpression::new_with_span(init_expr, span);
+                    binding.priority = i32::MAX;
+                    e.insert(binding.into());
                 }
                 std::collections::btree_map::Entry::Occupied(mut e) => {
                     e.get_mut().get_mut().expression = init_expr;
@@ -82,19 +84,19 @@ fn must_initialize(elem: &Element, prop: &str) -> bool {
 /// Returns a type if the property needs to be materialized.
 fn should_materialize(
     property_declarations: &BTreeMap<String, PropertyDeclaration>,
-    base_type: &Type,
+    base_type: &ElementType,
     prop: &str,
 ) -> Option<Type> {
     if property_declarations.contains_key(prop) {
         return None;
     }
-    let has_declared_property = match &base_type {
-        Type::Component(c) => has_declared_property(&c.root_element.borrow(), prop),
-        Type::Builtin(b) => b.properties.contains_key(prop),
-        Type::Native(n) => {
+    let has_declared_property = match base_type {
+        ElementType::Component(c) => has_declared_property(&c.root_element.borrow(), prop),
+        ElementType::Builtin(b) => b.properties.contains_key(prop),
+        ElementType::Native(n) => {
             n.lookup_property(prop).map_or(false, |prop_type| prop_type.is_property_type())
         }
-        _ => false,
+        ElementType::Global | ElementType::Error => false,
     };
 
     if !has_declared_property {
@@ -113,15 +115,15 @@ fn has_declared_property(elem: &Element, prop: &str) -> bool {
         return true;
     }
     match &elem.base_type {
-        Type::Component(c) => has_declared_property(&c.root_element.borrow(), prop),
-        Type::Builtin(b) => b.properties.contains_key(prop),
-        Type::Native(n) => n.lookup_property(prop).is_some(),
-        _ => false,
+        ElementType::Component(c) => has_declared_property(&c.root_element.borrow(), prop),
+        ElementType::Builtin(b) => b.properties.contains_key(prop),
+        ElementType::Native(n) => n.lookup_property(prop).is_some(),
+        ElementType::Global | ElementType::Error => false,
     }
 }
 
 /// Initialize a sensible default binding for the now materialized property
-fn initialize(elem: &ElementRc, name: &str) -> Option<Expression> {
+pub fn initialize(elem: &ElementRc, name: &str) -> Option<Expression> {
     let expr = match name {
         "min-height" => layout_constraint_prop(elem, "min", Orientation::Vertical),
         "min-width" => layout_constraint_prop(elem, "min", Orientation::Horizontal),

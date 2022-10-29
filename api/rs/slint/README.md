@@ -22,7 +22,7 @@ In your `Cargo.toml` add:
 
 ```toml
 [dependencies]
-slint = "0.2.1"
+slint = "0.3.1"
 ```
 
 And in your `main.rs`:
@@ -63,4 +63,4 @@ cargo run --release --bin printerdemo
 
 ### Minimum Supported Rust Version
 
- This crate's minimum supported `rustc` version is `1.56.0`.
+ This crate's minimum supported `rustc` version is 1.60.

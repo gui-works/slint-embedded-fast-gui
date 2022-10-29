@@ -1,7 +1,8 @@
 // Copyright © SixtyFPS GmbH <info@slint-ui.com>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
-import { SpinBox, Button, CheckBox, Slider, LineEdit, ScrollView, ListView, HorizontalBox, VerticalBox, GridBox } from "std-widgets.slint";
+import { SpinBox, Button, CheckBox, Slider, LineEdit, ScrollView, ListView,
+    HorizontalBox, VerticalBox, GridBox, StandardButton } from "std-widgets.slint";
 
 export struct TodoItem := {
     title: string,
@@ -14,6 +15,33 @@ MainWindow := Window {
     callback todo-added(string);
     callback remove-done();
 
+    callback popup_confirmed;
+    callback show_confirm_popup;
+
+    callback apply_sorting_and_filtering();
+
+    show_confirm_popup => { confirm_popup.show(); }
+
+    confirm_popup := PopupWindow {
+        x: 40px;
+        y: 100px;
+        width: min(confirm_popup_layout.preferred-width, root.width - 80px);
+        Rectangle {
+            background: root.background;
+            border-color: confirm_popup_text.color;
+            border-width: 1px;
+        }
+        confirm_popup_layout := Dialog {
+            height:100%; width: 100%;
+            confirm_popup_text := Text {
+                text: "Some items are not done, are you sure you wish to quit?";
+                wrap: word-wrap;
+            }
+            StandardButton { kind: yes; clicked => { popup_confirmed(); } }
+            StandardButton { kind: no; }
+        }
+    }
+
     property <[TodoItem]> todo-model: [
         { title: "Implement the .slint file", checked: true },
         { title: "Do the Rust part", checked: false },
@@ -24,6 +52,10 @@ MainWindow := Window {
         { title: "???", checked: false },
         { title: "Profit", checked: false },
     ];
+
+    property <bool> show-header: false;
+    property <bool> is-sort-by-name: false;
+    property <bool> hide-done-items: false;
 
     VerticalBox {
         HorizontalBox {
@@ -40,6 +72,28 @@ MainWindow := Window {
                 clicked => {
                     todo-added(text-edit.text);
                     text-edit.text = "";
+                }
+            }
+        }
+
+        if (show-header) : HorizontalBox { 
+            alignment: start; 
+
+            CheckBox {  
+                text: "Sort by name";
+                checked <=> is-sort-by-name;
+
+                toggled => {
+                    apply_sorting_and_filtering();
+                }
+            }
+
+            CheckBox {  
+                text: "Hide done items";
+                checked <=> hide-done-items;
+
+                toggled => {
+                    apply_sorting_and_filtering();
                 }
             }
         }

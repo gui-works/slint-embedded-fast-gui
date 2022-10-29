@@ -1,0 +1,36 @@
+# Copyright © SixtyFPS GmbH <info@slint-ui.com>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+[package]
+name = "_7guis"
+version = "0.3.2"
+authors = ["Slint Developers <info@slint-ui.com>"]
+edition = "2021"
+publish = false
+license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
+rust-version = "1.60"
+
+[[bin]]
+path = "booker.rs"
+name = "booker"
+
+[[bin]]
+path = "timer.rs"
+name = "timer"
+
+[[bin]]
+path = "crud.rs"
+name = "crud"
+
+[[bin]]
+path = "circledraw.rs"
+name = "circledraw"
+
+[[bin]]
+path = "cells.rs"
+name = "cells"
+
+
+[dependencies]
+slint = { path = "../../api/rs/slint" }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"]}

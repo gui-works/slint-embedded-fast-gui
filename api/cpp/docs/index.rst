@@ -15,6 +15,8 @@ Welcome to Slint C++'s documentation!
 
    First Steps <getting_started.md>
 
+   markdown/recipes/recipes.md
+
 .. toctree::
    :maxdepth: 2
    :hidden:
@@ -39,8 +41,6 @@ Welcome to Slint C++'s documentation!
 
    markdown/debugging_techniques.md
 
-   cpp_migration.md
-
 .. image:: https://github.com/slint-ui/slint/workflows/CI/badge.svg
    :target: https://github.com/slint-ui/slint/actions
    :alt: GitHub CI Build Status
@@ -59,7 +59,7 @@ Slint comes with a markup language that is specifically designed for user interf
 powerful way to describe graphical elements, their placement, and the flow of data through the different states. It is a familiar syntax to describe the hierarchy
 of elements and property bindings. Here's the obligatory "Hello World":
 
-.. code-block:: slint-no-preview
+.. code-block:: slint,ignore
 
     HelloWorld := Window {
         width: 400px;

@@ -1,6 +1,8 @@
 // Copyright © SixtyFPS GmbH <info@slint-ui.com>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
+// cSpell: ignore buildrs
+
 /*!
 # Slint
 
@@ -12,12 +14,14 @@ If you are already familiar with Slint, the following topics provide related inf
 
 ## Related topics
 
+ * [Examples and Recipes](docs::recipes)
  * [The `.slint` language reference](docs::langref)
  * [Builtin Elements](docs::builtin_elements)
+ * [Builtin Enums](docs::builtin_enums)
  * [Widgets](docs::widgets)
  * [Positioning and Layout of Elements](docs::layouting)
  * [Debugging Techniques](docs::debugging_techniques)
- * [Migration from older version](docs::migration)
+ * [Slint on Microcontrollers](docs::mcu)
 
 ## How to use this crate:
 
@@ -68,11 +72,11 @@ build = "build.rs"
 edition = "2021"
 
 [dependencies]
-slint = "0.2.1"
+slint = "0.3.1"
 ...
 
 [build-dependencies]
-slint-build = "0.2.1"
+slint-build = "0.3.1"
 ```
 
 Use the API of the slint-build crate in the `build.rs` file:
@@ -111,7 +115,7 @@ as a struct with the same name as the component.
 
 For example, if you have
 
-```slint
+```slint,no-preview
 export MyComponent := Window { /*...*/ }
 ```
 
@@ -229,9 +233,9 @@ See the [documentation of the `Global` trait](Global) for an example.
 
 extern crate alloc;
 
-#[cfg(not(feature = "compat-0-2-0"))]
+#[cfg(not(feature = "compat-0-3-0"))]
 compile_error!(
-    "The feature `compat-0-2-0` must be enabled to ensure \
+    "The feature `compat-0-3-0` must be enabled to ensure \
     forward compatibility with future version of this crate"
 );
 
@@ -242,294 +246,20 @@ pub use i_slint_core::graphics::{
     Brush, Color, Image, LoadImageError, Rgb8Pixel, Rgba8Pixel, RgbaColor, SharedPixelBuffer,
 };
 pub use i_slint_core::model::{
-    Model, ModelNotify, ModelPeer, ModelRc, ModelTracker, StandardListViewItem, VecModel,
+    FilterModel, MapModel, Model, ModelExt, ModelNotify, ModelPeer, ModelRc, ModelTracker,
+    SortModel, StandardListViewItem, VecModel,
 };
 pub use i_slint_core::sharedvector::SharedVector;
-pub use i_slint_core::string::SharedString;
 pub use i_slint_core::timers::{Timer, TimerMode};
+pub use i_slint_core::{format, string::SharedString};
 
-/// This function can be used to register a custom TrueType font with Slint,
-/// for use with the `font-family` property. The provided slice must be a valid TrueType
-/// font.
-#[doc(hidden)]
-#[cfg(feature = "std")]
-pub fn register_font_from_memory(data: &'static [u8]) -> Result<(), Box<dyn std::error::Error>> {
-    i_slint_backend_selector::backend().register_font_from_memory(data)
-}
-
-/// This function can be used to register a custom TrueType font with Slint,
-/// for use with the `font-family` property. The provided path must refer to a valid TrueType
-/// font.
-#[doc(hidden)]
-#[cfg(feature = "std")]
-pub fn register_font_from_path<P: AsRef<std::path::Path>>(
-    path: P,
-) -> Result<(), Box<dyn std::error::Error>> {
-    i_slint_backend_selector::backend().register_font_from_path(path.as_ref())
-}
-
-/// internal re_exports used by the macro generated
-#[doc(hidden)]
-pub mod re_exports {
-    pub use alloc::boxed::Box;
-    pub use alloc::format;
-    pub use alloc::rc::{Rc, Weak};
-    pub use alloc::string::String;
-    pub use alloc::{vec, vec::Vec};
-    pub use const_field_offset::{self, FieldOffsets, PinnedDrop};
-    pub use core::iter::FromIterator;
-    pub use i_slint_backend_selector::native_widgets::*;
-    pub use i_slint_core::animations::EasingCurve;
-    pub use i_slint_core::callbacks::Callback;
-    pub use i_slint_core::component::{
-        free_component_item_graphics_resources, init_component_items, Component, ComponentRefPin,
-        ComponentVTable,
-    };
-    pub use i_slint_core::graphics::*;
-    pub use i_slint_core::input::{
-        FocusEvent, InputEventResult, KeyEvent, KeyEventResult, KeyboardModifiers, MouseEvent,
-    };
-    pub use i_slint_core::item_tree::{
-        visit_item_tree, ItemTreeNode, ItemVisitorRefMut, ItemVisitorVTable, TraversalOrder,
-        VisitChildrenResult,
-    };
-    pub use i_slint_core::items::*;
-    pub use i_slint_core::layout::*;
-    pub use i_slint_core::model::*;
-    pub use i_slint_core::properties::{set_state_binding, Property, PropertyTracker, StateInfo};
-    pub use i_slint_core::slice::Slice;
-    pub use i_slint_core::window::{Window, WindowHandleAccess, WindowRc};
-    pub use i_slint_core::Color;
-    pub use i_slint_core::ComponentVTable_static;
-    pub use i_slint_core::SharedString;
-    pub use i_slint_core::SharedVector;
-    pub use num_traits::float::Float;
-    pub use once_cell::race::OnceBox;
-    pub use once_cell::unsync::OnceCell;
-    pub use pin_weak::rc::PinWeak;
-    pub use vtable::{self, *};
-}
-
-#[doc(hidden)]
-pub mod internal {
-    use crate::re_exports::*;
-    use alloc::rc::Rc;
-    use core::pin::Pin;
-
-    // Helper functions called from generated code to reduce code bloat from
-    // extra copies of the original functions for each call site due to
-    // the impl Fn() they are taking.
-
-    pub trait StrongComponentRef: Sized {
-        type Weak: Clone + 'static;
-        fn to_weak(&self) -> Self::Weak;
-        fn from_weak(weak: &Self::Weak) -> Option<Self>;
-    }
-
-    impl<C: 'static> StrongComponentRef for VRc<ComponentVTable, C> {
-        type Weak = VWeak<ComponentVTable, C>;
-        fn to_weak(&self) -> Self::Weak {
-            VRc::downgrade(self)
-        }
-        fn from_weak(weak: &Self::Weak) -> Option<Self> {
-            weak.upgrade()
-        }
-    }
-
-    impl<C: 'static> StrongComponentRef for VRcMapped<ComponentVTable, C> {
-        type Weak = VWeakMapped<ComponentVTable, C>;
-        fn to_weak(&self) -> Self::Weak {
-            VRcMapped::downgrade(self)
-        }
-        fn from_weak(weak: &Self::Weak) -> Option<Self> {
-            weak.upgrade()
-        }
-    }
-
-    impl<C: 'static> StrongComponentRef for Pin<Rc<C>> {
-        type Weak = PinWeak<C>;
-        fn to_weak(&self) -> Self::Weak {
-            PinWeak::downgrade(self.clone())
-        }
-        fn from_weak(weak: &Self::Weak) -> Option<Self> {
-            weak.upgrade()
-        }
-    }
-
-    pub fn set_property_binding<T: Clone + 'static, StrongRef: StrongComponentRef + 'static>(
-        property: Pin<&Property<T>>,
-        component_strong: &StrongRef,
-        binding: fn(StrongRef) -> T,
-    ) {
-        let weak = component_strong.to_weak();
-        property.set_binding(move || {
-            binding(<StrongRef as StrongComponentRef>::from_weak(&weak).unwrap())
-        })
-    }
-
-    pub fn set_animated_property_binding<
-        T: Clone + i_slint_core::properties::InterpolatedPropertyValue + 'static,
-        StrongRef: StrongComponentRef + 'static,
-    >(
-        property: Pin<&Property<T>>,
-        component_strong: &StrongRef,
-        binding: fn(StrongRef) -> T,
-        animation_data: PropertyAnimation,
-    ) {
-        let weak = component_strong.to_weak();
-        property.set_animated_binding(
-            move || binding(<StrongRef as StrongComponentRef>::from_weak(&weak).unwrap()),
-            animation_data,
-        )
-    }
-
-    pub fn set_animated_property_binding_for_transition<
-        T: Clone + i_slint_core::properties::InterpolatedPropertyValue + 'static,
-        StrongRef: StrongComponentRef + 'static,
-    >(
-        property: Pin<&Property<T>>,
-        component_strong: &StrongRef,
-        binding: fn(StrongRef) -> T,
-        compute_animation_details: fn(
-            StrongRef,
-        )
-            -> (PropertyAnimation, i_slint_core::animations::Instant),
-    ) {
-        let weak_1 = component_strong.to_weak();
-        let weak_2 = weak_1.clone();
-        property.set_animated_binding_for_transition(
-            move || binding(<StrongRef as StrongComponentRef>::from_weak(&weak_1).unwrap()),
-            move || {
-                compute_animation_details(
-                    <StrongRef as StrongComponentRef>::from_weak(&weak_2).unwrap(),
-                )
-            },
-        )
-    }
-
-    pub fn set_property_state_binding<StrongRef: StrongComponentRef + 'static>(
-        property: Pin<&Property<StateInfo>>,
-        component_strong: &StrongRef,
-        binding: fn(StrongRef) -> i32,
-    ) {
-        let weak = component_strong.to_weak();
-        crate::re_exports::set_state_binding(property, move || {
-            binding(<StrongRef as StrongComponentRef>::from_weak(&weak).unwrap())
-        })
-    }
-
-    pub fn set_callback_handler<
-        Arg: ?Sized + 'static,
-        Ret: Default + 'static,
-        StrongRef: StrongComponentRef + 'static,
-    >(
-        callback: Pin<&Callback<Arg, Ret>>,
-        component_strong: &StrongRef,
-        handler: fn(StrongRef, &Arg) -> Ret,
-    ) {
-        let weak = component_strong.to_weak();
-        callback.set_handler(move |arg| {
-            handler(<StrongRef as StrongComponentRef>::from_weak(&weak).unwrap(), arg)
-        })
-    }
-
-    /// This function can be used to register a pre-rendered, embedded bitmap font with Slint,
-    /// for use with the `font-family` property.
-    #[doc(hidden)]
-    pub fn register_bitmap_font(font_data: &'static super::re_exports::BitmapFont) {
-        i_slint_backend_selector::backend().register_bitmap_font(font_data)
-    }
-}
-
-/// Creates a new window to render components in.
-#[doc(hidden)]
-pub fn create_window() -> re_exports::WindowRc {
-    i_slint_backend_selector::backend().create_window()
-}
+pub mod private_unstable_api;
 
 /// Enters the main event loop. This is necessary in order to receive
 /// events from the windowing system in order to render to the screen
 /// and react to user input.
 pub fn run_event_loop() {
-    i_slint_backend_selector::backend()
-        .run_event_loop(i_slint_core::backend::EventLoopQuitBehavior::QuitOnLastWindowClosed);
-}
-/// Schedules the main event loop for termination. This function is meant
-/// to be called from callbacks triggered by the UI. After calling the function,
-/// it will return immediately and once control is passed back to the event loop,
-/// the initial call to [`run_event_loop()`] will return.
-pub fn quit_event_loop() {
-    i_slint_backend_selector::backend().quit_event_loop();
-}
-
-/// This module contains functions useful for unit tests
-#[cfg(feature = "std")]
-pub mod testing {
-    use core::cell::Cell;
-    thread_local!(static KEYBOARD_MODIFIERS : Cell<crate::re_exports::KeyboardModifiers> = Default::default());
-
-    use super::ComponentHandle;
-
-    pub use i_slint_core::tests::slint_mock_elapsed_time as mock_elapsed_time;
-
-    /// Simulate a mouse click
-    pub fn send_mouse_click<
-        X: vtable::HasStaticVTable<i_slint_core::component::ComponentVTable>
-            + crate::re_exports::WindowHandleAccess
-            + 'static,
-        Component: Into<vtable::VRc<i_slint_core::component::ComponentVTable, X>> + ComponentHandle,
-    >(
-        component: &Component,
-        x: f32,
-        y: f32,
-    ) {
-        let rc = component.clone_strong().into();
-        let dyn_rc = vtable::VRc::into_dyn(rc.clone());
-        i_slint_core::tests::slint_send_mouse_click(&dyn_rc, x, y, &rc.window_handle().clone());
-    }
-
-    /// Simulate a change in keyboard modifiers being pressed
-    pub fn set_current_keyboard_modifiers<
-        X: vtable::HasStaticVTable<i_slint_core::component::ComponentVTable>
-            + crate::re_exports::WindowHandleAccess,
-        Component: Into<vtable::VRc<i_slint_core::component::ComponentVTable, X>> + ComponentHandle,
-    >(
-        _component: &Component,
-        modifiers: crate::re_exports::KeyboardModifiers,
-    ) {
-        KEYBOARD_MODIFIERS.with(|x| x.set(modifiers))
-    }
-
-    /// Simulate entering a sequence of ascii characters key by key.
-    pub fn send_keyboard_string_sequence<
-        X: vtable::HasStaticVTable<i_slint_core::component::ComponentVTable>
-            + crate::re_exports::WindowHandleAccess,
-        Component: Into<vtable::VRc<i_slint_core::component::ComponentVTable, X>> + ComponentHandle,
-    >(
-        component: &Component,
-        sequence: &str,
-    ) {
-        let component = component.clone_strong().into();
-        i_slint_core::tests::send_keyboard_string_sequence(
-            &super::SharedString::from(sequence),
-            KEYBOARD_MODIFIERS.with(|x| x.get()),
-            &component.window_handle().clone(),
-        )
-    }
-
-    /// Applies the specified scale factor to the window that's associated with the given component.
-    /// This overrides the value provided by the windowing system.
-    pub fn set_window_scale_factor<
-        X: vtable::HasStaticVTable<i_slint_core::component::ComponentVTable>
-            + crate::re_exports::WindowHandleAccess,
-        Component: Into<vtable::VRc<i_slint_core::component::ComponentVTable, X>> + ComponentHandle,
-    >(
-        component: &Component,
-        factor: f32,
-    ) {
-        let component = component.clone_strong().into();
-        component.window_handle().set_scale_factor(factor)
-    }
+    i_slint_backend_selector::with_platform(|b| b.run_event_loop())
 }
 
 /// Include the code generated with the slint-build crate from the build script. After calling `slint_build::compile`
@@ -544,10 +274,21 @@ macro_rules! include_modules {
     };
 }
 
+/// This module contains items that you need to use or implement if you want use Slint in an environment without
+/// one of the supplied platform backends such as qt or winit.
+///
+/// The primary interface is the [`platform::Platform`] trait. Pass your implementation of it to Slint by calling
+/// [`platform::set_platform()`] early on in your application, before creating any Slint components.
+///
+/// The [Slint on Microcontrollers](crate::docs::mcu) documentation has additional examples.
+pub mod platform {
+    pub use i_slint_core::platform::*;
+}
+
 /// Helper type that helps checking that the generated code is generated for the right version
 #[doc(hidden)]
 #[allow(non_camel_case_types)]
-pub struct VersionCheck_0_2_2;
+pub struct VersionCheck_0_3_2;
 
 #[cfg(doctest)]
 mod compile_fail_tests;

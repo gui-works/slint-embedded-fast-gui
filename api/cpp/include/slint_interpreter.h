@@ -205,7 +205,10 @@ public:
     }
     /// Returns an iterator that when compared with an iterator returned by begin() can be
     /// used to detect when all fields have been visited.
-    iterator end() const { return iterator(); }
+    iterator end() const
+    {
+        return iterator();
+    }
 
     /// Returns the value of the field with the given \a name; Returns an std::optional without
     /// value if the field does not exist.
@@ -433,13 +436,13 @@ inline Value::Value(const std::shared_ptr<slint::Model<Value>> &model)
 {
     using cbindgen_private::ModelAdaptorVTable;
     using vtable::VRef;
-    struct ModelWrapper : private_api::AbstractRepeaterView
+    struct ModelWrapper : private_api::ModelChangeListener
     {
         std::shared_ptr<slint::Model<Value>> model;
         cbindgen_private::ModelNotifyOpaque notify;
         // This kind of mean that the rust code has ownership of "this" until the drop function is
         // called
-        std::shared_ptr<AbstractRepeaterView> self;
+        std::shared_ptr<ModelChangeListener> self;
         ~ModelWrapper() { cbindgen_private::slint_interpreter_model_notify_destructor(&notify); }
 
         void row_added(int index, int count) override
@@ -454,6 +457,7 @@ inline Value::Value(const std::shared_ptr<slint::Model<Value>> &model)
         {
             cbindgen_private::slint_interpreter_model_notify_row_removed(&notify, index, count);
         }
+        void reset() override { cbindgen_private::slint_interpreter_model_notify_reset(&notify); }
     };
 
     auto wrapper = std::make_shared<ModelWrapper>();
@@ -488,8 +492,8 @@ inline Value::Value(const std::shared_ptr<slint::Model<Value>> &model)
     };
 
     static const ModelAdaptorVTable vt { row_count, row_data, set_row_data, get_notify, drop };
-    vtable::VBox<ModelAdaptorVTable> wrap { &vt, wrapper.get() };
-    cbindgen_private::slint_interpreter_value_new_model(wrap, &inner);
+    cbindgen_private::slint_interpreter_value_new_model(reinterpret_cast<uint8_t *>(wrapper.get()),
+                                                        &vt, &inner);
 }
 
 inline Struct::Struct(std::initializer_list<std::pair<std::string_view, Value>> args)
@@ -560,7 +564,7 @@ public:
     /// such as the position on the screen.
     const slint::Window &window()
     {
-        const cbindgen_private::WindowRcOpaque *win_ptr = nullptr;
+        const cbindgen_private::WindowAdapterRcOpaque *win_ptr = nullptr;
         cbindgen_private::slint_interpreter_component_instance_window(inner(), &win_ptr);
         return *reinterpret_cast<const slint::Window *>(win_ptr);
     }
@@ -578,10 +582,10 @@ public:
     /// it may return nullptr if the Qt backend is not used at runtime.
     QWidget *qwidget() const
     {
-        const cbindgen_private::WindowRcOpaque *win_ptr = nullptr;
+        const cbindgen_private::WindowAdapterRcOpaque *win_ptr = nullptr;
         cbindgen_private::slint_interpreter_component_instance_window(inner(), &win_ptr);
         auto wid = reinterpret_cast<QWidget *>(cbindgen_private::slint_qt_get_widget(
-                reinterpret_cast<const cbindgen_private::WindowRc *>(win_ptr)));
+                reinterpret_cast<const cbindgen_private::WindowAdapterRc *>(win_ptr)));
         return wid;
     }
 #endif
@@ -1006,10 +1010,10 @@ inline void send_keyboard_string_sequence(const slint::interpreter::ComponentIns
                                           const slint::SharedString &str,
                                           KeyboardModifiers modifiers = {})
 {
-    const cbindgen_private::WindowRcOpaque *win_ptr = nullptr;
+    const cbindgen_private::WindowAdapterRcOpaque *win_ptr = nullptr;
     cbindgen_private::slint_interpreter_component_instance_window(
             reinterpret_cast<const cbindgen_private::ErasedComponentBox *>(component), &win_ptr);
     cbindgen_private::send_keyboard_string_sequence(
-            &str, modifiers, reinterpret_cast<const cbindgen_private::WindowRc *>(win_ptr));
+            &str, modifiers, reinterpret_cast<const cbindgen_private::WindowAdapterRc *>(win_ptr));
 }
 }

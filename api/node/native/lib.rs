@@ -4,7 +4,7 @@
 use core::cell::RefCell;
 use i_slint_compiler::langtype::Type;
 use i_slint_core::model::{Model, ModelRc};
-use i_slint_core::window::WindowHandleAccess;
+use i_slint_core::window::WindowInner;
 use i_slint_core::{ImageInner, SharedVector};
 use neon::prelude::*;
 use rand::RngCore;
@@ -15,7 +15,7 @@ mod persistent_context;
 
 struct WrappedComponentType(Option<slint_interpreter::ComponentDefinition>);
 struct WrappedComponentRc(Option<slint_interpreter::ComponentInstance>);
-struct WrappedWindow(Option<i_slint_core::window::WindowRc>);
+struct WrappedWindow(Option<std::rc::Rc<dyn i_slint_core::window::WindowAdapter>>);
 
 /// We need to do some gymnastic with closures to pass the ExecuteContext with the right lifetime
 type GlobalContextCallback<'c> =
@@ -228,13 +228,10 @@ fn to_eval_value<'cx>(
         | Type::Void
         | Type::InferredProperty
         | Type::InferredCallback
-        | Type::Builtin(_)
-        | Type::Native(_)
         | Type::Function { .. }
         | Type::Model
         | Type::Callback { .. }
         | Type::Easing
-        | Type::Component(_)
         | Type::PathData
         | Type::LayoutCache
         | Type::ElementReference => cx.throw_error("Cannot convert to a Slint property value"),
@@ -254,12 +251,10 @@ fn to_js_value<'cx>(
         Value::Bool(b) => JsBoolean::new(cx, b).as_value(cx),
         Value::Image(r) => match (&r).into() {
             &ImageInner::None => JsUndefined::new().as_value(cx),
-            &ImageInner::AbsoluteFilePath(ref path) => {
-                JsString::new(cx, path.as_str()).as_value(cx)
-            }
-            &ImageInner::EmbeddedData { .. }
-            | &ImageInner::EmbeddedImage { .. }
-            | &ImageInner::StaticTextures { .. } => JsNull::new().as_value(cx), // TODO: maybe pass around node buffers?
+            &ImageInner::EmbeddedImage { .. }
+            | &ImageInner::StaticTextures { .. }
+            | &ImageInner::Svg(..)
+            | &ImageInner::BackendStorage(..) => JsNull::new().as_value(cx), // TODO: maybe pass around node buffers?
         },
         Value::Model(model) => {
             if let Some(js_model) = model.as_any().downcast_ref::<js_model::JsModel>() {
@@ -354,9 +349,9 @@ declare_types! {
             let this = cx.this();
             let component = cx.borrow(&this, |x| x.0.as_ref().map(|c| c.clone_strong()));
             let component = component.ok_or(()).or_else(|()| cx.throw_error("Invalid type"))?;
-            let window = component.window().window_handle().clone();
+            let window_adapter = WindowInner::from_pub(component.window()).window_adapter();
             let mut obj = SlintWindow::new::<_, JsValue, _>(&mut cx, std::iter::empty())?;
-            cx.borrow_mut(&mut obj, |mut obj| obj.0 = Some(window));
+            cx.borrow_mut(&mut obj, |mut obj| obj.0 = Some(window_adapter));
             Ok(obj.as_value(&mut cx))
         }
         method get_property(mut cx) {
@@ -493,16 +488,130 @@ declare_types! {
         method show(mut cx) {
             let this = cx.this();
             let window = cx.borrow(&this, |x| x.0.as_ref().cloned());
-            let window = window.ok_or(()).or_else(|()| cx.throw_error("Invalid type"))?;
-            window.show();
+            let window_adapter = window.ok_or(()).or_else(|()| cx.throw_error("Invalid type"))?;
+            window_adapter.show();
             Ok(JsUndefined::new().as_value(&mut cx))
         }
 
         method hide(mut cx) {
             let this = cx.this();
             let window = cx.borrow(&this, |x| x.0.as_ref().cloned());
-            let window = window.ok_or(()).or_else(|()| cx.throw_error("Invalid type"))?;
-            window.hide();
+            let window_adapter = window.ok_or(()).or_else(|()| cx.throw_error("Invalid type"))?;
+            window_adapter.hide();
+            Ok(JsUndefined::new().as_value(&mut cx))
+        }
+
+        method get_logical_position(mut cx) {
+            let this = cx.this();
+            let window = cx.borrow(&this, |x| x.0.as_ref().cloned());
+            let window_adapter = window.ok_or(()).or_else(|()| cx.throw_error("Invalid type"))?;
+            let pos = window_adapter.position().to_logical(window_adapter.window().scale_factor());
+
+            let point_object = JsObject::new(&mut cx);
+            let x_value = JsNumber::new(&mut cx, pos.x).as_value(&mut cx);
+            point_object.set(&mut cx, "x", x_value)?;
+            let y_value = JsNumber::new(&mut cx, pos.y).as_value(&mut cx);
+            point_object.set(&mut cx, "y", y_value)?;
+            Ok(point_object.as_value(&mut cx))
+        }
+
+        method get_physical_position(mut cx) {
+            let this = cx.this();
+            let window = cx.borrow(&this, |x| x.0.as_ref().cloned());
+            let window_adapter = window.ok_or(()).or_else(|()| cx.throw_error("Invalid type"))?;
+            let pos = window_adapter.position();
+
+            let point_object = JsObject::new(&mut cx);
+            let x_value = JsNumber::new(&mut cx, pos.x).as_value(&mut cx);
+            point_object.set(&mut cx, "x", x_value)?;
+            let y_value = JsNumber::new(&mut cx, pos.y).as_value(&mut cx);
+            point_object.set(&mut cx, "y", y_value)?;
+            Ok(point_object.as_value(&mut cx))
+        }
+
+        method set_logical_position(mut cx) {
+            let this = cx.this();
+            let window = cx.borrow(&this, |x| x.0.as_ref().cloned());
+            let window_adapter = window.ok_or(()).or_else(|()| cx.throw_error("Invalid type"))?;
+
+            let point_object = cx.argument::<JsObject>(0)?;
+            let x = point_object.get(&mut cx, "x")?.downcast_or_throw::<JsNumber, _>(&mut cx)?.value();
+            let y = point_object.get(&mut cx, "y")?.downcast_or_throw::<JsNumber, _>(&mut cx)?.value();
+
+            window_adapter.set_position(i_slint_core::api::LogicalPosition::new(x as f32, y as f32).into());
+
+            Ok(JsUndefined::new().as_value(&mut cx))
+        }
+
+        method set_physical_position(mut cx) {
+            let this = cx.this();
+            let window = cx.borrow(&this, |x| x.0.as_ref().cloned());
+            let window_adapter = window.ok_or(()).or_else(|()| cx.throw_error("Invalid type"))?;
+
+            let point_object = cx.argument::<JsObject>(0)?;
+            let x = point_object.get(&mut cx, "x")?.downcast_or_throw::<JsNumber, _>(&mut cx)?.value();
+            let y = point_object.get(&mut cx, "y")?.downcast_or_throw::<JsNumber, _>(&mut cx)?.value();
+
+            window_adapter.set_position(i_slint_core::api::PhysicalPosition::new(x as i32, y as i32).into());
+
+            Ok(JsUndefined::new().as_value(&mut cx))
+        }
+
+        method get_logical_size(mut cx) {
+            let this = cx.this();
+            let window_adapter = cx.borrow(&this, |x| x.0.as_ref().cloned());
+            let window_adapter = window_adapter.ok_or(()).or_else(|()| cx.throw_error("Invalid type"))?;
+            let size = window_adapter.window().size().to_logical(window_adapter.window().scale_factor());
+
+            let size_object = JsObject::new(&mut cx);
+            let width_value = JsNumber::new(&mut cx, size.width).as_value(&mut cx);
+            size_object.set(&mut cx, "width", width_value)?;
+            let height_value = JsNumber::new(&mut cx, size.height).as_value(&mut cx);
+            size_object.set(&mut cx, "height", height_value)?;
+            Ok(size_object.as_value(&mut cx))
+        }
+
+        method get_physical_size(mut cx) {
+            let this = cx.this();
+            let window_adapter = cx.borrow(&this, |x| x.0.as_ref().cloned());
+            let window_adapter = window_adapter.ok_or(()).or_else(|()| cx.throw_error("Invalid type"))?;
+            let size = window_adapter.window().size();
+
+            let size_object = JsObject::new(&mut cx);
+            let width_value = JsNumber::new(&mut cx, size.width).as_value(&mut cx);
+            size_object.set(&mut cx, "width", width_value)?;
+            let height_value = JsNumber::new(&mut cx, size.height).as_value(&mut cx);
+            size_object.set(&mut cx, "height", height_value)?;
+            Ok(size_object.as_value(&mut cx))
+        }
+
+        method set_logical_size(mut cx) {
+            let this = cx.this();
+            let window_adapter = cx.borrow(&this, |x| x.0.as_ref().cloned());
+            let window_adapter = window_adapter.ok_or(()).or_else(|()| cx.throw_error("Invalid type"))?;
+            let window = window_adapter.window();
+
+            let size_object = cx.argument::<JsObject>(0)?;
+            let width = size_object.get(&mut cx, "width")?.downcast_or_throw::<JsNumber, _>(&mut cx)?.value();
+            let height = size_object.get(&mut cx, "height")?.downcast_or_throw::<JsNumber, _>(&mut cx)?.value();
+
+            window.set_size(i_slint_core::api::LogicalSize::new(width as f32, height as f32));
+
+            Ok(JsUndefined::new().as_value(&mut cx))
+        }
+
+        method set_physical_size(mut cx) {
+            let this = cx.this();
+            let window_adapter = cx.borrow(&this, |x| x.0.as_ref().cloned());
+            let window_adapter = window_adapter.ok_or(()).or_else(|()| cx.throw_error("Invalid type"))?;
+            let window = window_adapter.window();
+
+            let size_object = cx.argument::<JsObject>(0)?;
+            let width = size_object.get(&mut cx, "width")?.downcast_or_throw::<JsNumber, _>(&mut cx)?.value();
+            let height = size_object.get(&mut cx, "height")?.downcast_or_throw::<JsNumber, _>(&mut cx)?.value();
+
+            window.set_size(i_slint_core::api::PhysicalSize::new(width as u32, height as u32));
+
             Ok(JsUndefined::new().as_value(&mut cx))
         }
     }

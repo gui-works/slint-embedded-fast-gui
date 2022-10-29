@@ -5,11 +5,204 @@
 This module contains types that are public and re-exported in the slint-rs as well as the slint-interpreter crate as public API.
 */
 
+#![warn(missing_docs)]
+
 use alloc::boxed::Box;
-use alloc::rc::Rc;
 
 use crate::component::ComponentVTable;
-use crate::window::WindowRc;
+use crate::window::{WindowAdapter, WindowInner};
+
+/// A position represented in the coordinate space of logical pixels. That is the space before applying
+/// a display device specific scale factor.
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
+pub struct LogicalPosition {
+    /// The x coordinate.
+    pub x: f32,
+    /// The y coordinate.
+    pub y: f32,
+}
+
+impl LogicalPosition {
+    /// Construct a new logical position from the given x and y coordinates, that are assumed to be
+    /// in the logical coordinate space.
+    pub const fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+
+    /// Convert a given physical position to a logical position by dividing the coordinates with the
+    /// specified scale factor.
+    pub fn from_physical(physical_pos: PhysicalPosition, scale_factor: f32) -> Self {
+        Self::new(physical_pos.x as f32 / scale_factor, physical_pos.y as f32 / scale_factor)
+    }
+
+    /// Convert this logical position to a physical position by multiplying the coordinates with the
+    /// specified scale factor.
+    pub fn to_physical(&self, scale_factor: f32) -> PhysicalPosition {
+        PhysicalPosition::from_logical(*self, scale_factor)
+    }
+
+    pub(crate) fn to_euclid(&self) -> crate::lengths::LogicalPoint {
+        [self.x as _, self.y as _].into()
+    }
+}
+
+/// A position represented in the coordinate space of physical device pixels. That is the space after applying
+/// a display device specific scale factor to pixels from the logical coordinate space.
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq)]
+pub struct PhysicalPosition {
+    /// The x coordinate.
+    pub x: i32,
+    /// The y coordinate.
+    pub y: i32,
+}
+
+impl PhysicalPosition {
+    /// Construct a new physical position from the given x and y coordinates, that are assumed to be
+    /// in the physical coordinate space.
+    pub const fn new(x: i32, y: i32) -> Self {
+        Self { x, y }
+    }
+
+    /// Convert a given logical position to a physical position by multiplying the coordinates with the
+    /// specified scale factor.
+    pub fn from_logical(logical_pos: LogicalPosition, scale_factor: f32) -> Self {
+        Self::new((logical_pos.x * scale_factor) as i32, (logical_pos.y * scale_factor) as i32)
+    }
+
+    /// Convert this physical position to a logical position by dividing the coordinates with the
+    /// specified scale factor.
+    pub fn to_logical(&self, scale_factor: f32) -> LogicalPosition {
+        LogicalPosition::from_physical(*self, scale_factor)
+    }
+
+    #[cfg(feature = "ffi")]
+    pub(crate) fn to_euclid(&self) -> crate::graphics::euclid::default::Point2D<i32> {
+        [self.x, self.y].into()
+    }
+}
+
+/// The position of the window in either physical or logical pixels. This is used
+/// with [`Window::set_position`].
+#[derive(Clone, Debug, derive_more::From, PartialEq)]
+pub enum WindowPosition {
+    /// The position in physical pixels.
+    Physical(PhysicalPosition),
+    /// The position in logical pixels.
+    Logical(LogicalPosition),
+}
+
+impl WindowPosition {
+    /// Turn the `WindowPosition` into a `PhysicalPosition`.
+    pub fn to_physical(&self, scale_factor: f32) -> PhysicalPosition {
+        match self {
+            WindowPosition::Physical(pos) => pos.clone(),
+            WindowPosition::Logical(pos) => pos.to_physical(scale_factor),
+        }
+    }
+}
+
+/// A size represented in the coordinate space of logical pixels. That is the space before applying
+/// a display device specific scale factor.
+#[derive(Debug, Default, Copy, Clone, PartialEq)]
+pub struct LogicalSize {
+    /// The width in logical pixels.
+    pub width: f32,
+    /// The height in logical.
+    pub height: f32,
+}
+
+impl LogicalSize {
+    /// Construct a new logical size from the given width and height values, that are assumed to be
+    /// in the logical coordinate space.
+    pub const fn new(width: f32, height: f32) -> Self {
+        Self { width, height }
+    }
+
+    /// Convert a given physical size to a logical size by dividing width and height by the
+    /// specified scale factor.
+    pub fn from_physical(physical_size: PhysicalSize, scale_factor: f32) -> Self {
+        Self::new(
+            physical_size.width as f32 / scale_factor,
+            physical_size.height as f32 / scale_factor,
+        )
+    }
+
+    /// Convert this logical size to a physical size by multiplying width and height with the
+    /// specified scale factor.
+    pub fn to_physical(&self, scale_factor: f32) -> PhysicalSize {
+        PhysicalSize::from_logical(*self, scale_factor)
+    }
+
+    pub(crate) fn to_euclid(&self) -> crate::lengths::LogicalSize {
+        [self.width as _, self.height as _].into()
+    }
+}
+
+/// A size represented in the coordinate space of physical device pixels. That is the space after applying
+/// a display device specific scale factor to pixels from the logical coordinate space.
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq)]
+pub struct PhysicalSize {
+    /// The width in physical pixels.
+    pub width: u32,
+    /// The height in physical pixels;
+    pub height: u32,
+}
+
+impl PhysicalSize {
+    /// Construct a new physical size from the width and height values, that are assumed to be
+    /// in the physical coordinate space.
+    pub const fn new(width: u32, height: u32) -> Self {
+        Self { width, height }
+    }
+
+    /// Convert a given logical size to a physical size by multiplying width and height with the
+    /// specified scale factor.
+    pub fn from_logical(logical_size: LogicalSize, scale_factor: f32) -> Self {
+        Self::new(
+            (logical_size.width * scale_factor) as u32,
+            (logical_size.height * scale_factor) as u32,
+        )
+    }
+
+    /// Convert this physical size to a logical size by dividing width and height by the
+    /// specified scale factor.
+    pub fn to_logical(&self, scale_factor: f32) -> LogicalSize {
+        LogicalSize::from_physical(*self, scale_factor)
+    }
+
+    #[cfg(feature = "ffi")]
+    pub(crate) fn to_euclid(&self) -> crate::graphics::euclid::default::Size2D<u32> {
+        [self.width, self.height].into()
+    }
+}
+
+/// The size of a window represented in either physical or logical pixels. This is used
+/// with [`Window::set_size`].
+#[derive(Clone, Debug, derive_more::From, PartialEq)]
+pub enum WindowSize {
+    /// The size in physical pixels.
+    Physical(PhysicalSize),
+    /// The size in logical screen pixels.
+    Logical(LogicalSize),
+}
+
+impl WindowSize {
+    /// Turn the `WindowSize` into a `PhysicalSize`.
+    pub fn to_physical(&self, scale_factor: f32) -> PhysicalSize {
+        match self {
+            WindowSize::Physical(size) => size.clone(),
+            WindowSize::Logical(size) => size.to_physical(scale_factor),
+        }
+    }
+
+    /// Turn the `WindowSize` into a `LogicalSize`.
+    pub fn to_logical(&self, scale_factor: f32) -> LogicalSize {
+        match self {
+            WindowSize::Physical(size) => size.to_logical(scale_factor),
+            WindowSize::Logical(size) => size.clone(),
+        }
+    }
+}
 
 /// This enum describes a low-level access to specific graphics APIs used
 /// by the renderer.
@@ -76,7 +269,7 @@ impl<F: FnMut(RenderingState, &GraphicsAPI)> RenderingNotifier for F {
     }
 }
 
-/// This enum describes the different error scenarios that may occur when the applicaton
+/// This enum describes the different error scenarios that may occur when the application
 /// registers a rendering notifier on a [`crate::Window`](struct.Window.html).
 #[derive(Debug, Clone)]
 #[repr(C)]
@@ -92,16 +285,66 @@ pub enum SetRenderingNotifierError {
 /// scene of a component. It provides API to control windowing system specific aspects such
 /// as the position on the screen.
 #[repr(transparent)]
-pub struct Window(WindowRc);
+pub struct Window(pub(crate) WindowInner);
 
-#[doc(hidden)]
-impl From<WindowRc> for Window {
-    fn from(window: WindowRc) -> Self {
-        Self(window)
+/// This enum describes whether a Window is allowed to be hidden when the user tries to close the window.
+/// It is the return type of the callback provided to [Window::on_close_requested].
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[repr(C)]
+pub enum CloseRequestResponse {
+    /// The Window will be hidden (default action)
+    HideWindow,
+    /// The close request is rejected and the window will be kept shown.
+    KeepWindowShown,
+}
+
+impl Default for CloseRequestResponse {
+    fn default() -> Self {
+        Self::HideWindow
     }
 }
 
 impl Window {
+    /// Create a new window from a window adapter
+    ///
+    /// You only need to create the window yourself when you create a
+    /// [`WindowAdapter`](crate::platform::WindowAdapter) from
+    /// [`Platform::create_window_adapter`](crate::platform::Platform::create_window_adapter)
+    ///
+    /// Since the window adapter must own the Window, this function is meant to be used with
+    /// [`Rc::new_cyclic`](alloc::rc::Rc::new_cyclic)
+    ///
+    /// # Example
+    /// ```rust
+    /// use std::rc::Rc;
+    /// use slint::platform::WindowAdapter;
+    /// use slint::Window;
+    /// struct MyWindowAdapter {
+    ///     window: Window,
+    ///     //...
+    /// }
+    /// impl WindowAdapter for MyWindowAdapter {
+    ///    fn window(&self) -> &Window { &self.window }
+    ///    //...
+    /// }
+    /// # impl i_slint_core::window::WindowAdapterSealed for MyWindowAdapter {
+    /// #   fn renderer(&self) -> &dyn i_slint_core::renderer::Renderer { unimplemented!() }
+    /// # }
+    ///
+    /// fn create_window_adapter() -> Rc<dyn WindowAdapter> {
+    ///    Rc::<MyWindowAdapter>::new_cyclic(|weak| {
+    ///        MyWindowAdapter {
+    ///           window: Window::new(weak.clone()),
+    ///           //...
+    ///        }
+    ///    })
+    /// }
+    /// ```
+    #[doc(hidden)]
+    pub fn new(window_adapter_weak: alloc::rc::Weak<dyn WindowAdapter>) -> Self {
+        Self(WindowInner::new(window_adapter_weak))
+    }
+
     /// Registers the window with the windowing system in order to make it visible on the screen.
     pub fn show(&self) {
         self.0.show();
@@ -118,28 +361,135 @@ impl Window {
         &self,
         callback: impl FnMut(RenderingState, &GraphicsAPI) + 'static,
     ) -> Result<(), SetRenderingNotifierError> {
-        self.0.set_rendering_notifier(Box::new(callback))
+        self.0.window_adapter().renderer().set_rendering_notifier(Box::new(callback))
+    }
+
+    /// This function allows registering a callback that's invoked when the user tries to close a window.
+    /// The callback has to return a [CloseRequestResponse].
+    pub fn on_close_requested(&self, callback: impl FnMut() -> CloseRequestResponse + 'static) {
+        self.0.on_close_requested(callback);
     }
 
     /// This function issues a request to the windowing system to redraw the contents of the window.
     pub fn request_redraw(&self) {
-        self.0.request_redraw();
+        self.0.window_adapter().request_redraw();
+    }
 
-        // When this function is called by the user, we want it to translate to a requestAnimationFrame()
-        // on the web. If called through the rendering notifier (so from within the event loop processing),
-        // unfortunately winit will only do that if set the control flow to Poll. This hack achieves that.
-        // Similarly, the winit win32 event loop doesn't queue the redraw request and needs a Poll nudge.
-        #[cfg(any(target_arch = "wasm32", target_os = "windows"))]
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.set_has_active_animations());
+    /// This function returns the scale factor that allows converting between logical and
+    /// physical pixels.
+    pub fn scale_factor(&self) -> f32 {
+        self.0.scale_factor()
+    }
+
+    /// Returns the position of the window on the screen, in physical screen coordinates and including
+    /// a window frame (if present).
+    pub fn position(&self) -> PhysicalPosition {
+        self.0.window_adapter().position()
+    }
+
+    /// Sets the position of the window on the screen, in physical screen coordinates and including
+    /// a window frame (if present).
+    /// Note that on some windowing systems, such as Wayland, this functionality is not available.
+    pub fn set_position(&self, position: impl Into<WindowPosition>) {
+        let position = position.into();
+        self.0.window_adapter().set_position(position)
+    }
+
+    /// Returns the size of the window on the screen, in physical screen coordinates and excluding
+    /// a window frame (if present).
+    pub fn size(&self) -> PhysicalSize {
+        self.0.inner_size.get()
+    }
+
+    /// Resizes the window to the specified size on the screen, in physical pixels and excluding
+    /// a window frame (if present).
+    pub fn set_size(&self, size: impl Into<WindowSize>) {
+        let size = size.into();
+        let l = size.to_logical(self.scale_factor()).to_euclid();
+        let p = size.to_physical(self.scale_factor());
+
+        self.0.set_window_item_geometry(l);
+        if self.0.inner_size.replace(p) != p {
+            self.0.window_adapter().set_size(size);
+        }
+    }
+
+    /// Dispatch a window event to the scene.
+    ///
+    /// Use this when you're implementing your own backend and want to forward user input events.
+    ///
+    /// Any position fields in the event must be in the logical pixel coordinate system relative to
+    /// the top left corner of the window.
+    pub fn dispatch_event(&self, event: WindowEvent) {
+        self.0.process_mouse_input(event.into())
+    }
+
+    /// Returns true if there is an animation currently active on any property in the Window; false otherwise.
+    pub fn has_active_animations(&self) -> bool {
+        // TODO make it really per window.
+        crate::animations::CURRENT_ANIMATION_DRIVER.with(|driver| driver.has_active_animations())
+    }
+
+    /// Get the visibility of the window
+    pub fn is_visible(&self) -> bool {
+        self.0.window_adapter().is_visible()
     }
 }
 
-impl crate::window::WindowHandleAccess for Window {
-    fn window_handle(&self) -> &Rc<crate::window::Window> {
-        &self.0
+pub use crate::input::PointerEventButton;
+
+/// A event that describes user input.
+///
+/// Slint backends typically receive events from the windowing system, translate them to this
+/// enum and deliver to the scene of items via [`Window::dispatch_event()`].
+///
+/// The pointer variants describe events originating from an input device such as a mouse
+/// or a contact point on a touch-enabled surface.
+///
+/// All position fields are in logical window coordinates.
+#[allow(missing_docs)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub enum WindowEvent {
+    /// A pointer was pressed.
+    PointerPressed {
+        position: LogicalPosition,
+        /// The button that was pressed.
+        button: PointerEventButton,
+    },
+    /// A pointer was released.
+    PointerReleased {
+        position: LogicalPosition,
+        /// The button that was released.
+        button: PointerEventButton,
+    },
+    /// The position of the pointer has changed.
+    PointerMoved { position: LogicalPosition },
+    /// The wheel button of a mouse was rotated to initiate scrolling.
+    PointerScrolled {
+        position: LogicalPosition,
+        /// The amount of logical pixels to scroll in the horizontal direction.
+        delta_x: f32,
+        /// The amount of logical pixels to scroll in the vertical direction.
+        delta_y: f32,
+    },
+    /// The pointer exited the window.
+    PointerExited,
+}
+
+impl WindowEvent {
+    /// The position of the cursor for this event, if any
+    pub fn position(&self) -> Option<LogicalPosition> {
+        match self {
+            WindowEvent::PointerPressed { position, .. } => Some(*position),
+            WindowEvent::PointerReleased { position, .. } => Some(*position),
+            WindowEvent::PointerMoved { position } => Some(*position),
+            WindowEvent::PointerScrolled { position, .. } => Some(*position),
+            WindowEvent::PointerExited => None,
+        }
     }
 }
+
 /// This trait is used to obtain references to global singletons exported in `.slint`
 /// markup. Alternatively, you can use [`ComponentHandle::global`] to obtain access.
 ///
@@ -313,6 +663,7 @@ mod weak_handle {
         ///     // ... Do some computation in the thread
         ///     let foo = 42;
         ///     # assert!(handle_weak.upgrade().is_none()); // note that upgrade fails in a thread
+        ///     # return; // don't upgrade_in_event_loop in our examples
         ///     // now forward the data to the main thread using upgrade_in_event_loop
         ///     handle_weak.upgrade_in_event_loop(move |handle| handle.set_foo(foo));
         /// });
@@ -320,7 +671,10 @@ mod weak_handle {
         /// handle.run();
         /// ```
         #[cfg(feature = "std")]
-        pub fn upgrade_in_event_loop(&self, func: impl FnOnce(T) + Send + 'static)
+        pub fn upgrade_in_event_loop(
+            &self,
+            func: impl FnOnce(T) + Send + 'static,
+        ) -> Result<(), EventLoopError>
         where
             T: 'static,
         {
@@ -360,6 +714,7 @@ pub use weak_handle::*;
 /// # i_slint_backend_testing::init();
 /// let handle = MyApp::new();
 /// let handle_weak = handle.as_weak();
+/// # return; // don't run the event loop in examples
 /// let thread = std::thread::spawn(move || {
 ///     // ... Do some computation in the thread
 ///     let foo = 42;
@@ -367,13 +722,55 @@ pub use weak_handle::*;
 ///     let handle_copy = handle_weak.clone();
 ///     slint::invoke_from_event_loop(move || handle_copy.unwrap().set_foo(foo));
 /// });
-/// # thread.join().unwrap(); return; // don't run the event loop in examples
 /// handle.run();
 /// ```
-pub fn invoke_from_event_loop(func: impl FnOnce() + Send + 'static) {
-    if let Some(backend) = crate::backend::instance() {
-        backend.post_event(alloc::boxed::Box::new(func))
-    } else {
-        panic!("slint::invoke_from_event_loop() must be called after the Slint backend is initialized.")
-    }
+pub fn invoke_from_event_loop(func: impl FnOnce() + Send + 'static) -> Result<(), EventLoopError> {
+    crate::platform::event_loop_proxy()
+        .ok_or(EventLoopError::NoEventLoopProvider)?
+        .invoke_from_event_loop(alloc::boxed::Box::new(func))
+}
+
+/// Schedules the main event loop for termination. This function is meant
+/// to be called from callbacks triggered by the UI. After calling the function,
+/// it will return immediately and once control is passed back to the event loop,
+/// the initial call to `slint::run_event_loop()` will return.
+pub fn quit_event_loop() -> Result<(), EventLoopError> {
+    crate::platform::event_loop_proxy()
+        .ok_or(EventLoopError::NoEventLoopProvider)?
+        .quit_event_loop()
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+#[non_exhaustive]
+/// Error returned from the [`invoke_from_event_loop()`] and [`quit_event_loop()`] function
+pub enum EventLoopError {
+    /// The event could not be sent because the event loop was terminated already
+    EventLoopTerminated,
+    /// The event could not be sent because the Slint platform abstraction was not yet initialized,
+    /// or the platform does not support event loop.
+    NoEventLoopProvider,
+}
+
+#[test]
+fn logical_physical_pos() {
+    use crate::graphics::euclid::approxeq::ApproxEq;
+
+    let phys = PhysicalPosition::new(100, 50);
+    let logical = phys.to_logical(2.);
+    assert!(logical.x.approx_eq(&50.));
+    assert!(logical.y.approx_eq(&25.));
+
+    assert_eq!(logical.to_physical(2.), phys);
+}
+
+#[test]
+fn logical_physical_size() {
+    use crate::graphics::euclid::approxeq::ApproxEq;
+
+    let phys = PhysicalSize::new(100, 50);
+    let logical = phys.to_logical(2.);
+    assert!(logical.width.approx_eq(&50.));
+    assert!(logical.height.approx_eq(&25.));
+
+    assert_eq!(logical.to_physical(2.), phys);
 }

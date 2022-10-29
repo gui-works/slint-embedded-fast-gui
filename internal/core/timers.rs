@@ -160,16 +160,15 @@ enum CallbackVariant {
 }
 
 impl CallbackVariant {
-    fn invoke(self) -> Self {
+    fn invoke(&mut self) {
+        use CallbackVariant::*;
         match self {
-            CallbackVariant::Empty => CallbackVariant::Empty,
-            CallbackVariant::MultiFire(mut cb) => {
-                cb();
-                CallbackVariant::MultiFire(cb)
-            }
-            CallbackVariant::SingleShot(cb) => {
-                cb();
-                CallbackVariant::Empty
+            Empty => (),
+            MultiFire(cb) => cb(),
+            SingleShot(_) => {
+                if let SingleShot(cb) = core::mem::replace(self, Empty) {
+                    cb();
+                }
             }
         }
     }
@@ -215,8 +214,7 @@ impl TimerList {
 
     /// Activates any expired timers by calling their callback function. Returns true if any timers were
     /// activated; false otherwise.
-    pub fn maybe_activate_timers() -> bool {
-        let now = Instant::now();
+    pub fn maybe_activate_timers(now: Instant) -> bool {
         // Shortcut: Is there any timer worth activating?
         if TimerList::next_timeout().map(|timeout| now < timeout).unwrap_or(false) {
             return false;
@@ -234,20 +232,40 @@ impl TimerList {
                 if active_timer.timeout <= now {
                     any_activated = true;
 
-                    timers.borrow_mut().callback_active = Some(active_timer.id);
-                    let callback = core::mem::replace(
-                        &mut timers.borrow_mut().timers[active_timer.id].callback,
-                        CallbackVariant::Empty,
-                    );
-                    let callback = callback.invoke();
+                    let mut callback = {
+                        let mut timers = timers.borrow_mut();
+
+                        timers.callback_active = Some(active_timer.id);
+
+                        // do it before invoking the callback, in case the callback wants to stop or adjust its own timer
+                        if matches!(timers.timers[active_timer.id].mode, TimerMode::Repeated) {
+                            timers.activate_timer(active_timer.id);
+                        }
+
+                        // have to release the borrow on `timers` before invoking the callback,
+                        // so here we temporarily move the callback out of its permanent place
+                        core::mem::replace(
+                            &mut timers.timers[active_timer.id].callback,
+                            CallbackVariant::Empty,
+                        )
+                    };
+
+                    callback.invoke();
+
                     let mut timers = timers.borrow_mut();
-                    timers.timers[active_timer.id].callback = callback;
+
+                    let callback_register = &mut timers.timers[active_timer.id].callback;
+
+                    // only emplace back the callback if its permanent store is still Empty:
+                    // if not, it means the invoked callback has restarted its own timer with a new callback
+                    if matches!(callback_register, CallbackVariant::Empty) {
+                        *callback_register = callback;
+                    }
+
                     timers.callback_active = None;
 
                     if timers.timers[active_timer.id].removed {
                         timers.timers.remove(active_timer.id);
-                    } else if matches!(timers.timers[active_timer.id].mode, TimerMode::Repeated) {
-                        timers.activate_timer(active_timer.id);
                     }
                 } else {
                     timers.borrow_mut().register_active_timer(active_timer);
@@ -316,8 +334,8 @@ impl TimerList {
     }
 }
 
-#[cfg(all(not(feature = "std"), feature = "unsafe_single_core"))]
-use crate::unsafe_single_core::thread_local;
+#[cfg(all(not(feature = "std"), feature = "unsafe-single-threaded"))]
+use crate::unsafe_single_threaded::thread_local;
 
 thread_local!(static CURRENT_TIMERS : RefCell<TimerList> = RefCell::default());
 
@@ -444,3 +462,124 @@ pub(crate) mod ffi {
         running
     }
 }
+
+/**
+```rust
+i_slint_backend_testing::init();
+use slint::{Timer, TimerMode};
+use std::{rc::Rc, cell::RefCell, time::Duration};
+#[derive(Default)]
+struct SharedState {
+    timer_200: Timer,
+    timer_200_called: usize,
+    timer_500: Timer,
+    timer_500_called: usize,
+    timer_once: Timer,
+    timer_once_called: usize,
+}
+let state = Rc::new(RefCell::new(SharedState::default()));
+// Note: state will be leaked because of circular dependencies: don't do that in production
+let state_ = state.clone();
+state.borrow_mut().timer_200.start(TimerMode::Repeated, Duration::from_millis(200), move || {
+    state_.borrow_mut().timer_200_called += 1;
+});
+let state_ = state.clone();
+state.borrow_mut().timer_once.start(TimerMode::Repeated, Duration::from_millis(300), move || {
+    state_.borrow_mut().timer_once_called += 1;
+    state_.borrow().timer_once.stop();
+});
+let state_ = state.clone();
+state.borrow_mut().timer_500.start(TimerMode::Repeated, Duration::from_millis(500), move || {
+    state_.borrow_mut().timer_500_called += 1;
+});
+slint::platform::update_timers_and_animations();
+i_slint_core::tests::slint_mock_elapsed_time(100);
+assert_eq!(state.borrow().timer_200_called, 0);
+assert_eq!(state.borrow().timer_once_called, 0);
+assert_eq!(state.borrow().timer_500_called, 0);
+i_slint_core::tests::slint_mock_elapsed_time(100);
+assert_eq!(state.borrow().timer_200_called, 1);
+assert_eq!(state.borrow().timer_once_called, 0);
+assert_eq!(state.borrow().timer_500_called, 0);
+i_slint_core::tests::slint_mock_elapsed_time(100);
+assert_eq!(state.borrow().timer_200_called, 1);
+assert_eq!(state.borrow().timer_once_called, 1);
+assert_eq!(state.borrow().timer_500_called, 0);
+i_slint_core::tests::slint_mock_elapsed_time(200); // total: 500
+assert_eq!(state.borrow().timer_200_called, 2);
+assert_eq!(state.borrow().timer_once_called, 1);
+assert_eq!(state.borrow().timer_500_called, 1);
+for _ in 0..10 {
+    i_slint_core::tests::slint_mock_elapsed_time(100);
+}
+// total: 1500
+assert_eq!(state.borrow().timer_200_called, 7);
+assert_eq!(state.borrow().timer_once_called, 1);
+assert_eq!(state.borrow().timer_500_called, 3);
+state.borrow().timer_once.restart();
+state.borrow().timer_200.restart();
+state.borrow().timer_500.stop();
+slint::platform::update_timers_and_animations();
+i_slint_core::tests::slint_mock_elapsed_time(100);
+assert_eq!(state.borrow().timer_200_called, 7);
+assert_eq!(state.borrow().timer_once_called, 1);
+assert_eq!(state.borrow().timer_500_called, 3);
+slint::platform::update_timers_and_animations();
+i_slint_core::tests::slint_mock_elapsed_time(100);
+assert_eq!(state.borrow().timer_200_called, 8);
+assert_eq!(state.borrow().timer_once_called, 1);
+assert_eq!(state.borrow().timer_500_called, 3);
+slint::platform::update_timers_and_animations();
+i_slint_core::tests::slint_mock_elapsed_time(100);
+assert_eq!(state.borrow().timer_200_called, 8);
+assert_eq!(state.borrow().timer_once_called, 2);
+assert_eq!(state.borrow().timer_500_called, 3);
+slint::platform::update_timers_and_animations();
+i_slint_core::tests::slint_mock_elapsed_time(1000);
+slint::platform::update_timers_and_animations();
+slint::platform::update_timers_and_animations();
+// Despite 1000ms have passed, the 200 timer is only called once because we didn't call update_timers_and_animations in between
+assert_eq!(state.borrow().timer_200_called, 9);
+assert_eq!(state.borrow().timer_once_called, 2);
+assert_eq!(state.borrow().timer_500_called, 3);
+let state_ = state.clone();
+state.borrow().timer_200.start(TimerMode::SingleShot, Duration::from_millis(200), move || {
+    state_.borrow_mut().timer_200_called += 1;
+});
+for _ in 0..5 {
+    i_slint_core::tests::slint_mock_elapsed_time(75);
+}
+assert_eq!(state.borrow().timer_200_called, 10);
+assert_eq!(state.borrow().timer_once_called, 2);
+assert_eq!(state.borrow().timer_500_called, 3);
+state.borrow().timer_200.restart();
+for _ in 0..5 {
+    i_slint_core::tests::slint_mock_elapsed_time(75);
+}
+assert_eq!(state.borrow().timer_200_called, 11);
+assert_eq!(state.borrow().timer_once_called, 2);
+assert_eq!(state.borrow().timer_500_called, 3);
+
+// Test re-starting from a callback
+let state_ = state.clone();
+state.borrow_mut().timer_500.start(TimerMode::Repeated, Duration::from_millis(500), move || {
+    state_.borrow_mut().timer_500_called += 1;
+    let state__ = state_.clone();
+    state_.borrow_mut().timer_500.start(TimerMode::Repeated, Duration::from_millis(500), move || {
+        state__.borrow_mut().timer_500_called += 1000;
+    });
+    let state__ = state_.clone();
+    state_.borrow_mut().timer_200.start(TimerMode::Repeated, Duration::from_millis(200), move || {
+        state__.borrow_mut().timer_200_called += 1000;
+    });
+});
+for _ in 0..20 {
+    i_slint_core::tests::slint_mock_elapsed_time(100);
+}
+assert_eq!(state.borrow().timer_200_called, 7011);
+assert_eq!(state.borrow().timer_once_called, 2);
+assert_eq!(state.borrow().timer_500_called, 3004);
+```
+ */
+#[cfg(doctest)]
+const _TIMER_TESTS: () = ();

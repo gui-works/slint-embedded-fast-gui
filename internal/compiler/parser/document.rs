@@ -57,17 +57,42 @@ pub fn parse_document(p: &mut impl Parser) -> bool {
 /// ```
 pub fn parse_component(p: &mut impl Parser) -> bool {
     let mut p = p.start_node(SyntaxKind::Component);
-    let is_global = p.peek().as_str() == "global";
-    if is_global {
+    let simple_component = p.nth(1).kind() == SyntaxKind::ColonEqual;
+    let is_global = !simple_component && p.peek().as_str() == "global";
+    let is_new_component = !simple_component && p.peek().as_str() == "component";
+    if is_new_component && !super::enable_experimental() {
+        p.error("the 'component' keyword is experimental, set `SLINT_EXPERIMENTAL_SYNTAX` env variable to enable experimental syntax. See https://github.com/slint-ui/slint/issues/1750");
+    }
+    if is_global || is_new_component {
         p.consume();
     }
     if !p.start_node(SyntaxKind::DeclaredIdentifier).expect(SyntaxKind::Identifier) {
         drop(p.start_node(SyntaxKind::Element));
         return false;
     }
-    if !p.expect(SyntaxKind::ColonEqual) {
-        drop(p.start_node(SyntaxKind::Element));
-        return false;
+    if is_global {
+        // ignore the `:=` (compatibility)
+        if !p.test(SyntaxKind::ColonEqual) && !super::enable_experimental() {
+            p.expect(SyntaxKind::ColonEqual);
+        }
+    } else if !is_new_component {
+        if !p.expect(SyntaxKind::ColonEqual) {
+            drop(p.start_node(SyntaxKind::Element));
+            return false;
+        }
+    } else {
+        if p.peek().as_str() == "inherits" {
+            p.consume();
+        } else if p.peek().kind() == SyntaxKind::LBrace {
+            let mut p = p.start_node(SyntaxKind::Element);
+            p.consume();
+            parse_element_content(&mut *p);
+            return p.expect(SyntaxKind::RBrace);
+        } else {
+            p.error("Expected '{' or keyword 'inherits'");
+            drop(p.start_node(SyntaxKind::Element));
+            return false;
+        }
     }
 
     if is_global && p.peek().kind() == SyntaxKind::LBrace {

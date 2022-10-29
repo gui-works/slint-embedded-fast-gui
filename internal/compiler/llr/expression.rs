@@ -91,7 +91,7 @@ pub enum Expression {
         level: usize,
         value: Box<Expression>,
     },
-    /// An assignement done with the `foo[idx] = ...`
+    /// An assignment done with the `foo[idx] = ...`
     ArrayIndexAssignment {
         array: Box<Expression>,
         index: Box<Expression>,
@@ -140,6 +140,11 @@ pub enum Expression {
         stops: Vec<(Expression, Expression)>,
     },
 
+    RadialGradient {
+        /// First expression in the tuple is a color, second expression is the stop position
+        stops: Vec<(Expression, Expression)>,
+    },
+
     EnumerationValue(crate::langtype::EnumerationValue),
 
     ReturnStatement(Option<Box<Expression>>),
@@ -177,9 +182,6 @@ impl Expression {
     pub fn default_value_for_type(ty: &Type) -> Option<Self> {
         Some(match ty {
             Type::Invalid
-            | Type::Component(_)
-            | Type::Builtin(_)
-            | Type::Native(_)
             | Type::Callback { .. }
             | Type::Function { .. }
             | Type::Void
@@ -276,6 +278,7 @@ impl Expression {
             Self::Struct { ty, .. } => ty.clone(),
             Self::EasingCurve(_) => Type::Easing,
             Self::LinearGradient { .. } => Type::Brush,
+            Self::RadialGradient { .. } => Type::Brush,
             Self::EnumerationValue(e) => Type::Enumeration(e.enumeration.clone()),
             Self::ReturnStatement(_) => Type::Invalid,
             Self::LayoutCacheAccess { .. } => Type::LogicalLength,
@@ -341,6 +344,12 @@ macro_rules! visit_impl {
                     $visitor(b);
                 }
             }
+            Expression::RadialGradient { stops } => {
+                for (a, b) in stops {
+                    $visitor(a);
+                    $visitor(b);
+                }
+            }
             Expression::EnumerationValue(_) => {}
             Expression::ReturnStatement(_) => {}
             Expression::LayoutCacheAccess { repeater_index, .. } => {
@@ -386,12 +395,18 @@ pub trait TypeResolutionContext {
     }
 }
 
-#[derive(Clone, Copy)]
 pub struct ParentCtx<'a, T = ()> {
     pub ctx: &'a EvaluationContext<'a, T>,
     // Index of the repeater within the ctx.current_sub_component
     pub repeater_index: Option<usize>,
 }
+
+impl<'a, T> Clone for ParentCtx<'a, T> {
+    fn clone(&self) -> Self {
+        Self { ctx: self.ctx, repeater_index: self.repeater_index }
+    }
+}
+impl<'a, T> Copy for ParentCtx<'a, T> {}
 
 impl<'a, T> ParentCtx<'a, T> {
     pub fn new(ctx: &'a EvaluationContext<'a, T>, repeater_index: Option<usize>) -> Self {
@@ -464,7 +479,7 @@ impl<'a, T> TypeResolutionContext for EvaluationContext<'a, T> {
             }
             PropertyReference::InNativeItem { sub_component_path, item_index, prop_name } => {
                 if prop_name == "elements" {
-                    // The `Path::elements` property is not in the NativeClasss
+                    // The `Path::elements` property is not in the NativeClass
                     return &Type::PathData;
                 }
 

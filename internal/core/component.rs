@@ -5,12 +5,26 @@
 
 //! This module contains the basic datastructures that are exposed to the C API
 
-use crate::item_tree::{ItemTreeNode, ItemVisitorVTable, TraversalOrder, VisitChildrenResult};
-use crate::items::{ItemVTable, ItemWeak};
+use crate::accessibility::AccessibleStringProperty;
+use crate::item_tree::{
+    ItemTreeNode, ItemVisitorVTable, ItemWeak, TraversalOrder, VisitChildrenResult,
+};
+use crate::items::{AccessibleRole, ItemVTable};
 use crate::layout::{LayoutInfo, Orientation};
 use crate::slice::Slice;
-use crate::window::WindowRc;
+use crate::window::WindowAdapter;
+use crate::SharedString;
+use alloc::rc::Rc;
 use vtable::*;
+
+#[repr(C)]
+/// A range of indices
+pub struct IndexRange {
+    /// Start index
+    pub start: usize,
+    /// Index one past the last index
+    pub end: usize,
+}
 
 /// A Component is representing an unit that is allocated together
 #[vtable]
@@ -32,26 +46,58 @@ pub struct ComponentVTable {
         index: usize,
     ) -> core::pin::Pin<VRef<ItemVTable>>,
 
+    /// Return the range of indices below the dynamic `ItemTreeNode` at `index`
+    pub get_subtree_range:
+        extern "C" fn(core::pin::Pin<VRef<ComponentVTable>>, index: usize) -> IndexRange,
+
+    /// Return the `ComponentRc` at `subindex` below the dynamic `ItemTreeNode` at `index`
+    pub get_subtree_component: extern "C" fn(
+        core::pin::Pin<VRef<ComponentVTable>>,
+        index: usize,
+        subindex: usize,
+        result: &mut vtable::VWeak<ComponentVTable, Dyn>,
+    ),
+
     /// Return the item tree that is defined by this `Component`.
     /// The return value is an item weak because it can be null if there is no parent.
     /// And the return value is passed by &mut because ItemWeak has a destructor
     pub get_item_tree: extern "C" fn(core::pin::Pin<VRef<ComponentVTable>>) -> Slice<ItemTreeNode>,
 
-    /// Return the parent item.
+    /// Return the node this component is a part of in the parent component.
+    ///
     /// The return value is an item weak because it can be null if there is no parent.
     /// And the return value is passed by &mut because ItemWeak has a destructor
-    pub parent_item:
-        extern "C" fn(core::pin::Pin<VRef<ComponentVTable>>, index: usize, result: &mut ItemWeak),
+    /// Note that the returned value will typically point to a repeater node, which is
+    /// strictly speaking not an Item at all!
+    pub parent_node: extern "C" fn(core::pin::Pin<VRef<ComponentVTable>>, result: &mut ItemWeak),
+
+    /// Return the index of the current subtree or usize::MAX if this is not a subtree
+    pub subtree_index: extern "C" fn(core::pin::Pin<VRef<ComponentVTable>>) -> usize,
 
     /// Returns the layout info for this component
     pub layout_info:
         extern "C" fn(core::pin::Pin<VRef<ComponentVTable>>, Orientation) -> LayoutInfo,
+
+    /// Returns the accessible role for a given item
+    pub accessible_role:
+        extern "C" fn(core::pin::Pin<VRef<ComponentVTable>>, item_index: usize) -> AccessibleRole,
+
+    /// Returns the accessible property
+    pub accessible_string_property: extern "C" fn(
+        core::pin::Pin<VRef<ComponentVTable>>,
+        item_index: usize,
+        what: AccessibleStringProperty,
+        result: &mut SharedString,
+    ),
 
     /// in-place destructor (for VRc)
     pub drop_in_place: unsafe fn(VRefMut<ComponentVTable>) -> vtable::Layout,
     /// dealloc function (for VRc)
     pub dealloc: unsafe fn(&ComponentVTable, ptr: *mut u8, layout: vtable::Layout),
 }
+
+#[cfg(test)]
+pub(crate) use ComponentVTable_static;
 
 /// Alias for `vtable::VRef<ComponentVTable>` which represent a pointer to a `dyn Component` with
 /// the associated vtable
@@ -66,56 +112,62 @@ pub type ComponentRc = vtable::VRc<ComponentVTable, Dyn>;
 pub type ComponentWeak = vtable::VWeak<ComponentVTable, Dyn>;
 
 /// Call init() on the ItemVTable for each item of the component.
-pub fn init_component_items<Base>(
+pub fn register_component<Base>(
     base: core::pin::Pin<&Base>,
     item_array: &[vtable::VOffset<Base, ItemVTable, vtable::AllowPin>],
-    window: &WindowRc,
+    window_adapter: &Rc<dyn WindowAdapter>,
 ) {
-    item_array.iter().for_each(|item| item.apply_pin(base).as_ref().init(window));
+    item_array.iter().for_each(|item| item.apply_pin(base).as_ref().init(window_adapter));
+    window_adapter.register_component();
 }
 
 /// Free the backend graphics resources allocated by the component's items.
-pub fn free_component_item_graphics_resources<Base>(
+pub fn unregister_component<Base>(
     base: core::pin::Pin<&Base>,
+    component: ComponentRef,
     item_array: &[vtable::VOffset<Base, ItemVTable, vtable::AllowPin>],
-    window: &WindowRc,
+    window_adapter: &Rc<dyn WindowAdapter>,
 ) {
-    window.free_graphics_resources(&mut item_array.iter().map(|item| item.apply_pin(base)));
+    window_adapter
+        .unregister_component(component, &mut item_array.iter().map(|item| item.apply_pin(base)));
 }
 
 #[cfg(feature = "ffi")]
 pub(crate) mod ffi {
     #![allow(unsafe_code)]
 
+    use crate::window::WindowAdapter;
+
     use super::*;
 
     /// Call init() on the ItemVTable of each item in the item array.
     #[no_mangle]
-    pub unsafe extern "C" fn slint_component_init_items(
+    pub unsafe extern "C" fn slint_register_component(
         component: ComponentRefPin,
         item_array: Slice<vtable::VOffset<u8, ItemVTable, vtable::AllowPin>>,
-        window_handle: *const crate::window::ffi::WindowRcOpaque,
+        window_handle: *const crate::window::ffi::WindowAdapterRcOpaque,
     ) {
-        let window = &*(window_handle as *const WindowRc);
-        super::init_component_items(
+        let window_adapter = &*(window_handle as *const Rc<dyn WindowAdapter>);
+        super::register_component(
             core::pin::Pin::new_unchecked(&*(component.as_ptr() as *const u8)),
             item_array.as_slice(),
-            window,
+            window_adapter,
         )
     }
 
     /// Free the backend graphics resources allocated in the item array.
     #[no_mangle]
-    pub unsafe extern "C" fn slint_component_free_item_array_graphics_resources(
+    pub unsafe extern "C" fn slint_unregister_component(
         component: ComponentRefPin,
         item_array: Slice<vtable::VOffset<u8, ItemVTable, vtable::AllowPin>>,
-        window_handle: *const crate::window::ffi::WindowRcOpaque,
+        window_handle: *const crate::window::ffi::WindowAdapterRcOpaque,
     ) {
-        let window = &*(window_handle as *const WindowRc);
-        super::free_component_item_graphics_resources(
+        let window_adapter = &*(window_handle as *const Rc<dyn WindowAdapter>);
+        super::unregister_component(
             core::pin::Pin::new_unchecked(&*(component.as_ptr() as *const u8)),
+            core::pin::Pin::into_inner(component),
             item_array.as_slice(),
-            window,
+            window_adapter,
         )
     }
 }

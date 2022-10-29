@@ -11,52 +11,46 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Wake;
-use std::time::Duration;
 
 use clap::Parser;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Clone, clap::Parser)]
-#[clap(author, version, about, long_about = None)]
+#[command(author, version, about, long_about = None)]
 struct Cli {
-    #[clap(
-        short = 'I',
-        name = "include path for other .slint files",
-        number_of_values = 1,
-        parse(from_os_str)
-    )]
+    #[arg(short = 'I', name = "include path for other .slint files", number_of_values = 1, action)]
     include_paths: Vec<std::path::PathBuf>,
 
     /// The .slint file to load ('-' for stdin)
-    #[clap(name = "path to .slint file", parse(from_os_str))]
+    #[arg(name = "path to .slint file", action)]
     path: std::path::PathBuf,
 
-    /// The style name ('native', 'fluent', or 'ugly')
-    #[clap(long, name = "style name")]
+    /// The style name ('native' or 'fluent')
+    #[arg(long, name = "style name", action)]
     style: Option<String>,
 
     /// The rendering backend
-    #[clap(long, name = "backend")]
+    #[arg(long, name = "backend", action)]
     backend: Option<String>,
 
     /// Automatically watch the file system, and reload when it changes
-    #[clap(long)]
+    #[arg(long, action)]
     auto_reload: bool,
 
     /// Load properties from a json file ('-' for stdin)
-    #[clap(long, name = "load data file", parse(from_os_str))]
+    #[arg(long, name = "load data file", action)]
     load_data: Option<std::path::PathBuf>,
 
     /// Store properties values in a json file at exit ('-' for stdout)
-    #[clap(long, name = "save data file", parse(from_os_str))]
+    #[arg(long, name = "save data file", action)]
     save_data: Option<std::path::PathBuf>,
 
     /// Specify callbacks handler.
     /// The first argument is the callback name, and the second argument is a string that is going
-    /// to be passed to the shell to be executed. Occurences of `$1` will be replaced by the first argument,
+    /// to be passed to the shell to be executed. Occurrences of `$1` will be replaced by the first argument,
     /// and so on.
-    #[clap(long, value_names(&["callback", "handler"]), number_of_values = 2)]
+    #[arg(long, value_names(&["callback", "handler"]), number_of_values = 2, action)]
     on: Vec<String>,
 }
 
@@ -64,6 +58,7 @@ thread_local! {static CURRENT_INSTANCE: std::cell::RefCell<Option<ComponentInsta
 static EXIT_CODE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
 fn main() -> Result<()> {
+    env_logger::init();
     let args = Cli::parse();
 
     if args.auto_reload && args.save_data.is_some() {
@@ -194,7 +189,7 @@ fn init_dialog(instance: &ComponentInstance) {
         instance
             .set_callback(&cb, move |_| {
                 EXIT_CODE.store(exit_code, std::sync::atomic::Ordering::Relaxed);
-                i_slint_backend_selector::backend().quit_event_loop();
+                i_slint_core::api::quit_event_loop().unwrap();
                 Default::default()
             })
             .unwrap();
@@ -205,16 +200,18 @@ static PENDING_EVENTS: AtomicU32 = AtomicU32::new(0);
 
 fn start_fswatch_thread(args: Cli) -> Result<Arc<Mutex<notify::RecommendedWatcher>>> {
     let (tx, rx) = std::sync::mpsc::channel();
-    let w = Arc::new(Mutex::new(notify::watcher(tx, Duration::from_millis(400))?));
+    let w = Arc::new(Mutex::new(notify::recommended_watcher(tx)?));
     let w2 = w.clone();
     std::thread::spawn(move || {
         while let Ok(event) = rx.recv() {
-            use notify::DebouncedEvent::*;
-            if (matches!(event, Write(_) | Remove(_) | Create(_)))
-                && PENDING_EVENTS.load(Ordering::SeqCst) == 0
-            {
-                PENDING_EVENTS.fetch_add(1, Ordering::SeqCst);
-                run_in_ui_thread(Box::pin(reload(args.clone(), w2.clone())));
+            use notify::EventKind::*;
+            if let Ok(event) = event {
+                if (matches!(event.kind, Modify(_) | Remove(_) | Create(_)))
+                    && PENDING_EVENTS.load(Ordering::SeqCst) == 0
+                {
+                    PENDING_EVENTS.fetch_add(1, Ordering::SeqCst);
+                    run_in_ui_thread(Box::pin(reload(args.clone(), w2.clone())));
+                }
             }
         }
     });
@@ -349,7 +346,7 @@ unsafe impl Sync for FutureRunner {}
 
 impl Wake for FutureRunner {
     fn wake(self: Arc<Self>) {
-        i_slint_backend_selector::backend().post_event(Box::new(move || {
+        i_slint_core::api::invoke_from_event_loop(move || {
             let waker = self.clone().into();
             let mut cx = std::task::Context::from_waker(&waker);
             let mut fut_opt = self.fut.lock().unwrap();
@@ -359,7 +356,8 @@ impl Wake for FutureRunner {
                     std::task::Poll::Pending => {}
                 }
             }
-        }));
+        })
+        .unwrap();
     }
 }
 

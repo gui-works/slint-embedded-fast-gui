@@ -1,10 +1,11 @@
 // Copyright © SixtyFPS GmbH <info@slint-ui.com>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
-use core::convert::TryInto;
+use core::convert::TryFrom;
 use i_slint_compiler::langtype::Type as LangType;
 use i_slint_core::graphics::Image;
 use i_slint_core::model::{Model, ModelRc};
+use i_slint_core::window::WindowInner;
 use i_slint_core::{Brush, PathData, SharedString, SharedVector};
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -71,7 +72,7 @@ impl From<LangType> for ValueType {
 
 /// This is a dynamically typed value used in the Slint interpreter.
 /// It can hold a value of different types, and you should use the
-/// [`From`] or [`TryInto`] traits to access the value.
+/// [`From`] or [`TryFrom`] traits to access the value.
 ///
 /// ```
 /// # use slint_interpreter::*;
@@ -188,7 +189,7 @@ impl std::fmt::Debug for Value {
     }
 }
 
-/// Helper macro to implement the From / TryInto for Value
+/// Helper macro to implement the From / TryFrom for Value
 ///
 /// For example
 /// `declare_value_conversion!(Number => [u32, u64, i32, i64, f32, f64] );`
@@ -204,13 +205,12 @@ macro_rules! declare_value_conversion {
                     Value::$value(v as _)
                 }
             }
-            impl TryInto<$ty> for Value {
+            impl TryFrom<Value> for $ty {
                 type Error = Value;
-                fn try_into(self) -> Result<$ty, Value> {
-                    match self {
-                        //Self::$value(x) => x.try_into().map_err(|_|()),
-                        Self::$value(x) => Ok(x as _),
-                        _ => Err(self)
+                fn try_from(v: Value) -> Result<$ty, Self::Error> {
+                    match v {
+                        Value::$value(x) => Ok(x as _),
+                        _ => Err(v)
                     }
                 }
             }
@@ -227,7 +227,7 @@ declare_value_conversion!(PathData => [PathData]);
 declare_value_conversion!(EasingCurve => [i_slint_core::animations::EasingCurve]);
 declare_value_conversion!(LayoutCache => [SharedVector<f32>] );
 
-/// Implement From / TryInto for Value that convert a `struct` to/from `Value::Object`
+/// Implement From / TryFrom for Value that convert a `struct` to/from `Value::Object`
 macro_rules! declare_value_struct_conversion {
     (struct $name:path { $($field:ident),* $(, ..$extra:expr)? }) => {
         impl From<$name> for Value {
@@ -237,11 +237,11 @@ macro_rules! declare_value_struct_conversion {
                 Value::Struct(struct_)
             }
         }
-        impl TryInto<$name> for Value {
+        impl TryFrom<Value> for $name {
             type Error = ();
-            fn try_into(self) -> Result<$name, ()> {
-                match self {
-                    Self::Struct(x) => {
+            fn try_from(v: Value) -> Result<$name, Self::Error> {
+                match v {
+                    Value::Struct(x) => {
                         type Ty = $name;
                         Ok(Ty {
                             $($field: x.get_field(stringify!($field)).ok_or(())?.clone().try_into().map_err(|_|())?),*
@@ -258,73 +258,61 @@ macro_rules! declare_value_struct_conversion {
 declare_value_struct_conversion!(struct i_slint_core::model::StandardListViewItem { text });
 declare_value_struct_conversion!(struct i_slint_core::properties::StateInfo { current_state, previous_state, change_time });
 declare_value_struct_conversion!(struct i_slint_core::input::KeyboardModifiers { control, alt, shift, meta });
-declare_value_struct_conversion!(struct i_slint_core::input::KeyEvent { event_type, text, modifiers });
+declare_value_struct_conversion!(struct i_slint_core::input::KeyEvent { text, modifiers, ..Default::default() });
 declare_value_struct_conversion!(struct i_slint_core::layout::LayoutInfo { min, max, min_percent, max_percent, preferred, stretch });
 declare_value_struct_conversion!(struct i_slint_core::graphics::Point { x, y, ..Default::default()});
 declare_value_struct_conversion!(struct i_slint_core::items::PointerEvent { kind, button });
 
-/// Implement From / TryInto for Value that convert an `enum` to/from `Value::EnumerationValue`
+/// Implement From / TryFrom for Value that convert an `enum` to/from `Value::EnumerationValue`
 ///
 /// The `enum` must derive `Display` and `FromStr`
 /// (can be done with `strum_macros::EnumString`, `strum_macros::Display` derive macro)
 macro_rules! declare_value_enum_conversion {
-    ($ty:ty, $n:ident) => {
-        impl From<$ty> for Value {
-            fn from(v: $ty) -> Self {
-                Value::EnumerationValue(stringify!($n).to_owned(), v.to_string().replace('_', "-"))
+    ($( $(#[$enum_doc:meta])* enum $Name:ident { $($body:tt)* })*) => { $(
+        impl From<i_slint_core::items::$Name> for Value {
+            fn from(v: i_slint_core::items::$Name) -> Self {
+                Value::EnumerationValue(
+                    stringify!($Name).to_owned(),
+                    v.to_string().trim_start_matches("r#").replace('_', "-"),
+                )
             }
         }
-        impl TryInto<$ty> for Value {
+        impl TryFrom<Value> for i_slint_core::items::$Name {
             type Error = ();
-            fn try_into(self) -> Result<$ty, ()> {
+            fn try_from(v: Value) -> Result<i_slint_core::items::$Name, ()> {
                 use std::str::FromStr;
-                match self {
-                    Self::EnumerationValue(enumeration, value) => {
-                        if enumeration != stringify!($n) {
+                match v {
+                    Value::EnumerationValue(enumeration, value) => {
+                        if enumeration != stringify!($Name) {
                             return Err(());
                         }
 
-                        <$ty>::from_str(value.as_str())
-                            .or_else(|_| <$ty>::from_str(&value.as_str().replace('-', "_")))
+                        <i_slint_core::items::$Name>::from_str(value.as_str())
+                            .or_else(|_| {
+                                let norm = value.as_str().replace('-', "_");
+                                <i_slint_core::items::$Name>::from_str(&norm)
+                                    .or_else(|_| <i_slint_core::items::$Name>::from_str(&format!("r#{}", norm)))
+                            })
                             .map_err(|_| ())
                     }
                     _ => Err(()),
                 }
             }
         }
-    };
+    )*};
 }
 
-declare_value_enum_conversion!(
-    i_slint_core::items::TextHorizontalAlignment,
-    TextHorizontalAlignment
-);
-declare_value_enum_conversion!(i_slint_core::items::TextVerticalAlignment, TextVerticalAlignment);
-declare_value_enum_conversion!(i_slint_core::items::TextOverflow, TextOverflow);
-declare_value_enum_conversion!(i_slint_core::items::TextWrap, TextWrap);
-declare_value_enum_conversion!(i_slint_core::layout::LayoutAlignment, LayoutAlignment);
-declare_value_enum_conversion!(i_slint_core::items::ImageFit, ImageFit);
-declare_value_enum_conversion!(i_slint_core::items::ImageRendering, ImageRendering);
-declare_value_enum_conversion!(i_slint_core::input::KeyEventType, KeyEventType);
-declare_value_enum_conversion!(i_slint_core::items::EventResult, EventResult);
-declare_value_enum_conversion!(i_slint_core::items::FillRule, FillRule);
-declare_value_enum_conversion!(i_slint_core::items::MouseCursor, MouseCursor);
-declare_value_enum_conversion!(i_slint_core::items::StandardButtonKind, StandardButtonKind);
-declare_value_enum_conversion!(i_slint_core::items::PointerEventKind, PointerEventKind);
-declare_value_enum_conversion!(i_slint_core::items::PointerEventButton, PointerEventButton);
-declare_value_enum_conversion!(i_slint_core::items::DialogButtonRole, DialogButtonRole);
-declare_value_enum_conversion!(i_slint_core::items::InputType, InputType);
-declare_value_enum_conversion!(i_slint_core::graphics::PathEvent, PathEvent);
+i_slint_common::for_each_enums!(declare_value_enum_conversion);
 
 impl From<i_slint_core::animations::Instant> for Value {
     fn from(value: i_slint_core::animations::Instant) -> Self {
         Value::Number(value.0 as _)
     }
 }
-impl TryInto<i_slint_core::animations::Instant> for Value {
+impl TryFrom<Value> for i_slint_core::animations::Instant {
     type Error = ();
-    fn try_into(self) -> Result<i_slint_core::animations::Instant, ()> {
-        match self {
+    fn try_from(v: Value) -> Result<i_slint_core::animations::Instant, Self::Error> {
+        match v {
             Value::Number(x) => Ok(i_slint_core::animations::Instant(x as _)),
             _ => Err(()),
         }
@@ -337,10 +325,10 @@ impl From<()> for Value {
         Value::Void
     }
 }
-impl TryInto<()> for Value {
+impl TryFrom<Value> for () {
     type Error = ();
     #[inline]
-    fn try_into(self) -> Result<(), ()> {
+    fn try_from(_: Value) -> Result<(), Self::Error> {
         Ok(())
     }
 }
@@ -351,13 +339,30 @@ impl From<i_slint_core::Color> for Value {
         Value::Brush(Brush::SolidColor(c))
     }
 }
-impl TryInto<i_slint_core::Color> for Value {
+impl TryFrom<Value> for i_slint_core::Color {
     type Error = Value;
     #[inline]
-    fn try_into(self) -> Result<i_slint_core::Color, Value> {
-        match self {
+    fn try_from(v: Value) -> Result<i_slint_core::Color, Self::Error> {
+        match v {
             Value::Brush(Brush::SolidColor(c)) => Ok(c),
-            _ => Err(self),
+            _ => Err(v),
+        }
+    }
+}
+
+impl From<i_slint_core::lengths::LogicalLength> for Value {
+    #[inline]
+    fn from(l: i_slint_core::lengths::LogicalLength) -> Self {
+        Value::Number(l.get() as _)
+    }
+}
+impl TryFrom<Value> for i_slint_core::lengths::LogicalLength {
+    type Error = Value;
+    #[inline]
+    fn try_from(v: Value) -> Result<i_slint_core::lengths::LogicalLength, Self::Error> {
+        match v {
+            Value::Number(n) => Ok(i_slint_core::lengths::LogicalLength::new(n as _)),
+            _ => Err(v),
         }
     }
 }
@@ -378,7 +383,7 @@ pub(crate) fn normalize_identifier(ident: &str) -> Cow<'_, str> {
 /// written with the `{ key: value, }`  notation.
 ///
 /// It can be constructed with the [`FromIterator`] trait, and converted
-/// into or from a [`Value`] with the [`From`] and [`TryInto`] trait
+/// into or from a [`Value`] with the [`From`], [`TryFrom`] trait
 ///
 ///
 /// ```
@@ -590,17 +595,15 @@ impl ComponentDefinition {
     }
 
     /// Instantiate the component using an existing window.
-    /// This method is internal because the WindowRc is not a public type
     #[doc(hidden)]
     pub fn create_with_existing_window(&self, window: &Window) -> ComponentInstance {
-        use i_slint_core::window::WindowHandleAccess;
         generativity::make_guard!(guard);
         ComponentInstance {
             inner: self
                 .inner
                 .unerase(guard)
                 .clone()
-                .create_with_existing_window(window.window_handle()),
+                .create_with_existing_window(&WindowInner::from_pub(window).window_adapter()),
         }
     }
 
@@ -978,24 +981,23 @@ impl ComponentHandle for ComponentInstance {
     fn show(&self) {
         generativity::make_guard!(guard);
         let comp = self.inner.unerase(guard);
-        comp.borrow_instance().window().show();
+        comp.borrow_instance().window_adapter().window().show();
     }
 
     fn hide(&self) {
         generativity::make_guard!(guard);
         let comp = self.inner.unerase(guard);
-        comp.borrow_instance().window().hide();
+        comp.borrow_instance().window_adapter().window().hide();
     }
 
     fn run(&self) {
         self.show();
-        i_slint_backend_selector::backend()
-            .run_event_loop(i_slint_core::backend::EventLoopQuitBehavior::QuitOnLastWindowClosed);
+        run_event_loop();
         self.hide();
     }
 
     fn window(&self) -> &Window {
-        self.inner.window()
+        self.inner.window_adapter().window()
     }
 
     fn global<'a, T: Global<'a, Self>>(&'a self) -> T
@@ -1057,14 +1059,13 @@ pub enum InvokeCallbackError {
 /// events from the windowing system in order to render to the screen
 /// and react to user input.
 pub fn run_event_loop() {
-    i_slint_backend_selector::backend()
-        .run_event_loop(i_slint_core::backend::EventLoopQuitBehavior::QuitOnLastWindowClosed);
+    i_slint_backend_selector::with_platform(|b| b.run_event_loop());
 }
 
 /// This module contains a few function use by tests
 pub mod testing {
     use super::ComponentHandle;
-    use i_slint_core::window::WindowHandleAccess;
+    use i_slint_core::window::WindowInner;
 
     /// Wrapper around [`i_slint_core::tests::slint_send_mouse_click`]
     pub fn send_mouse_click(comp: &super::ComponentInstance, x: f32, y: f32) {
@@ -1072,7 +1073,7 @@ pub mod testing {
             &vtable::VRc::into_dyn(comp.inner.clone()),
             x,
             y,
-            comp.window().window_handle(),
+            &WindowInner::from_pub(comp.window()).window_adapter(),
         );
     }
     /// Wrapper around [`i_slint_core::tests::send_keyboard_string_sequence`]
@@ -1083,7 +1084,7 @@ pub mod testing {
         i_slint_core::tests::send_keyboard_string_sequence(
             &string,
             Default::default(),
-            comp.window().window_handle(),
+            &WindowInner::from_pub(comp.window()).window_adapter(),
         );
     }
 }
@@ -1326,7 +1327,7 @@ fn component_definition_struct_properties() {
         instance.set_property("test", Value::Struct(invalid_struct)),
         Err(SetPropertyError::WrongType)
     );
-    let mut invalid_struct = valid_struct.clone();
+    let mut invalid_struct = valid_struct;
     invalid_struct.set_field("string_value".into(), Value::Number(44.));
     assert_eq!(
         instance.set_property("test", Value::Struct(invalid_struct)),

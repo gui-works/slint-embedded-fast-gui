@@ -9,10 +9,6 @@ use wasm_bindgen::prelude::*;
 
 use slint_interpreter::ComponentHandle;
 
-#[cfg(feature = "wee_alloc")]
-#[global_allocator]
-static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
-
 #[wasm_bindgen]
 #[allow(dead_code)]
 pub struct CompilationResult {
@@ -37,6 +33,17 @@ impl CompilationResult {
     }
 }
 
+#[wasm_bindgen(typescript_custom_section)]
+const IMPORT_CALLBACK_FUNCTION_SECTION: &'static str = r#"
+type ImportCallbackFunction = (url: string) => Promise<string>;
+"#;
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(typescript_type = "ImportCallbackFunction")]
+    pub type ImportCallbackFunction;
+}
+
 /// Compile the content of a string.
 ///
 /// Returns a promise to a compiled component which can be run with ".run()"
@@ -44,7 +51,7 @@ impl CompilationResult {
 pub async fn compile_from_string(
     source: String,
     base_url: String,
-    optional_import_callback: Option<js_sys::Function>,
+    optional_import_callback: Option<ImportCallbackFunction>,
 ) -> Result<CompilationResult, JsValue> {
     compile_from_string_with_style(source, base_url, String::new(), optional_import_callback).await
 }
@@ -55,7 +62,7 @@ pub async fn compile_from_string_with_style(
     source: String,
     base_url: String,
     style: String,
-    optional_import_callback: Option<js_sys::Function>,
+    optional_import_callback: Option<ImportCallbackFunction>,
 ) -> Result<CompilationResult, JsValue> {
     #[cfg(feature = "console_error_panic_hook")]
     console_error_panic_hook::set_once();
@@ -70,7 +77,7 @@ pub async fn compile_from_string_with_style(
             Box<dyn core::future::Future<Output = Option<std::io::Result<String>>>>,
         > {
             Box::pin({
-                let load_callback = load_callback.clone();
+                let load_callback = js_sys::Function::from(load_callback.clone());
                 let file_name: String = file_name.to_string_lossy().into();
                 async move {
                     let result = load_callback.call1(&JsValue::UNDEFINED, &file_name.into());
@@ -152,6 +159,17 @@ impl WrappedCompiledComp {
     #[wasm_bindgen]
     pub fn create(&self, canvas_id: String) -> Result<WrappedInstance, JsValue> {
         Ok(WrappedInstance(self.0.create_with_canvas_id(&canvas_id)))
+    }
+    /// Creates this compiled component in the canvas of the provided instance.
+    /// For this to work, the provided instance needs to be visible (show() must've been
+    /// called) and the event loop must be running (`slint.run_event_loop()`). After this
+    /// call the provided instance is not rendered anymore and can be discarded.
+    #[wasm_bindgen]
+    pub fn create_with_existing_window(
+        &self,
+        instance: WrappedInstance,
+    ) -> Result<WrappedInstance, JsValue> {
+        Ok(WrappedInstance(self.0.create_with_existing_window(instance.0.window())))
     }
 }
 

@@ -7,8 +7,7 @@ This module contains the builtin image related items.
 When adding an item or a property, it needs to be kept in sync with different place.
 Lookup the [`crate::items`] module documentation.
 */
-use super::{Item, ItemConsts, ItemRc};
-use crate::graphics::Rect;
+use super::{ImageFit, ImageRendering, Item, ItemConsts, ItemRc, RenderingResult};
 use crate::input::{
     FocusEvent, FocusEventResult, InputEventFilterResult, InputEventResult, KeyEvent,
     KeyEventResult, MouseEvent,
@@ -16,42 +15,15 @@ use crate::input::{
 use crate::item_rendering::CachedRenderingData;
 use crate::item_rendering::ItemRenderer;
 use crate::layout::{LayoutInfo, Orientation};
+use crate::lengths::{LogicalLength, LogicalPoint, LogicalRect, LogicalSize};
 #[cfg(feature = "rtti")]
 use crate::rtti::*;
-use crate::window::WindowRc;
-use crate::{Brush, Property};
+use crate::window::WindowAdapter;
+use crate::{Brush, Coord, Property};
+use alloc::rc::Rc;
 use const_field_offset::FieldOffsets;
 use core::pin::Pin;
 use i_slint_core_macros::*;
-
-#[derive(Copy, Clone, Debug, PartialEq, strum::EnumString, strum::Display)]
-#[repr(C)]
-#[allow(non_camel_case_types)]
-pub enum ImageFit {
-    fill,
-    contain,
-    cover,
-}
-
-impl Default for ImageFit {
-    fn default() -> Self {
-        ImageFit::fill
-    }
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, strum::EnumString, strum::Display)]
-#[repr(C)]
-#[allow(non_camel_case_types)]
-pub enum ImageRendering {
-    smooth,
-    pixelated,
-}
-
-impl Default for ImageRendering {
-    fn default() -> Self {
-        ImageRendering::smooth
-    }
-}
 
 #[repr(C)]
 #[derive(FieldOffsets, Default, SlintElement)]
@@ -59,30 +31,37 @@ impl Default for ImageRendering {
 /// The implementation of the `Image` element
 pub struct ImageItem {
     pub source: Property<crate::graphics::Image>,
-    pub x: Property<f32>,
-    pub y: Property<f32>,
-    pub width: Property<f32>,
-    pub height: Property<f32>,
+    pub x: Property<LogicalLength>,
+    pub y: Property<LogicalLength>,
+    pub width: Property<LogicalLength>,
+    pub height: Property<LogicalLength>,
     pub image_fit: Property<ImageFit>,
     pub image_rendering: Property<ImageRendering>,
     pub cached_rendering_data: CachedRenderingData,
 }
 
 impl Item for ImageItem {
-    fn init(self: Pin<&Self>, _window: &WindowRc) {}
+    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
 
-    fn geometry(self: Pin<&Self>) -> Rect {
-        euclid::rect(self.x(), self.y(), self.width(), self.height())
+    fn geometry(self: Pin<&Self>) -> LogicalRect {
+        LogicalRect::new(
+            LogicalPoint::from_lengths(self.x(), self.y()),
+            LogicalSize::from_lengths(self.width(), self.height()),
+        )
     }
 
-    fn layout_info(self: Pin<&Self>, orientation: Orientation, _window: &WindowRc) -> LayoutInfo {
+    fn layout_info(
+        self: Pin<&Self>,
+        orientation: Orientation,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+    ) -> LayoutInfo {
         let natural_size = self.source().size();
         LayoutInfo {
             preferred: match orientation {
-                _ if natural_size.width == 0 || natural_size.height == 0 => 0.,
-                Orientation::Horizontal => natural_size.width as f32,
+                _ if natural_size.width == 0 || natural_size.height == 0 => 0 as Coord,
+                Orientation::Horizontal => natural_size.width as Coord,
                 Orientation::Vertical => {
-                    natural_size.height as f32 * self.width() / natural_size.width as f32
+                    natural_size.height as Coord * self.width().get() / natural_size.width as Coord
                 }
             },
             ..Default::default()
@@ -92,7 +71,7 @@ impl Item for ImageItem {
     fn input_event_filter_before_children(
         self: Pin<&Self>,
         _: MouseEvent,
-        _window: &WindowRc,
+        _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
         InputEventFilterResult::ForwardAndIgnore
@@ -101,22 +80,37 @@ impl Item for ImageItem {
     fn input_event(
         self: Pin<&Self>,
         _: MouseEvent,
-        _window: &WindowRc,
+        _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventResult {
         InputEventResult::EventIgnored
     }
 
-    fn key_event(self: Pin<&Self>, _: &KeyEvent, _window: &WindowRc) -> KeyEventResult {
+    fn key_event(
+        self: Pin<&Self>,
+        _: &KeyEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> KeyEventResult {
         KeyEventResult::EventIgnored
     }
 
-    fn focus_event(self: Pin<&Self>, _: &FocusEvent, _window: &WindowRc) -> FocusEventResult {
+    fn focus_event(
+        self: Pin<&Self>,
+        _: &FocusEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> FocusEventResult {
         FocusEventResult::FocusIgnored
     }
 
-    fn render(self: Pin<&Self>, backend: &mut &mut dyn ItemRenderer) {
-        (*backend).draw_image(self)
+    fn render(
+        self: Pin<&Self>,
+        backend: &mut &mut dyn ItemRenderer,
+        self_rc: &ItemRc,
+    ) -> RenderingResult {
+        (*backend).draw_image(self, self_rc);
+        RenderingResult::ContinueRenderingChildren
     }
 }
 
@@ -133,10 +127,10 @@ impl ItemConsts for ImageItem {
 /// The implementation of the `ClippedImage` element
 pub struct ClippedImage {
     pub source: Property<crate::graphics::Image>,
-    pub x: Property<f32>,
-    pub y: Property<f32>,
-    pub width: Property<f32>,
-    pub height: Property<f32>,
+    pub x: Property<LogicalLength>,
+    pub y: Property<LogicalLength>,
+    pub width: Property<LogicalLength>,
+    pub height: Property<LogicalLength>,
     pub image_fit: Property<ImageFit>,
     pub image_rendering: Property<ImageRendering>,
     pub colorize: Property<Brush>,
@@ -148,20 +142,27 @@ pub struct ClippedImage {
 }
 
 impl Item for ClippedImage {
-    fn init(self: Pin<&Self>, _window: &WindowRc) {}
+    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
 
-    fn geometry(self: Pin<&Self>) -> Rect {
-        euclid::rect(self.x(), self.y(), self.width(), self.height())
+    fn geometry(self: Pin<&Self>) -> LogicalRect {
+        LogicalRect::new(
+            LogicalPoint::from_lengths(self.x(), self.y()),
+            LogicalSize::from_lengths(self.width(), self.height()),
+        )
     }
 
-    fn layout_info(self: Pin<&Self>, orientation: Orientation, _window: &WindowRc) -> LayoutInfo {
+    fn layout_info(
+        self: Pin<&Self>,
+        orientation: Orientation,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+    ) -> LayoutInfo {
         let natural_size = self.source().size();
         LayoutInfo {
             preferred: match orientation {
-                _ if natural_size.width == 0 || natural_size.height == 0 => 0.,
-                Orientation::Horizontal => natural_size.width as f32,
+                _ if natural_size.width == 0 || natural_size.height == 0 => 0 as Coord,
+                Orientation::Horizontal => natural_size.width as Coord,
                 Orientation::Vertical => {
-                    natural_size.height as f32 * self.width() / natural_size.width as f32
+                    natural_size.height as Coord * self.width().get() / natural_size.width as Coord
                 }
             },
             ..Default::default()
@@ -171,7 +172,7 @@ impl Item for ClippedImage {
     fn input_event_filter_before_children(
         self: Pin<&Self>,
         _: MouseEvent,
-        _window: &WindowRc,
+        _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
         InputEventFilterResult::ForwardAndIgnore
@@ -180,22 +181,37 @@ impl Item for ClippedImage {
     fn input_event(
         self: Pin<&Self>,
         _: MouseEvent,
-        _window: &WindowRc,
+        _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventResult {
         InputEventResult::EventIgnored
     }
 
-    fn key_event(self: Pin<&Self>, _: &KeyEvent, _window: &WindowRc) -> KeyEventResult {
+    fn key_event(
+        self: Pin<&Self>,
+        _: &KeyEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> KeyEventResult {
         KeyEventResult::EventIgnored
     }
 
-    fn focus_event(self: Pin<&Self>, _: &FocusEvent, _window: &WindowRc) -> FocusEventResult {
+    fn focus_event(
+        self: Pin<&Self>,
+        _: &FocusEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> FocusEventResult {
         FocusEventResult::FocusIgnored
     }
 
-    fn render(self: Pin<&Self>, backend: &mut &mut dyn ItemRenderer) {
-        (*backend).draw_clipped_image(self)
+    fn render(
+        self: Pin<&Self>,
+        backend: &mut &mut dyn ItemRenderer,
+        self_rc: &ItemRc,
+    ) -> RenderingResult {
+        (*backend).draw_clipped_image(self, self_rc);
+        RenderingResult::ContinueRenderingChildren
     }
 }
 

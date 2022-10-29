@@ -10,7 +10,7 @@
 
 use crate::diagnostics::{BuildDiagnostics, Spanned};
 use crate::expression_tree::*;
-use crate::langtype::{PropertyLookupResult, Type};
+use crate::langtype::{ElementType, Type};
 use crate::lookup::{LookupCtx, LookupObject, LookupResult};
 use crate::object_tree::*;
 use crate::parser::{identifier_text, syntax_nodes, NodeOrToken, SyntaxKind, SyntaxNode};
@@ -84,29 +84,22 @@ pub fn resolve_expressions(
     diag: &mut BuildDiagnostics,
 ) {
     for component in doc.inner_components.iter() {
-        let scope = ComponentScope(vec![component.root_element.clone()]);
+        let scope = ComponentScope(vec![]);
 
         recurse_elem(&component.root_element, &scope, &mut |elem, scope| {
             let mut new_scope = scope.clone();
             let mut is_repeated = elem.borrow().repeated.is_some();
-            if is_repeated {
-                new_scope.0.push(elem.clone())
-            }
             new_scope.0.push(elem.clone());
             let mut two_ways = vec![];
             visit_element_expressions(elem, |expr, property_name, property_type| {
                 if is_repeated {
                     // The first expression is always the model and it needs to be resolved with the parent scope
                     debug_assert!(elem.borrow().repeated.as_ref().is_none()); // should be none because it is taken by the visit_element_expressions function
-                    let mut parent_scope = scope.clone();
-                    if let Some(parent) = find_parent_element(elem) {
-                        parent_scope.0.push(parent)
-                    };
                     resolve_expression(
                         expr,
                         property_name,
                         property_type(),
-                        &parent_scope,
+                        &scope,
                         &doc.local_registry,
                         type_loader,
                         &mut two_ways,
@@ -129,7 +122,6 @@ pub fn resolve_expressions(
             for (prop, nr) in two_ways {
                 elem.borrow().bindings.get(&prop).unwrap().borrow_mut().two_way_bindings.push(nr);
             }
-            new_scope.0.pop();
             new_scope
         })
     }
@@ -236,7 +228,7 @@ impl Expression {
         node.Expression()
             .map(|n| Self::from_expression_node(n, ctx))
             .or_else(|| node.AtImageUrl().map(|n| Self::from_at_image_url_node(n, ctx)))
-            .or_else(|| node.AtLinearGradient().map(|n| Self::from_at_linear_gradient(n, ctx)))
+            .or_else(|| node.AtGradient().map(|n| Self::from_at_gradient(n, ctx)))
             .or_else(|| {
                 node.QualifiedName().map(|n| {
                     let exp = Self::from_qualified_name_node(n.clone(), ctx);
@@ -346,30 +338,67 @@ impl Expression {
         }
     }
 
-    fn from_at_linear_gradient(node: syntax_nodes::AtLinearGradient, ctx: &mut LookupCtx) -> Self {
+    fn from_at_gradient(node: syntax_nodes::AtGradient, ctx: &mut LookupCtx) -> Self {
+        enum GradKind {
+            Linear { angle: Box<Expression> },
+            Radial,
+        }
+
         let mut subs = node
             .children_with_tokens()
             .filter(|n| matches!(n.kind(), SyntaxKind::Comma | SyntaxKind::Expression));
-        let angle_expr = match subs.next() {
-            Some(e) if e.kind() == SyntaxKind::Expression => {
-                syntax_nodes::Expression::from(e.into_node().unwrap())
-            }
-            _ => {
-                ctx.diag.push_error("Expected angle expression".into(), &node);
+
+        let grad_token = node.child_token(SyntaxKind::Identifier).unwrap();
+        let grad_text = grad_token.text();
+
+        let grad_kind = if grad_text.starts_with("linear") {
+            let angle_expr = match subs.next() {
+                Some(e) if e.kind() == SyntaxKind::Expression => {
+                    syntax_nodes::Expression::from(e.into_node().unwrap())
+                }
+                _ => {
+                    ctx.diag.push_error("Expected angle expression".into(), &node);
+                    return Expression::Invalid;
+                }
+            };
+            if subs.next().map_or(false, |s| s.kind() != SyntaxKind::Comma) {
+                ctx.diag.push_error(
+                    "Angle expression must be an angle followed by a comma".into(),
+                    &node,
+                );
                 return Expression::Invalid;
             }
+            let angle = Box::new(
+                Expression::from_expression_node(angle_expr.clone(), ctx).maybe_convert_to(
+                    Type::Angle,
+                    &angle_expr,
+                    ctx.diag,
+                ),
+            );
+            GradKind::Linear { angle }
+        } else if grad_text.starts_with("radial") {
+            if !matches!(subs.next(), Some(NodeOrToken::Node(n)) if n.text().to_string().trim() == "circle")
+            {
+                ctx.diag.push_error("Expected 'circle': currently, only @radial-gradient(circle, ...) are supported".into(), &node);
+                return Expression::Invalid;
+            }
+            let comma = subs.next();
+            if matches!(&comma, Some(NodeOrToken::Node(n)) if n.text().to_string().trim() == "at") {
+                ctx.diag.push_error("'at' in @radial-gradient is not yet supported".into(), &comma);
+                return Expression::Invalid;
+            }
+            if comma.as_ref().map_or(false, |s| s.kind() != SyntaxKind::Comma) {
+                ctx.diag.push_error(
+                    "'circle' must be followed by a comma".into(),
+                    comma.as_ref().map_or(&node, |x| x as &dyn Spanned),
+                );
+                return Expression::Invalid;
+            }
+            GradKind::Radial
+        } else {
+            // Parser should have ensured we have one of the linear or radial gradient
+            panic!("Not a gradient {grad_text:?}");
         };
-        if subs.next().map_or(false, |s| s.kind() != SyntaxKind::Comma) {
-            ctx.diag
-                .push_error("Angle expression must be an angle followed by a comma".into(), &node);
-            return Expression::Invalid;
-        }
-        let angle =
-            Box::new(Expression::from_expression_node(angle_expr.clone(), ctx).maybe_convert_to(
-                Type::Angle,
-                &angle_expr,
-                ctx.diag,
-            ));
 
         let mut stops = vec![];
         enum Stop {
@@ -441,7 +470,7 @@ impl Expression {
             if pos > 0 {
                 let (middle, after) = rest.split_at_mut(pos);
                 let begin = &before.last().expect("The first should never be invalid").1;
-                let end = &after.last().expect("The last should never be invalid").1;
+                let end = &after.first().expect("The last should never be invalid").1;
                 for (i, (_, e)) in middle.iter_mut().enumerate() {
                     debug_assert!(matches!(e, Expression::Invalid));
                     // e = begin + (i+1) * (end - begin) / (pos+1)
@@ -467,7 +496,10 @@ impl Expression {
             start += pos + 1;
         }
 
-        Expression::LinearGradient { angle, stops }
+        match grad_kind {
+            GradKind::Linear { angle } => Expression::LinearGradient { angle, stops },
+            GradKind::Radial => Expression::RadialGradient { stops },
+        }
     }
 
     /// Perform the lookup
@@ -499,6 +531,16 @@ impl Expression {
                     {
                         ctx.diag.push_error(format!("Unknown unqualified identifier '{}'. Use space before the '-' if you meant a subtraction", first.text()), &node);
                         return Expression::Invalid;
+                    }
+                }
+                for (prefix, e) in
+                    [("self", ctx.component_scope.last()), ("root", ctx.component_scope.first())]
+                {
+                    if let Some(e) = e {
+                        if e.lookup(ctx, &first_str).is_some() {
+                            ctx.diag.push_error(format!("Unknown unqualified identifier '{0}'. Did you mean '{prefix}.{0}'?", first.text()), &node);
+                            return Expression::Invalid;
+                        }
                     }
                 }
 
@@ -671,14 +713,13 @@ impl Expression {
             .or_else(|| node.child_token(SyntaxKind::DivEqual).and(Some('/')))
             .or_else(|| node.child_token(SyntaxKind::Equal).and(Some('=')))
             .unwrap_or('_');
-        if !lhs.try_set_rw() && lhs.ty() != Type::Invalid {
-            ctx.diag.push_error(
-                format!(
-                    "{} needs to be done on a property",
-                    if op == '=' { "Assignment" } else { "Self assignment" }
-                ),
-                &node,
-            );
+        if lhs.ty() != Type::Invalid {
+            if let Err(msg) = lhs.try_set_rw() {
+                ctx.diag.push_error(
+                    format!("{} {}", if op == '=' { "Assignment" } else { "Self assignment" }, msg),
+                    &node,
+                );
+            }
         }
         let ty = lhs.ty();
         let expected_ty = match op {
@@ -959,6 +1000,7 @@ impl Expression {
                             node: result_node.or(elem_node),
                         }
                     }
+                    (Type::Color, Type::Brush) | (Type::Brush, Type::Color) => Type::Brush,
                     (target_type, expr_ty) => {
                         if expr_ty.can_convert(&target_type) {
                             target_type
@@ -995,21 +1037,31 @@ fn continue_lookup_within_element(
     };
     let prop_name = crate::parser::normalize_identifier(second.text());
 
-    let PropertyLookupResult { resolved_name, property_type } =
-        elem.borrow().lookup_property(&prop_name);
-    if property_type.is_property_type() {
-        if resolved_name != prop_name {
-            ctx.diag.push_property_deprecation_warning(&prop_name, &resolved_name, &second);
+    let lookup_result = elem.borrow().lookup_property(&prop_name);
+    if lookup_result.property_type.is_property_type() {
+        if !lookup_result.is_local_to_component
+            && lookup_result.property_visibility == PropertyVisibility::Private
+        {
+            ctx.diag.push_error(format!("'{}' is private", second.text()), &second);
+            return Expression::Invalid;
         }
-        let prop = Expression::PropertyReference(NamedReference::new(elem, &resolved_name));
+        if lookup_result.resolved_name != prop_name {
+            ctx.diag.push_property_deprecation_warning(
+                &prop_name,
+                &lookup_result.resolved_name,
+                &second,
+            );
+        }
+        let prop =
+            Expression::PropertyReference(NamedReference::new(elem, &lookup_result.resolved_name));
         maybe_lookup_object(prop, it, ctx)
-    } else if matches!(property_type, Type::Callback { .. }) {
+    } else if matches!(lookup_result.property_type, Type::Callback { .. }) {
         if let Some(x) = it.next() {
             ctx.diag.push_error("Cannot access fields of callback".into(), &x)
         }
-        Expression::CallbackReference(NamedReference::new(elem, &resolved_name))
-    } else if matches!(property_type, Type::Function { .. }) {
-        let member = elem.borrow().base_type.lookup_member_function(&resolved_name);
+        Expression::CallbackReference(NamedReference::new(elem, &lookup_result.resolved_name))
+    } else if matches!(lookup_result.property_type, Type::Function { .. }) {
+        let member = elem.borrow().base_type.lookup_member_function(&lookup_result.resolved_name);
         Expression::MemberFunction {
             base: Box::new(Expression::ElementReference(Rc::downgrade(elem))),
             base_node: Some(NodeOrToken::Node(node.into())),
@@ -1018,14 +1070,15 @@ fn continue_lookup_within_element(
     } else {
         let mut err = |extra: &str| {
             let what = match &elem.borrow().base_type {
-                Type::Void => {
+                ElementType::Global => {
                     let global = elem.borrow().enclosing_component.upgrade().unwrap();
                     assert!(global.is_global());
                     format!("'{}'", global.id)
                 }
-                Type::Component(c) => format!("Element '{}'", c.id),
-                Type::Builtin(b) => format!("Element '{}'", b.name),
-                _ => {
+                ElementType::Component(c) => format!("Element '{}'", c.id),
+                ElementType::Builtin(b) => format!("Element '{}'", b.name),
+                ElementType::Native(_) => unreachable!("the native pass comes later"),
+                ElementType::Error => {
                     assert!(ctx.diag.has_error());
                     return;
                 }

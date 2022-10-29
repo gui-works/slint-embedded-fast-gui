@@ -1,26 +1,31 @@
 // Copyright © SixtyFPS GmbH <info@slint-ui.com>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
-// cspell:ignore corelib SFPS QWIDGETSIZE pixmap qpointf qreal Antialiasing ARGB Rgba
+// cSpell: ignore antialiasing frameless qbrush qpointf qreal qwidgetsize svgz
 
 use cpp::*;
 use euclid::approxeq::ApproxEq;
+use i_slint_core::component::{ComponentRc, ComponentRef};
+use i_slint_core::graphics::euclid::num::Zero;
+use i_slint_core::graphics::rendering_metrics_collector::{
+    RenderingMetrics, RenderingMetricsCollector,
+};
 use i_slint_core::graphics::{
-    Brush, Color, FPSCounter, FontRequest, Image, Point, Rect, RenderingCache, SharedImageBuffer,
-    Size,
+    euclid, Brush, Color, FontRequest, Image, Point, Rect, SharedImageBuffer,
 };
 use i_slint_core::input::{KeyEvent, KeyEventType, MouseEvent};
-use i_slint_core::item_rendering::{CachedRenderingData, ItemRenderer};
+use i_slint_core::item_rendering::{ItemCache, ItemRenderer};
 use i_slint_core::items::{
-    self, FillRule, ImageRendering, InputType, ItemRef, MouseCursor, PointerEventButton,
-    TextOverflow, TextWrap,
+    self, FillRule, ImageRendering, InputType, ItemRc, ItemRef, Layer, MouseCursor, Opacity,
+    PointerEventButton, RenderingResult, TextOverflow, TextWrap, WindowItem,
 };
 use i_slint_core::layout::Orientation;
-use i_slint_core::window::{PlatformWindow, PopupWindow, PopupWindowLocation, WindowRc};
-use i_slint_core::{component::ComponentRc, SharedString};
-use i_slint_core::{ImageInner, PathData, Property};
+use i_slint_core::lengths::{
+    LogicalLength, LogicalPoint, LogicalRect, LogicalSize, LogicalVector, PhysicalPx, ScaleFactor,
+};
+use i_slint_core::window::{WindowAdapter, WindowAdapterSealed, WindowInner};
+use i_slint_core::{ImageInner, PathData, Property, SharedString};
 use items::{ImageFit, TextHorizontalAlignment, TextVerticalAlignment};
-use qttypes::QPainter;
 
 use std::cell::RefCell;
 use std::pin::Pin;
@@ -28,12 +33,15 @@ use std::ptr::NonNull;
 use std::rc::{Rc, Weak};
 
 use crate::key_generated;
+use i_slint_core::renderer::Renderer;
+use once_cell::unsync::OnceCell;
 
 cpp! {{
     #include <QtWidgets/QtWidgets>
     #include <QtWidgets/QGraphicsScene>
     #include <QtWidgets/QGraphicsBlurEffect>
     #include <QtWidgets/QGraphicsPixmapItem>
+    #include <QtGui/QAccessible>
     #include <QtGui/QPainter>
     #include <QtGui/QPaintEngine>
     #include <QtGui/QPainterPath>
@@ -48,8 +56,12 @@ cpp! {{
     #include <QtCore/QBuffer>
     #include <QtCore/QEvent>
     #include <QtCore/QFileInfo>
+
     #include <memory>
+
     void ensure_initialized(bool from_qt_backend);
+
+    using QPainterPtr = std::unique_ptr<QPainter>;
 
     struct TimerHandler : QObject {
         QBasicTimer timer;
@@ -71,6 +83,8 @@ cpp! {{
 
     struct SlintWidget : QWidget {
         void *rust_window;
+        bool isMouseButtonDown = false;
+        QPoint ime_position;
 
         SlintWidget() {
             setMouseTracking(true);
@@ -78,12 +92,12 @@ cpp! {{
         }
 
         void paintEvent(QPaintEvent *) override {
-            QPainter painter(this);
-            painter.setClipRect(rect());
-            painter.setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
-            auto painter_ptr = &painter;
-            rust!(Slint_paintEvent [rust_window: &QtWindow as "void*", painter_ptr: &mut QPainter as "QPainter*"] {
-                rust_window.paint_event(painter_ptr)
+            auto painter = std::unique_ptr<QPainter>(new QPainter(this));
+            painter->setClipRect(rect());
+            painter->setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
+            QPainterPtr *painter_ptr = &painter;
+            rust!(Slint_paintEvent [rust_window: &QtWindow as "void*", painter_ptr: &mut QPainterPtr as "QPainterPtr*"] {
+                rust_window.paint_event(std::mem::take(painter_ptr))
             });
         }
 
@@ -95,21 +109,37 @@ cpp! {{
         }
 
         void mousePressEvent(QMouseEvent *event) override {
+            isMouseButtonDown = true;
             QPoint pos = event->pos();
             int button = event->button();
             rust!(Slint_mousePressEvent [rust_window: &QtWindow as "void*", pos: qttypes::QPoint as "QPoint", button: u32 as "int" ] {
-                let pos = Point::new(pos.x as _, pos.y as _);
+                let position = LogicalPoint::new(pos.x as _, pos.y as _);
                 let button = from_qt_button(button);
-                rust_window.mouse_event(MouseEvent::MousePressed{ pos, button })
+                rust_window.mouse_event(MouseEvent::Pressed{ position, button })
             });
         }
         void mouseReleaseEvent(QMouseEvent *event) override {
+            // HACK: Qt on windows is a bit special when clicking on the window
+            //       close button and when the resulting close event is ignored.
+            //       In that case a release event that was not preceded by
+            //       a press event is sent on Windows.
+            //       This confuses Slint, so eat this event.
+            //
+            //       One example is a popup is shown in the close event that
+            //       then ignores the the close request to ask the user what to
+            //       do. The stray release event will then close the popup
+            //       straight away
+            if (!isMouseButtonDown) {
+                return;
+            }
+            isMouseButtonDown = false;
+
             QPoint pos = event->pos();
             int button = event->button();
             rust!(Slint_mouseReleaseEvent [rust_window: &QtWindow as "void*", pos: qttypes::QPoint as "QPoint", button: u32 as "int" ] {
-                let pos = Point::new(pos.x as _, pos.y as _);
+                let position = LogicalPoint::new(pos.x as _, pos.y as _);
                 let button = from_qt_button(button);
-                rust_window.mouse_event(MouseEvent::MouseReleased{ pos, button })
+                rust_window.mouse_event(MouseEvent::Released{ position, button })
             });
             if (auto p = dynamic_cast<const SlintWidget*>(parent())) {
                 // FIXME: better way to close the popup
@@ -122,8 +152,8 @@ cpp! {{
         void mouseMoveEvent(QMouseEvent *event) override {
             QPoint pos = event->pos();
             rust!(Slint_mouseMoveEvent [rust_window: &QtWindow as "void*", pos: qttypes::QPoint as "QPoint"] {
-                let pos = Point::new(pos.x as _, pos.y as _);
-                rust_window.mouse_event(MouseEvent::MouseMoved{pos})
+                let position = LogicalPoint::new(pos.x as _, pos.y as _);
+                rust_window.mouse_event(MouseEvent::Moved{position})
             });
         }
         void wheelEvent(QWheelEvent *event) override {
@@ -133,14 +163,13 @@ cpp! {{
                 delta = event->angleDelta();
             }
             rust!(Slint_mouseWheelEvent [rust_window: &QtWindow as "void*", pos: qttypes::QPointF as "QPointF", delta: qttypes::QPoint as "QPoint"] {
-                let pos = Point::new(pos.x as _, pos.y as _);
-                let delta = Point::new(delta.x as _, delta.y as _);
-                rust_window.mouse_event(MouseEvent::MouseWheel{pos, delta})
+                let position = LogicalPoint::new(pos.x as _, pos.y as _);
+                rust_window.mouse_event(MouseEvent::Wheel{position, delta_x: delta.x as _, delta_y: delta.y as _})
             });
         }
         void leaveEvent(QEvent *) override {
             rust!(Slint_mouseLeaveEvent [rust_window: &QtWindow as "void*"] {
-                rust_window.mouse_event(MouseEvent::MouseExit)
+                rust_window.mouse_event(MouseEvent::Exit)
             });
         }
 
@@ -163,8 +192,8 @@ cpp! {{
 
         void customEvent(QEvent *event) override {
             if (event->type() == QEvent::User) {
-                rust!(Slint_updateWindowProps [rust_window: &QtWindow as "void*"]{
-                   if let Some(window) = rust_window.self_weak.upgrade() { window.update_window_properties() }
+                rust!(Slint_updateWindowProps [rust_window: &QtWindow as "void*"] {
+                    WindowInner::from_pub(&rust_window.window).update_window_properties()
                 });
             } else {
                 QWidget::customEvent(event);
@@ -174,16 +203,34 @@ cpp! {{
         void changeEvent(QEvent *event) override {
             if (event->type() == QEvent::ActivationChange) {
                 bool active = isActiveWindow();
-                rust!(Slint_updateWindowActivation [rust_window: &QtWindow as "void*", active: bool as "bool"]{
-                    if let Some(window) = rust_window.self_weak.upgrade() { window.set_active(active) }
-                 });
+                rust!(Slint_updateWindowActivation [rust_window: &QtWindow as "void*", active: bool as "bool"] {
+                    WindowInner::from_pub(&rust_window.window).set_active(active)
+                });
+            } else if (event->type() == QEvent::PaletteChange || event->type() == QEvent::StyleChange) {
+                bool dark_color_scheme = qApp->palette().color(QPalette::Window).valueF() < 0.5;
+                rust!(Slint_updateWindowDarkColorScheme [rust_window: &QtWindow as "void*", dark_color_scheme: bool as "bool"] {
+                    if let Some(ds) = rust_window.dark_color_scheme.get() {
+                        ds.as_ref().set(dark_color_scheme);
+                    }
+                });
             }
             QWidget::changeEvent(event);
         }
 
+        void closeEvent(QCloseEvent *event) override {
+            bool accepted = rust!(Slint_requestClose [rust_window: &QtWindow as "void*"] -> bool as "bool" {
+                return WindowInner::from_pub(&rust_window.window).request_close();
+            });
+            if (accepted) {
+                event->accept();
+            } else {
+                event->ignore();
+            }
+        }
+
         QSize sizeHint() const override {
             auto preferred_size = rust!(Slint_sizeHint [rust_window: &QtWindow as "void*"] -> qttypes::QSize as "QSize" {
-                let component_rc = rust_window.self_weak.upgrade().unwrap().component();
+                let component_rc = WindowInner::from_pub(&rust_window.window).component();
                 let component = ComponentRc::borrow_pin(&component_rc);
                 let layout_info_h = component.as_ref().layout_info(Orientation::Horizontal);
                 let layout_info_v = component.as_ref().layout_info(Orientation::Vertical);
@@ -198,6 +245,63 @@ cpp! {{
                 return QWidget::sizeHint();
             }
         }
+
+        QVariant inputMethodQuery(Qt::InputMethodQuery query) const override {
+            switch (query) {
+            case Qt::ImCursorRectangle: {
+                return QRect(ime_position.x(), ime_position.y(), 1, 1);
+            }
+            default: break;
+            }
+            return QWidget::inputMethodQuery(query);
+        }
+
+        void inputMethodEvent(QInputMethodEvent *event) override {
+            QString commit_string = event->commitString();
+            QString preedit_string = event->preeditString();
+            int replacement_start = event->replacementStart();
+            int replacement_length = qMax(0, event->replacementLength());
+            if (replacement_start < 0) {
+                // Not sure if this can happen yet, but this way we can safely cast to usize below.
+                replacement_start = 0;
+                replacement_length = 0;
+            }
+
+            int preedit_cursor = -1;
+            for (const QInputMethodEvent::Attribute &attribute: event->attributes()) {
+                if (attribute.type == QInputMethodEvent::Cursor) {
+                    if (attribute.length > 0) {
+                        preedit_cursor = attribute.start;
+                    }
+                }
+            }
+            event->accept();
+            rust!(Slint_inputMethodEvent [rust_window: &QtWindow as "void*", commit_string: qttypes::QString as "QString",
+                preedit_string: qttypes::QString as "QString", replacement_start: i32 as "int", replacement_length: i32 as "int",
+                preedit_cursor: i32 as "int"] {
+                    let runtime_window = WindowInner::from_pub(&rust_window.window);
+
+                    if !preedit_string.is_empty() {
+                        let event = KeyEvent {
+                            event_type: KeyEventType::UpdateComposition,
+                            text: preedit_string.to_string().into(),
+                            preedit_selection_start: replacement_start as usize,
+                            preedit_selection_end: replacement_start as usize + replacement_length as usize,
+                            ..Default::default()
+                        };
+                        runtime_window.process_key_input(&event);
+                    }
+
+                    if !commit_string.is_empty() {
+                        let event = KeyEvent {
+                            event_type: KeyEventType::CommitComposition,
+                            text: commit_string.to_string().into(),
+                            ..Default::default()
+                        };
+                        runtime_window.process_key_input(&event);
+                    }
+                });
+        }
     };
 
     // Helper function used for the TextInput layouting
@@ -206,6 +310,7 @@ cpp! {{
     static int do_text_layout(QTextLayout &layout, int flags, const QRectF &rect, int line_for_y_pos = -1) {
         QTextOption options;
         options.setWrapMode((flags & Qt::TextWordWrap) ? QTextOption::WordWrap : QTextOption::NoWrap);
+        options.setFlags(QTextOption::IncludeTrailingSpaces);
         layout.setTextOption(options);
         layout.setCacheEnabled(true);
         QFontMetrics fm(layout.font());
@@ -235,6 +340,25 @@ cpp! {{
         return -1;
     }
 }}
+
+cpp_class!(
+    /// Wrapper around a pointer to a QPainter.
+    // We can't use [`qttypes::QPainter`] because it is not sound <https://github.com/woboq/qmetaobject-rs/issues/267>
+    pub unsafe struct QPainterPtr as "QPainterPtr"
+);
+impl QPainterPtr {
+    pub fn restore(&mut self) {
+        cpp!(unsafe [self as "QPainterPtr*"] {
+            (*self)->restore();
+        });
+    }
+
+    pub fn save(&mut self) {
+        cpp!(unsafe [self as "QPainterPtr*"] {
+            (*self)->save();
+        });
+    }
+}
 
 cpp_class! {pub unsafe struct QPainterPath as "QPainterPath"}
 
@@ -285,7 +409,22 @@ impl QPainterPath {
     }
 }
 
-fn into_qbrush(brush: i_slint_core::Brush) -> qttypes::QBrush {
+fn into_qbrush(
+    brush: i_slint_core::Brush,
+    width: qttypes::qreal,
+    height: qttypes::qreal,
+) -> qttypes::QBrush {
+    /// Mangle the position to work around the fact that Qt merge stop at equal position
+    fn mangle_position(position: f32, idx: usize, count: usize) -> f32 {
+        // Add or subtract a small amount to make sure each stop is different but still in [0..1].
+        // It is possible that we swap stops that are both really really close to 0.54321+ε,
+        // but that is really unlikely
+        if position < 0.54321 + 67.8 * f32::EPSILON {
+            position + f32::EPSILON * idx as f32
+        } else {
+            position - f32::EPSILON * (count - idx - 1) as f32
+        }
+    }
     match brush {
         i_slint_core::Brush::SolidColor(color) => {
             let color: u32 = color.as_argb_encoded();
@@ -305,8 +444,9 @@ fn into_qbrush(brush: i_slint_core::Brush) -> qttypes::QBrush {
                     return qlg;
                 }
             };
-            for s in g.stops() {
-                let pos: f32 = s.position;
+            let count = g.stops().count();
+            for (idx, s) in g.stops().enumerate() {
+                let pos: f32 = mangle_position(s.position, idx, count);
                 let color: u32 = s.color.as_argb_encoded();
                 cpp! {unsafe [mut qlg as "QLinearGradient", pos as "float", color as "QRgb"] {
                     qlg.setColorAt(pos, QColor::fromRgba(color));
@@ -316,16 +456,36 @@ fn into_qbrush(brush: i_slint_core::Brush) -> qttypes::QBrush {
                 return QBrush(qlg);
             }}
         }
+        i_slint_core::Brush::RadialGradient(g) => {
+            cpp_class!(unsafe struct QRadialGradient as "QRadialGradient");
+            let mut qrg = cpp! {
+                unsafe [width as "qreal", height as "qreal"] -> QRadialGradient as "QRadialGradient" {
+                    QRadialGradient qrg(width / 2, height / 2, (width + height) / 4);
+                    return qrg;
+                }
+            };
+            let count = g.stops().count();
+            for (idx, s) in g.stops().enumerate() {
+                let pos: f32 = mangle_position(s.position, idx, count);
+                let color: u32 = s.color.as_argb_encoded();
+                cpp! {unsafe [mut qrg as "QRadialGradient", pos as "float", color as "QRgb"] {
+                    qrg.setColorAt(pos, QColor::fromRgba(color));
+                }};
+            }
+            cpp! {unsafe [qrg as "QRadialGradient"] -> qttypes::QBrush as "QBrush" {
+                return QBrush(qrg);
+            }}
+        }
         _ => qttypes::QBrush::default(),
     }
 }
 
 fn from_qt_button(qt_button: u32) -> PointerEventButton {
     match qt_button {
-        1 => PointerEventButton::left,
-        2 => PointerEventButton::right,
-        4 => PointerEventButton::middle,
-        _ => PointerEventButton::none,
+        1 => PointerEventButton::Left,
+        2 => PointerEventButton::Right,
+        4 => PointerEventButton::Middle,
+        _ => PointerEventButton::None,
     }
 }
 
@@ -336,10 +496,10 @@ macro_rules! get_geometry {
         type Ty = $ty;
         let width = Ty::FIELD_OFFSETS.width.apply_pin($obj).get();
         let height = Ty::FIELD_OFFSETS.height.apply_pin($obj).get();
-        if width <= 0. || height <= 0. {
+        if width <= LogicalLength::zero() || height <= LogicalLength::zero() {
             return Default::default();
         };
-        qttypes::QRectF { x: 0., y: 0., width: width as _, height: height as _ }
+        qttypes::QRectF { x: 0., y: 0., width: width.get() as _, height: height.get() as _ }
     }};
 }
 
@@ -353,52 +513,38 @@ fn adjust_rect_and_border_for_inner_drawing(rect: &mut qttypes::QRectF, border_w
     rect.height -= *border_width as f64;
 }
 
-#[derive(Clone)]
-enum QtRenderingCacheItem {
-    Pixmap(qttypes::QPixmap),
-    Invalid,
-}
-
-impl Default for QtRenderingCacheItem {
-    fn default() -> Self {
-        Self::Invalid
-    }
-}
-
-type QtRenderingCache = Rc<RefCell<RenderingCache<QtRenderingCacheItem>>>;
-
 struct QtItemRenderer<'a> {
-    painter: &'a mut QPainter,
-    cache: QtRenderingCache,
-    default_font_properties: FontRequest,
-    window: WindowRc,
+    painter: QPainterPtr,
+    cache: &'a ItemCache<qttypes::QPixmap>,
+    window: &'a i_slint_core::api::Window,
+    metrics: RenderingMetrics,
 }
 
 impl ItemRenderer for QtItemRenderer<'_> {
-    fn draw_rectangle(&mut self, rect: Pin<&items::Rectangle>) {
-        let brush: qttypes::QBrush = into_qbrush(rect.background());
-        let rect: qttypes::QRectF = get_geometry!(items::Rectangle, rect);
-        let painter: &mut QPainter = &mut *self.painter;
-        cpp! { unsafe [painter as "QPainter*", brush as "QBrush", rect as "QRectF"] {
-            painter->fillRect(rect, brush);
+    fn draw_rectangle(&mut self, rect_: Pin<&items::Rectangle>, _: &ItemRc) {
+        let rect: qttypes::QRectF = get_geometry!(items::Rectangle, rect_);
+        let brush: qttypes::QBrush = into_qbrush(rect_.background(), rect.width, rect.height);
+        let painter: &mut QPainterPtr = &mut self.painter;
+        cpp! { unsafe [painter as "QPainterPtr*", brush as "QBrush", rect as "QRectF"] {
+            (*painter)->fillRect(rect, brush);
         }}
     }
 
-    fn draw_border_rectangle(&mut self, rect: std::pin::Pin<&items::BorderRectangle>) {
+    fn draw_border_rectangle(&mut self, rect: std::pin::Pin<&items::BorderRectangle>, _: &ItemRc) {
         Self::draw_rectangle_impl(
-            self.painter,
+            &mut self.painter,
             get_geometry!(items::BorderRectangle, rect),
             rect.background(),
             rect.border_color(),
-            rect.border_width(),
-            rect.border_radius(),
+            rect.border_width().get(),
+            rect.border_radius().get(),
         );
     }
 
-    fn draw_image(&mut self, image: Pin<&items::ImageItem>) {
+    fn draw_image(&mut self, image: Pin<&items::ImageItem>, item_rc: &ItemRc) {
         let dest_rect: qttypes::QRectF = get_geometry!(items::ImageItem, image);
         self.draw_image_impl(
-            &image.cached_rendering_data,
+            item_rc,
             items::ImageItem::FIELD_OFFSETS.source.apply_pin(image),
             dest_rect,
             None,
@@ -410,7 +556,7 @@ impl ItemRenderer for QtItemRenderer<'_> {
         );
     }
 
-    fn draw_clipped_image(&mut self, image: Pin<&items::ClippedImage>) {
+    fn draw_clipped_image(&mut self, image: Pin<&items::ClippedImage>, item_rc: &ItemRc) {
         let dest_rect: qttypes::QRectF = get_geometry!(items::ClippedImage, image);
         let source_rect = qttypes::QRectF {
             x: image.source_clip_x() as _,
@@ -419,7 +565,7 @@ impl ItemRenderer for QtItemRenderer<'_> {
             height: image.source_clip_height() as _,
         };
         self.draw_image_impl(
-            &image.cached_rendering_data,
+            item_rc,
             items::ClippedImage::FIELD_OFFSETS.source.apply_pin(image),
             dest_rect,
             Some(source_rect),
@@ -431,32 +577,31 @@ impl ItemRenderer for QtItemRenderer<'_> {
         );
     }
 
-    fn draw_text(&mut self, text: std::pin::Pin<&items::Text>) {
+    fn draw_text(&mut self, text: std::pin::Pin<&items::Text>, _: &ItemRc) {
         let rect: qttypes::QRectF = get_geometry!(items::Text, text);
-        let fill_brush: qttypes::QBrush = into_qbrush(text.color());
+        let fill_brush: qttypes::QBrush = into_qbrush(text.color(), rect.width, rect.height);
         let mut string: qttypes::QString = text.text().as_str().into();
-        let font: QFont =
-            get_font(text.unresolved_font_request().merge(&self.default_font_properties));
+        let font: QFont = get_font(text.font_request(WindowInner::from_pub(&self.window)));
         let flags = match text.horizontal_alignment() {
-            TextHorizontalAlignment::left => key_generated::Qt_AlignmentFlag_AlignLeft,
-            TextHorizontalAlignment::center => key_generated::Qt_AlignmentFlag_AlignHCenter,
-            TextHorizontalAlignment::right => key_generated::Qt_AlignmentFlag_AlignRight,
+            TextHorizontalAlignment::Left => key_generated::Qt_AlignmentFlag_AlignLeft,
+            TextHorizontalAlignment::Center => key_generated::Qt_AlignmentFlag_AlignHCenter,
+            TextHorizontalAlignment::Right => key_generated::Qt_AlignmentFlag_AlignRight,
         } | match text.vertical_alignment() {
-            TextVerticalAlignment::top => key_generated::Qt_AlignmentFlag_AlignTop,
-            TextVerticalAlignment::center => key_generated::Qt_AlignmentFlag_AlignVCenter,
-            TextVerticalAlignment::bottom => key_generated::Qt_AlignmentFlag_AlignBottom,
+            TextVerticalAlignment::Top => key_generated::Qt_AlignmentFlag_AlignTop,
+            TextVerticalAlignment::Center => key_generated::Qt_AlignmentFlag_AlignVCenter,
+            TextVerticalAlignment::Bottom => key_generated::Qt_AlignmentFlag_AlignBottom,
         } | match text.wrap() {
-            TextWrap::no_wrap => 0,
-            TextWrap::word_wrap => key_generated::Qt_TextFlag_TextWordWrap,
+            TextWrap::NoWrap => 0,
+            TextWrap::WordWrap => key_generated::Qt_TextFlag_TextWordWrap,
         };
-        let elide = text.overflow() == TextOverflow::elide;
-        let painter: &mut QPainter = &mut *self.painter;
-        cpp! { unsafe [painter as "QPainter*", rect as "QRectF", fill_brush as "QBrush", mut string as "QString", flags as "int", font as "QFont", elide as "bool"] {
-            painter->setFont(font);
-            painter->setPen(QPen(fill_brush, 0));
-            painter->setBrush(Qt::NoBrush);
+        let elide = text.overflow() == TextOverflow::Elide;
+        let painter: &mut QPainterPtr = &mut self.painter;
+        cpp! { unsafe [painter as "QPainterPtr*", rect as "QRectF", fill_brush as "QBrush", mut string as "QString", flags as "int", font as "QFont", elide as "bool"] {
+            (*painter)->setFont(font);
+            (*painter)->setPen(QPen(fill_brush, 0));
+            (*painter)->setBrush(Qt::NoBrush);
             if (!elide) {
-                painter->drawText(rect, flags, string);
+                (*painter)->drawText(rect, flags, string);
             } else if (!(flags & Qt::TextWordWrap)) {
                 QString elided;
                 QFontMetrics fm(font);
@@ -471,7 +616,7 @@ impl ItemRenderer for QtItemRenderer<'_> {
                     elided += '\n';
                     string = string.mid(pos + 1);
                 }
-                painter->drawText(rect, flags, elided);
+                (*painter)->drawText(rect, flags, elided);
             } else {
                 // elide and word wrap: we need to add the ellipsis manually on the last line
                 string.replace(QChar('\n'), QChar::LineSeparator);
@@ -505,75 +650,96 @@ impl ItemRenderer for QtItemRenderer<'_> {
                     QString to_elide = QStringView(string).mid(last_line_begin, last_line_size).trimmed() % QStringView(QT_UNICODE_LITERAL("…"));
                     elided += fm.elidedText(to_elide, Qt::ElideRight, rect.width());
                 }
-                painter->drawText(rect, flags, elided);
+                (*painter)->drawText(rect, flags, elided);
             }
         }}
     }
 
-    fn draw_text_input(&mut self, text_input: std::pin::Pin<&items::TextInput>) {
+    fn draw_text_input(&mut self, text_input: std::pin::Pin<&items::TextInput>, _: &ItemRc) {
         let rect: qttypes::QRectF = get_geometry!(items::TextInput, text_input);
-        let fill_brush: qttypes::QBrush = into_qbrush(text_input.color());
-        let selection_foreground_color: u32 =
-            text_input.selection_foreground_color().as_argb_encoded();
-        let selection_background_color: u32 =
-            text_input.selection_background_color().as_argb_encoded();
+        let fill_brush: qttypes::QBrush = into_qbrush(text_input.color(), rect.width, rect.height);
 
-        let text = text_input.text();
+        let font: QFont = get_font(
+            text_input.font_request(&WindowInner::from_pub(&self.window).window_adapter()),
+        );
+        let flags = match text_input.horizontal_alignment() {
+            TextHorizontalAlignment::Left => key_generated::Qt_AlignmentFlag_AlignLeft,
+            TextHorizontalAlignment::Center => key_generated::Qt_AlignmentFlag_AlignHCenter,
+            TextHorizontalAlignment::Right => key_generated::Qt_AlignmentFlag_AlignRight,
+        } | match text_input.vertical_alignment() {
+            TextVerticalAlignment::Top => key_generated::Qt_AlignmentFlag_AlignTop,
+            TextVerticalAlignment::Center => key_generated::Qt_AlignmentFlag_AlignVCenter,
+            TextVerticalAlignment::Bottom => key_generated::Qt_AlignmentFlag_AlignBottom,
+        } | match text_input.wrap() {
+            TextWrap::NoWrap => 0,
+            TextWrap::WordWrap => key_generated::Qt_TextFlag_TextWordWrap,
+        };
+
+        let visual_representation = text_input.visual_representation();
+
+        let text = &visual_representation.text;
         let mut string: qttypes::QString = text.as_str().into();
 
-        if let InputType::password = text_input.input_type() {
+        if let InputType::Password = text_input.input_type() {
             cpp! { unsafe [mut string as "QString"] {
                 string.fill(QChar(qApp->style()->styleHint(QStyle::SH_LineEdit_PasswordCharacter, nullptr, nullptr)));
             }}
         }
 
-        let font: QFont =
-            get_font(text_input.unresolved_font_request().merge(&self.default_font_properties));
-        let flags = match text_input.horizontal_alignment() {
-            TextHorizontalAlignment::left => key_generated::Qt_AlignmentFlag_AlignLeft,
-            TextHorizontalAlignment::center => key_generated::Qt_AlignmentFlag_AlignHCenter,
-            TextHorizontalAlignment::right => key_generated::Qt_AlignmentFlag_AlignRight,
-        } | match text_input.vertical_alignment() {
-            TextVerticalAlignment::top => key_generated::Qt_AlignmentFlag_AlignTop,
-            TextVerticalAlignment::center => key_generated::Qt_AlignmentFlag_AlignVCenter,
-            TextVerticalAlignment::bottom => key_generated::Qt_AlignmentFlag_AlignBottom,
-        } | match text_input.wrap() {
-            TextWrap::no_wrap => 0,
-            TextWrap::word_wrap => key_generated::Qt_TextFlag_TextWordWrap,
-        };
-
         // convert byte offsets to offsets in Qt UTF-16 encoded string, as that's
         // what QTextLayout expects.
-        let cursor_position_as_offset: i32 = text_input.cursor_position();
-        let anchor_position_as_offset: i32 = text_input.anchor_position();
+
+        let (
+            cursor_position_as_offset,
+            anchor_position_as_offset,
+            selection_foreground_color,
+            selection_background_color,
+            underline_selection,
+        ): (usize, usize, u32, u32, bool) = if !visual_representation.preedit_range.is_empty() {
+            (
+                visual_representation.preedit_range.start,
+                visual_representation.preedit_range.end,
+                Color::default().as_argb_encoded(),
+                Color::default().as_argb_encoded(),
+                true,
+            )
+        } else {
+            (
+                text_input.cursor_position(&text),
+                text_input.anchor_position(&text),
+                text_input.selection_foreground_color().as_argb_encoded(),
+                text_input.selection_background_color().as_argb_encoded(),
+                false,
+            )
+        };
+
         let cursor_position: i32 = if cursor_position_as_offset > 0 {
-            utf8_byte_offset_to_utf16_units(text.as_str(), cursor_position_as_offset as usize)
-                as i32
+            utf8_byte_offset_to_utf16_units(text.as_str(), cursor_position_as_offset) as i32
         } else {
             0
         };
         let anchor_position: i32 = if anchor_position_as_offset > 0 {
-            utf8_byte_offset_to_utf16_units(text.as_str(), anchor_position_as_offset as usize)
-                as i32
+            utf8_byte_offset_to_utf16_units(text.as_str(), anchor_position_as_offset) as i32
         } else {
             0
         };
 
-        let text_cursor_width: f32 = if text_input.cursor_visible() && text_input.enabled() {
-            text_input.text_cursor_width()
+        let text_cursor_width: f32 = if visual_representation.cursor_position.is_some() {
+            text_input.text_cursor_width().get()
         } else {
             0.
         };
 
         let single_line: bool = text_input.single_line();
 
-        let painter: &mut QPainter = &mut *self.painter;
+        let painter: &mut QPainterPtr = &mut self.painter;
         cpp! { unsafe [
-                painter as "QPainter*",
+                painter as "QPainterPtr*",
                 rect as "QRectF",
                 fill_brush as "QBrush",
                 selection_foreground_color as "QRgb",
                 selection_background_color as "QRgb",
+                underline_selection as "bool",
                 mut string as "QString",
                 flags as "int",
                 single_line as "bool",
@@ -586,42 +752,48 @@ impl ItemRenderer for QtItemRenderer<'_> {
             }
             QTextLayout layout(string, font);
             do_text_layout(layout, flags, rect);
-            painter->setPen(QPen(fill_brush, 0));
+            (*painter)->setPen(QPen(fill_brush, 0));
             QVector<QTextLayout::FormatRange> selections;
             if (anchor_position != cursor_position) {
                 QTextCharFormat fmt;
-                fmt.setBackground(QColor::fromRgba(selection_background_color));
-                fmt.setForeground(QColor::fromRgba(selection_foreground_color));
+                if (qAlpha(selection_background_color) != 0) {
+                    fmt.setBackground(QColor::fromRgba(selection_background_color));
+                }
+                if (qAlpha(selection_background_color) != 0) {
+                    fmt.setForeground(QColor::fromRgba(selection_foreground_color));
+                }
+                if (underline_selection) {
+                    fmt.setFontUnderline(true);
+                }
                 selections << QTextLayout::FormatRange{
                     std::min(anchor_position, cursor_position),
                     std::abs(anchor_position - cursor_position),
                     fmt
                 };
             }
-            layout.draw(painter, rect.topLeft(), selections);
+            layout.draw(painter->get(), rect.topLeft(), selections);
             if (text_cursor_width > 0) {
-                layout.drawCursor(painter, rect.topLeft(), cursor_position, text_cursor_width);
+                layout.drawCursor(painter->get(), rect.topLeft(), cursor_position, text_cursor_width);
             }
         }}
     }
 
-    fn draw_path(&mut self, path: Pin<&items::Path>) {
+    fn draw_path(&mut self, path: Pin<&items::Path>, _: &ItemRc) {
         let elements = path.elements();
         if matches!(elements, PathData::None) {
             return;
         }
-        // FIXME: handle width/height
-        //let rect: qttypes::QRectF = get_geometry!(pos, items::Path, path);
-        let fill_brush: qttypes::QBrush = into_qbrush(path.fill());
-        let stroke_brush: qttypes::QBrush = into_qbrush(path.stroke());
-        let stroke_width: f32 = path.stroke_width();
+        let rect: qttypes::QRectF = get_geometry!(items::Path, path);
+        let fill_brush: qttypes::QBrush = into_qbrush(path.fill(), rect.width, rect.height);
+        let stroke_brush: qttypes::QBrush = into_qbrush(path.stroke(), rect.width, rect.height);
+        let stroke_width: f32 = path.stroke_width().get();
         let (offset, path_events) = path.fitted_path_events();
         let pos = qttypes::QPoint { x: offset.x as _, y: offset.y as _ };
         let mut painter_path = QPainterPath::default();
 
         painter_path.set_fill_rule(match path.fill_rule() {
-            FillRule::nonzero => key_generated::Qt_FillRule_WindingFill,
-            FillRule::evenodd => key_generated::Qt_FillRule_OddEvenFill,
+            FillRule::Nonzero => key_generated::Qt_FillRule_WindingFill,
+            FillRule::Evenodd => key_generated::Qt_FillRule_OddEvenFill,
         });
 
         for x in path_events.iter() {
@@ -651,27 +823,25 @@ impl ItemRenderer for QtItemRenderer<'_> {
             }
         }
 
-        let painter: &mut QPainter = &mut *self.painter;
+        let painter: &mut QPainterPtr = &mut self.painter;
         cpp! { unsafe [
-                painter as "QPainter*",
+                painter as "QPainterPtr*",
                 pos as "QPoint",
                 mut painter_path as "QPainterPath",
                 fill_brush as "QBrush",
                 stroke_brush as "QBrush",
                 stroke_width as "float"] {
-            painter->save();
-            auto cleanup = qScopeGuard([&] { painter->restore(); });
-            painter->translate(pos);
-            painter->setPen(stroke_width > 0 ? QPen(stroke_brush, stroke_width) : Qt::NoPen);
-            painter->setBrush(fill_brush);
-            painter->drawPath(painter_path);
+            (*painter)->save();
+            auto cleanup = qScopeGuard([&] { (*painter)->restore(); });
+            (*painter)->translate(pos);
+            (*painter)->setPen(stroke_width > 0 ? QPen(stroke_brush, stroke_width) : Qt::NoPen);
+            (*painter)->setBrush(fill_brush);
+            (*painter)->drawPath(painter_path);
         }}
     }
 
-    fn draw_box_shadow(&mut self, box_shadow: Pin<&items::BoxShadow>) {
-        let cached_shadow_pixmap = box_shadow
-            .cached_rendering_data
-            .get_or_update(&self.cache, || {
+    fn draw_box_shadow(&mut self, box_shadow: Pin<&items::BoxShadow>, item_rc: &ItemRc) {
+        let pixmap : qttypes::QPixmap = self.cache.get_or_update_cache_entry( item_rc, || {
                 let shadow_rect = get_geometry!(items::BoxShadow, box_shadow);
 
                 let source_size = qttypes::QSize {
@@ -684,8 +854,9 @@ impl ItemRenderer for QtItemRenderer<'_> {
                 source_image.fill(qttypes::QColor::from_rgba_f(0., 0., 0., 0.));
 
                 let img = &mut source_image;
-                let mut painter_ =
-                    cpp!(unsafe [img as "QImage*"] -> QPainter as "QPainter" { return QPainter(img); });
+                let mut painter_ = cpp!(unsafe [img as "QImage*"] -> QPainterPtr as "QPainterPtr" {
+                    return std::make_unique<QPainter>(img);
+                });
 
                 Self::draw_rectangle_impl(
                     &mut painter_,
@@ -693,14 +864,14 @@ impl ItemRenderer for QtItemRenderer<'_> {
                     Brush::SolidColor(box_shadow.color()),
                     Brush::default(),
                     0.,
-                    box_shadow.border_radius(),
+                    box_shadow.border_radius().get(),
                 );
 
                 drop(painter_);
 
-                let blur_radius = box_shadow.blur();
+                let blur_radius = box_shadow.blur().get();
 
-                let shadow_pixmap = if blur_radius > 0. {
+                if blur_radius > 0. {
                     cpp! {
                     unsafe[img as "QImage*", blur_radius as "float"] -> qttypes::QPixmap as "QPixmap" {
                         class PublicGraphicsBlurEffect : public QGraphicsBlurEffect {
@@ -736,33 +907,52 @@ impl ItemRenderer for QtItemRenderer<'_> {
                     cpp! { unsafe[img as "QImage*"] -> qttypes::QPixmap as "QPixmap" {
                         return QPixmap::fromImage(*img);
                     }}
-                };
-                QtRenderingCacheItem::Pixmap(shadow_pixmap)
+                }
             });
-
-        let pixmap: &qttypes::QPixmap = match &cached_shadow_pixmap {
-            QtRenderingCacheItem::Pixmap(pixmap) => pixmap,
-            _ => return,
-        };
 
         let blur_radius = box_shadow.blur();
 
         let shadow_offset = qttypes::QPointF {
-            x: (box_shadow.offset_x() - blur_radius) as f64,
-            y: (box_shadow.offset_y() - blur_radius) as f64,
+            x: (box_shadow.offset_x() - blur_radius).get() as f64,
+            y: (box_shadow.offset_y() - blur_radius).get() as f64,
         };
 
-        let painter: &mut QPainter = &mut *self.painter;
+        let painter: &mut QPainterPtr = &mut self.painter;
         cpp! { unsafe [
-                painter as "QPainter*",
+                painter as "QPainterPtr*",
                 shadow_offset as "QPointF",
-                pixmap as "QPixmap*"
+                pixmap as "QPixmap"
             ] {
-            painter->drawPixmap(shadow_offset, *pixmap);
+            (*painter)->drawPixmap(shadow_offset, pixmap);
         }}
     }
 
-    fn combine_clip(&mut self, rect: Rect, radius: f32, mut border_width: f32) {
+    fn visit_opacity(&mut self, opacity_item: Pin<&Opacity>, item_rc: &ItemRc) -> RenderingResult {
+        let opacity = opacity_item.opacity();
+        if Opacity::need_layer(item_rc, opacity) {
+            self.render_and_blend_layer(opacity, item_rc)
+        } else {
+            self.apply_opacity(opacity);
+            self.cache.release(item_rc);
+            RenderingResult::ContinueRenderingChildren
+        }
+    }
+
+    fn visit_layer(&mut self, layer_item: Pin<&Layer>, self_rc: &ItemRc) -> RenderingResult {
+        if layer_item.cache_rendering_hint() {
+            self.render_and_blend_layer(1.0, self_rc)
+        } else {
+            RenderingResult::ContinueRenderingChildren
+        }
+    }
+
+    fn combine_clip(
+        &mut self,
+        rect: LogicalRect,
+        radius: LogicalLength,
+        border_width: LogicalLength,
+    ) -> bool {
+        let mut border_width: f32 = border_width.get();
         let mut clip_rect = qttypes::QRectF {
             x: rect.min_x() as _,
             y: rect.min_y() as _,
@@ -770,24 +960,28 @@ impl ItemRenderer for QtItemRenderer<'_> {
             height: rect.height() as _,
         };
         adjust_rect_and_border_for_inner_drawing(&mut clip_rect, &mut border_width);
-        let painter: &mut QPainter = &mut *self.painter;
-        cpp! { unsafe [painter as "QPainter*", clip_rect as "QRectF", radius as "float"] {
+        let painter: &mut QPainterPtr = &mut self.painter;
+        cpp! { unsafe [painter as "QPainterPtr*", clip_rect as "QRectF", radius as "float"] -> bool as "bool" {
             if (radius <= 0) {
-                painter->setClipRect(clip_rect, Qt::IntersectClip);
+                (*painter)->setClipRect(clip_rect, Qt::IntersectClip);
             } else {
                 QPainterPath path;
                 path.addRoundedRect(clip_rect, radius, radius);
-                painter->setClipPath(path, Qt::IntersectClip);
+                (*painter)->setClipPath(path, Qt::IntersectClip);
             }
+            return !(*painter)->clipBoundingRect().isEmpty();
         }}
     }
 
-    fn get_current_clip(&self) -> Rect {
-        let painter: &QPainter = self.painter;
-        let res = cpp! { unsafe [painter as "const QPainter*" ] -> qttypes::QRectF as "QRectF" {
-            return painter->clipBoundingRect();
+    fn get_current_clip(&self) -> LogicalRect {
+        let painter: &QPainterPtr = &self.painter;
+        let res = cpp! { unsafe [painter as "const QPainterPtr*" ] -> qttypes::QRectF as "QRectF" {
+            return (*painter)->clipBoundingRect();
         }};
-        Rect::new(Point::new(res.x as _, res.y as _), Size::new(res.width as _, res.height as _))
+        LogicalRect::new(
+            LogicalPoint::new(res.x as _, res.y as _),
+            LogicalSize::new(res.width as _, res.height as _),
+        )
     }
 
     fn save_state(&mut self) {
@@ -800,151 +994,103 @@ impl ItemRenderer for QtItemRenderer<'_> {
 
     fn scale_factor(&self) -> f32 {
         1.
-        /* cpp! { unsafe [painter as "QPainter*"] -> f32 as "float" {
-            return painter->paintEngine()->paintDevice()->devicePixelRatioF();
+        /* cpp! { unsafe [painter as "QPainterPtr*"] -> f32 as "float" {
+            return (*painter)->paintEngine()->paintDevice()->devicePixelRatioF();
         }} */
     }
 
     fn draw_cached_pixmap(
         &mut self,
-        _item_cache: &i_slint_core::item_rendering::CachedRenderingData,
+        _item_rc: &ItemRc,
         update_fn: &dyn Fn(&mut dyn FnMut(u32, u32, &[u8])),
     ) {
         update_fn(&mut |width: u32, height: u32, data: &[u8]| {
             let data = data.as_ptr();
-            let painter: &mut QPainter = &mut *self.painter;
-            cpp! { unsafe [painter as "QPainter*",  width as "int", height as "int", data as "const unsigned char *"] {
+            let painter: &mut QPainterPtr = &mut self.painter;
+            cpp! { unsafe [painter as "QPainterPtr*",  width as "int", height as "int", data as "const unsigned char *"] {
                 QImage img(data, width, height, width * 4, QImage::Format_RGBA8888_Premultiplied);
-                painter->drawImage(QPoint(), img);
+                (*painter)->drawImage(QPoint(), img);
             }}
         })
     }
 
     fn draw_string(&mut self, string: &str, color: Color) {
-        let fill_brush: qttypes::QBrush = into_qbrush(color.into());
+        let fill_brush: qttypes::QBrush = into_qbrush(color.into(), 1., 1.);
         let mut string: qttypes::QString = string.into();
-        let font: QFont = get_font(self.default_font_properties.clone());
-        let painter: &mut QPainter = &mut *self.painter;
-        cpp! { unsafe [painter as "QPainter*", fill_brush as "QBrush", mut string as "QString", font as "QFont"] {
-            painter->setFont(font);
-            painter->setPen(QPen(fill_brush, 0));
-            painter->setBrush(Qt::NoBrush);
-            painter->drawText(0, QFontMetrics(painter->font()).ascent(), string);
+        let font: QFont = get_font(Default::default());
+        let painter: &mut QPainterPtr = &mut self.painter;
+        cpp! { unsafe [painter as "QPainterPtr*", fill_brush as "QBrush", mut string as "QString", font as "QFont"] {
+            (*painter)->setFont(font);
+            (*painter)->setPen(QPen(fill_brush, 0));
+            (*painter)->setBrush(Qt::NoBrush);
+            (*painter)->drawText(0, QFontMetrics((*painter)->font()).ascent(), string);
         }}
     }
 
-    fn window(&self) -> WindowRc {
-        self.window.clone()
+    fn window(&self) -> &i_slint_core::api::Window {
+        &self.window
     }
 
-    fn as_any(&mut self) -> &mut dyn std::any::Any {
-        self.painter
+    fn as_any(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(&mut self.painter)
     }
 
-    fn translate(&mut self, x: f32, y: f32) {
-        let painter: &mut QPainter = &mut *self.painter;
-        cpp! { unsafe [painter as "QPainter*", x as "float", y as "float"] {
-            painter->translate(x, y);
+    fn translate(&mut self, distance: LogicalVector) {
+        let x: f32 = distance.x;
+        let y: f32 = distance.y;
+        let painter: &mut QPainterPtr = &mut self.painter;
+        cpp! { unsafe [painter as "QPainterPtr*", x as "float", y as "float"] {
+            (*painter)->translate(x, y);
         }}
     }
 
     fn rotate(&mut self, angle_in_degrees: f32) {
-        let painter: &mut QPainter = &mut *self.painter;
-        cpp! { unsafe [painter as "QPainter*", angle_in_degrees as "float"] {
-            painter->rotate(angle_in_degrees);
+        let painter: &mut QPainterPtr = &mut self.painter;
+        cpp! { unsafe [painter as "QPainterPtr*", angle_in_degrees as "float"] {
+            (*painter)->rotate(angle_in_degrees);
         }}
     }
 
     fn apply_opacity(&mut self, opacity: f32) {
-        let painter: &mut QPainter = &mut *self.painter;
-        cpp! { unsafe [painter as "QPainter*", opacity as "float"] {
-            painter->setOpacity(painter->opacity() * opacity);
+        let painter: &mut QPainterPtr = &mut self.painter;
+        cpp! { unsafe [painter as "QPainterPtr*", opacity as "float"] {
+            (*painter)->setOpacity((*painter)->opacity() * opacity);
         }}
+    }
+
+    fn metrics(&self) -> RenderingMetrics {
+        self.metrics.clone()
     }
 }
 
-pub(crate) fn load_image_from_resource(
-    resource: &ImageInner,
-    source_size: Option<qttypes::QSize>,
-    image_fit: ImageFit,
-) -> Option<qttypes::QPixmap> {
-    let (is_path, data, format) = match resource {
-        ImageInner::None => return None,
-        ImageInner::AbsoluteFilePath(path) => {
-            (true, qttypes::QByteArray::from(path.as_str()), Default::default())
+fn shared_image_buffer_to_pixmap(buffer: &SharedImageBuffer) -> Option<qttypes::QPixmap> {
+    let (format, bytes_per_line, buffer_ptr) = match buffer {
+        SharedImageBuffer::RGBA8(img) => {
+            (qttypes::ImageFormat::RGBA8888, img.stride() * 4, img.as_bytes().as_ptr())
         }
-        ImageInner::EmbeddedData { data, format } => (
-            false,
-            qttypes::QByteArray::from(data.as_slice()),
-            qttypes::QByteArray::from(format.as_slice()),
+        SharedImageBuffer::RGBA8Premultiplied(img) => (
+            qttypes::ImageFormat::RGBA8888_Premultiplied,
+            img.stride() * 4,
+            img.as_bytes().as_ptr(),
         ),
-        ImageInner::EmbeddedImage(buffer) => {
-            let (format, bytes_per_line, buffer_ptr) = match buffer {
-                SharedImageBuffer::RGBA8(img) => {
-                    (qttypes::ImageFormat::RGBA8888, img.stride() * 4, img.as_bytes().as_ptr())
-                }
-                SharedImageBuffer::RGBA8Premultiplied(img) => (
-                    qttypes::ImageFormat::RGBA8888_Premultiplied,
-                    img.stride() * 4,
-                    img.as_bytes().as_ptr(),
-                ),
-                SharedImageBuffer::RGB8(img) => {
-                    (qttypes::ImageFormat::RGB888, img.stride() * 3, img.as_bytes().as_ptr())
-                }
-            };
-            let width: i32 = buffer.width() as _;
-            let height: i32 = buffer.height() as _;
-            let pixmap = cpp! { unsafe [format as "QImage::Format", width as "int", height as "int", bytes_per_line as "uint32_t", buffer_ptr as "const uchar *"] -> qttypes::QPixmap as "QPixmap" {
-                QImage img(buffer_ptr, width, height, bytes_per_line, format);
-                return QPixmap::fromImage(img);
-            } };
-            return Some(pixmap);
+        SharedImageBuffer::RGB8(img) => {
+            (qttypes::ImageFormat::RGB888, img.stride() * 3, img.as_bytes().as_ptr())
         }
-        ImageInner::StaticTextures { .. } => todo!(),
     };
-    let size_requested = is_svg(resource) && source_size.is_some();
-    let source_size = source_size.unwrap_or_default();
-    debug_assert_eq!(ImageFit::contain as i32, 1);
-    debug_assert_eq!(ImageFit::cover as i32, 2);
-    Some(cpp! { unsafe [
-            data as "QByteArray",
-            is_path as "bool",
-            format as "QByteArray",
-            size_requested as "bool",
-            source_size as "QSize",
-            image_fit as "int"] -> qttypes::QPixmap as "QPixmap" {
-        QImageReader reader;
-        QBuffer buffer;
-        if (is_path) {
-            reader.setFileName(QString::fromUtf8(data));
-        } else {
-            buffer.setBuffer(const_cast<QByteArray *>(&data));
-            reader.setDevice(&buffer);
-        }
-        if (!reader.canRead()) {
-            QString fileName = reader.fileName();
-            if (!fileName.isEmpty()) {
-                qWarning("Error loading image \"%s\": %s", QFile::encodeName(fileName).constData(), qPrintable(reader.errorString()));
-            } else {
-                qWarning("Error loading image of format %s: %s", format.constData(), qPrintable(reader.errorString()));
-            }
-            return QPixmap();
-        }
-        if (size_requested) {
-            if (reader.supportsOption(QImageIOHandler::ScaledSize)) {
-                auto target_size = source_size;
-                if (image_fit == 1) { //ImageFit::contain
-                    QSizeF s = reader.size();
-                    target_size = (s * qMin(source_size.width() / s.width(), source_size.height() / s.height())).toSize();
-                } else if (image_fit == 2) { //ImageFit::cover
-                    QSizeF s = reader.size();
-                    target_size = (s * qMax(source_size.width() / s.width(), source_size.height() / s.height())).toSize();
-                }
-                reader.setScaledSize(target_size);
-            }
-        }
-        return QPixmap::fromImageReader(&reader);
-    }})
+    let width: i32 = buffer.width() as _;
+    let height: i32 = buffer.height() as _;
+    let pixmap = cpp! { unsafe [format as "QImage::Format", width as "int", height as "int", bytes_per_line as "uint32_t", buffer_ptr as "const uchar *"] -> qttypes::QPixmap as "QPixmap" {
+        QImage img(buffer_ptr, width, height, bytes_per_line, format);
+        return QPixmap::fromImage(img);
+    } };
+    return Some(pixmap);
+}
+
+pub(crate) fn image_to_pixmap(
+    image: &ImageInner,
+    source_size: Option<euclid::Size2D<u32, PhysicalPx>>,
+) -> Option<qttypes::QPixmap> {
+    shared_image_buffer_to_pixmap(&image.render_to_buffer(source_size)?)
 }
 
 /// Changes the source or the destination rectangle to respect the image fit
@@ -954,8 +1100,8 @@ fn adjust_to_image_fit(
     dest_rect: &mut qttypes::QRectF,
 ) {
     match image_fit {
-        i_slint_core::items::ImageFit::fill => (),
-        i_slint_core::items::ImageFit::cover => {
+        i_slint_core::items::ImageFit::Fill => (),
+        i_slint_core::items::ImageFit::Cover => {
             let ratio = qttypes::qreal::max(
                 dest_rect.width / source_rect.width,
                 dest_rect.height / source_rect.height,
@@ -969,7 +1115,7 @@ fn adjust_to_image_fit(
                 source_rect.height = dest_rect.height / ratio;
             }
         }
-        i_slint_core::items::ImageFit::contain => {
+        i_slint_core::items::ImageFit::Contain => {
             let ratio = qttypes::qreal::min(
                 dest_rect.width / source_rect.width,
                 dest_rect.height / source_rect.height,
@@ -986,75 +1132,68 @@ fn adjust_to_image_fit(
     };
 }
 
-/// Return true if this image is a SVG that is scalable
-fn is_svg(resource: &ImageInner) -> bool {
-    match resource {
-        ImageInner::None => false,
-        ImageInner::AbsoluteFilePath(path) => {
-            path.as_str().ends_with(".svg") || path.as_str().ends_with(".svgz")
-        }
-        ImageInner::EmbeddedData { format, .. } => {
-            format.as_slice() == b"svg" || format.as_slice() == b"svgz"
-        }
-        ImageInner::EmbeddedImage { .. } => false,
-        ImageInner::StaticTextures { .. } => false,
-    }
-}
-
 impl QtItemRenderer<'_> {
     fn draw_image_impl(
         &mut self,
-        item_cache: &CachedRenderingData,
+        item_rc: &ItemRc,
         source_property: Pin<&Property<Image>>,
         dest_rect: qttypes::QRectF,
         source_rect: Option<qttypes::QRectF>,
-        target_width: std::pin::Pin<&Property<f32>>,
-        target_height: std::pin::Pin<&Property<f32>>,
+        target_width: std::pin::Pin<&Property<LogicalLength>>,
+        target_height: std::pin::Pin<&Property<LogicalLength>>,
         image_fit: ImageFit,
         rendering: ImageRendering,
         colorize_property: Option<Pin<&Property<Brush>>>,
     ) {
         // Caller ensured that zero/negative width/height resulted in an early return via get_geometry!.
-        debug_assert!(target_width.get() > 0.);
-        debug_assert!(target_height.get() > 0.);
+        debug_assert!(target_width.get() > LogicalLength::zero());
+        debug_assert!(target_height.get() > LogicalLength::zero());
 
-        let cached = item_cache.get_or_update(&self.cache, || {
+        let pixmap: qttypes::QPixmap = self.cache.get_or_update_cache_entry(item_rc, || {
+            let source = source_property.get();
+            let origin = source.size();
+            let source: &ImageInner = (&source).into();
+
             // Query target_width/height here again to ensure that changes will invalidate the item rendering cache.
-            let target_width = target_width.get() as f64;
-            let target_height = target_height.get() as f64;
+            let t =
+                euclid::size2(target_width.get().get(), target_height.get().get()).cast::<f64>();
 
-            let has_source_clipping = source_rect.map_or(false, |rect| {
-                rect.is_valid()
-                    && (rect.x != 0.
-                        || rect.y != 0.
-                        || !rect.width.approx_eq(&target_width)
-                        || !rect.height.approx_eq(&target_height))
-            });
-            let source_size = if !has_source_clipping {
-                Some(qttypes::QSize { width: target_width as u32, height: target_height as u32 })
+            let source_size = if source.is_svg() {
+                let has_source_clipping = source_rect.map_or(false, |rect| {
+                    rect.is_valid()
+                        && (rect.x != 0.
+                            || rect.y != 0.
+                            || !rect.width.approx_eq(&t.width)
+                            || !rect.height.approx_eq(&t.height))
+                });
+                if has_source_clipping {
+                    // Source size & clipping is not implemented yet
+                    None
+                } else {
+                    Some(i_slint_core::graphics::fit_size(image_fit, t.cast(), origin).cast())
+                }
             } else {
-                // Source size & clipping is not implemented yet
                 None
             };
 
-            load_image_from_resource((&source_property.get()).into(), source_size, image_fit)
-                .map_or(QtRenderingCacheItem::Invalid, |mut pixmap: qttypes::QPixmap| {
+            image_to_pixmap(source, source_size).map_or_else(
+                Default::default,
+                |mut pixmap: qttypes::QPixmap| {
                     let colorize = colorize_property.map_or(Brush::default(), |c| c.get());
                     if !colorize.is_transparent() {
-                        let brush: qttypes::QBrush = into_qbrush(colorize);
+                        let brush: qttypes::QBrush =
+                            into_qbrush(colorize, dest_rect.width, dest_rect.height);
                         cpp!(unsafe [mut pixmap as "QPixmap", brush as "QBrush"] {
                             QPainter p(&pixmap);
                             p.setCompositionMode(QPainter::CompositionMode_SourceIn);
                             p.fillRect(QRect(QPoint(), pixmap.size()), brush);
                         });
                     }
-                    QtRenderingCacheItem::Pixmap(pixmap)
-                })
+                    pixmap
+                },
+            )
         });
-        let pixmap: &qttypes::QPixmap = match &cached {
-            QtRenderingCacheItem::Pixmap(pixmap) => pixmap,
-            _ => return,
-        };
+
         let image_size = pixmap.size();
         let mut source_rect = source_rect.filter(|r| r.is_valid()).unwrap_or(qttypes::QRectF {
             x: 0.,
@@ -1064,41 +1203,109 @@ impl QtItemRenderer<'_> {
         });
         let mut dest_rect = dest_rect;
         adjust_to_image_fit(image_fit, &mut source_rect, &mut dest_rect);
-        let painter: &mut QPainter = &mut *self.painter;
-        let smooth: bool = rendering == ImageRendering::smooth;
+        let painter: &mut QPainterPtr = &mut self.painter;
+        let smooth: bool = rendering == ImageRendering::Smooth;
         cpp! { unsafe [
-                painter as "QPainter*",
-                pixmap as "QPixmap*",
+                painter as "QPainterPtr*",
+                pixmap as "QPixmap",
                 source_rect as "QRectF",
                 dest_rect as "QRectF",
                 smooth as "bool"] {
-            painter->save();
-            painter->setRenderHint(QPainter::SmoothPixmapTransform, smooth);
-            painter->drawPixmap(dest_rect, *pixmap, source_rect);
-            painter->restore();
+            (*painter)->save();
+            (*painter)->setRenderHint(QPainter::SmoothPixmapTransform, smooth);
+            (*painter)->drawPixmap(dest_rect, pixmap, source_rect);
+            (*painter)->restore();
         }};
     }
 
     fn draw_rectangle_impl(
-        painter: &mut QPainter,
+        painter: &mut QPainterPtr,
         mut rect: qttypes::QRectF,
         brush: Brush,
         border_color: Brush,
         mut border_width: f32,
         border_radius: f32,
     ) {
-        let brush: qttypes::QBrush = into_qbrush(brush);
-        let border_color: qttypes::QBrush = into_qbrush(border_color);
+        let brush: qttypes::QBrush = into_qbrush(brush, rect.width, rect.height);
+        let border_color: qttypes::QBrush = into_qbrush(border_color, rect.width, rect.height);
         adjust_rect_and_border_for_inner_drawing(&mut rect, &mut border_width);
-        cpp! { unsafe [painter as "QPainter*", brush as "QBrush",  border_color as "QBrush", border_width as "float", border_radius as "float", rect as "QRectF"] {
-            painter->setPen(border_width > 0 ? QPen(border_color, border_width) : Qt::NoPen);
-            painter->setBrush(brush);
+        cpp! { unsafe [painter as "QPainterPtr*", brush as "QBrush",  border_color as "QBrush", border_width as "float", border_radius as "float", rect as "QRectF"] {
+            (*painter)->setPen(border_width > 0 ? QPen(border_color, border_width) : Qt::NoPen);
+            (*painter)->setBrush(brush);
             if (border_radius > 0) {
-                painter->drawRoundedRect(rect, border_radius, border_radius);
+                (*painter)->drawRoundedRect(rect, border_radius, border_radius);
             } else {
-                painter->drawRect(rect);
+                (*painter)->drawRect(rect);
             }
         }}
+    }
+
+    fn render_layer(
+        &mut self,
+        item_rc: &ItemRc,
+        layer_size_fn: &dyn Fn() -> qttypes::QSize,
+    ) -> qttypes::QPixmap {
+        self.cache.get_or_update_cache_entry(item_rc,  || {
+            let layer_size: qttypes::QSize = layer_size_fn();
+            let mut layer_image = qttypes::QImage::new(layer_size, qttypes::ImageFormat::ARGB32_Premultiplied);
+            layer_image.fill(qttypes::QColor::from_rgba_f(0., 0., 0., 0.));
+
+            *self.metrics.layers_created.as_mut().unwrap() += 1;
+
+            let img_ref: &mut qttypes::QImage = &mut layer_image;
+            let mut layer_painter = cpp!(unsafe [img_ref as "QImage*"] -> QPainterPtr as "QPainterPtr" {
+                auto painter = std::make_unique<QPainter>(img_ref);
+                painter->setClipRect(0, 0, img_ref->width(), img_ref->height());
+                return painter;
+            });
+
+            std::mem::swap(&mut self.painter, &mut layer_painter);
+
+            i_slint_core::item_rendering::render_item_children(
+                self,
+                &item_rc.component(),
+                item_rc.index() as isize,
+            );
+
+            std::mem::swap(&mut self.painter, &mut layer_painter);
+            drop(layer_painter);
+
+            qttypes::QPixmap::from(layer_image)
+        })
+    }
+
+    fn render_and_blend_layer(&mut self, alpha_tint: f32, self_rc: &ItemRc) -> RenderingResult {
+        let current_clip = self.get_current_clip();
+        let mut layer_image = self.render_layer(self_rc, &|| {
+            // We don't need to include the size of the opacity item itself, since it has no content.
+            let children_rect = i_slint_core::properties::evaluate_no_tracking(|| {
+                self_rc.geometry().union(
+                    &i_slint_core::item_rendering::item_children_bounding_rect(
+                        &self_rc.component(),
+                        self_rc.index() as isize,
+                        &current_clip,
+                    ),
+                )
+            });
+            qttypes::QSize {
+                width: children_rect.size.width as _,
+                height: children_rect.size.height as _,
+            }
+        });
+        self.save_state();
+        self.apply_opacity(alpha_tint);
+        {
+            let painter: &mut QPainterPtr = &mut self.painter;
+            let layer_image_ref: &mut qttypes::QPixmap = &mut layer_image;
+            cpp! { unsafe [
+                    painter as "QPainterPtr*",
+                    layer_image_ref as "QPixmap*"
+                ] {
+                (*painter)->drawPixmap(0, 0, *layer_image_ref);
+            }}
+        }
+        self.restore_state();
+        RenderingResult::ContinueRenderingWithoutChildren
     }
 }
 
@@ -1106,32 +1313,48 @@ cpp_class!(unsafe struct QWidgetPtr as "std::unique_ptr<QWidget>");
 
 pub struct QtWindow {
     widget_ptr: QWidgetPtr,
-    pub(crate) self_weak: Weak<i_slint_core::window::Window>,
+    pub(crate) window: i_slint_core::api::Window,
+    self_weak: Weak<Self>,
 
-    fps_counter: Option<Rc<FPSCounter>>,
+    rendering_metrics_collector: RefCell<Option<Rc<RenderingMetricsCollector>>>,
 
-    cache: QtRenderingCache,
+    cache: ItemCache<qttypes::QPixmap>,
+
+    tree_structure_changed: RefCell<bool>,
+
+    dark_color_scheme: OnceCell<Pin<Box<Property<bool>>>>,
 }
 
 impl QtWindow {
-    pub fn new(window_weak: &Weak<i_slint_core::window::Window>) -> Rc<Self> {
-        let widget_ptr = cpp! {unsafe [] -> QWidgetPtr as "std::unique_ptr<QWidget>" {
-            ensure_initialized(true);
-            return std::make_unique<SlintWidget>();
-        }};
-        let rc = Rc::new(QtWindow {
-            widget_ptr,
-            self_weak: window_weak.clone(),
-            fps_counter: FPSCounter::new(),
-            cache: Default::default(),
+    pub fn new() -> Rc<Self> {
+        let rc = Rc::new_cyclic(|self_weak| {
+            let window_ptr = self_weak.clone().into_raw();
+            let widget_ptr = cpp! {unsafe [window_ptr as "void*"] -> QWidgetPtr as "std::unique_ptr<QWidget>" {
+                ensure_initialized(true);
+                auto widget = std::make_unique<SlintWidget>();
+
+                auto accessibility = new Slint_accessible_window(widget.get(), window_ptr);
+                QAccessible::registerAccessibleInterface(accessibility);
+
+                return widget;
+            }};
+
+            QtWindow {
+                widget_ptr,
+                window: i_slint_core::api::Window::new(self_weak.clone() as _),
+                self_weak: self_weak.clone(),
+                rendering_metrics_collector: Default::default(),
+                cache: Default::default(),
+                tree_structure_changed: RefCell::new(false),
+                dark_color_scheme: Default::default(),
+            }
         });
-        let self_weak = Rc::downgrade(&rc);
         let widget_ptr = rc.widget_ptr();
         let rust_window = Rc::as_ptr(&rc);
         cpp! {unsafe [widget_ptr as "SlintWidget*", rust_window as "void*"]  {
             widget_ptr->rust_window = rust_window;
         }};
-        ALL_WINDOWS.with(|aw| aw.borrow_mut().push(self_weak));
+        ALL_WINDOWS.with(|aw| aw.borrow_mut().push(rc.self_weak.clone()));
         rc
     }
 
@@ -1140,16 +1363,15 @@ impl QtWindow {
         unsafe { std::mem::transmute_copy::<QWidgetPtr, NonNull<_>>(&self.widget_ptr) }
     }
 
-    fn paint_event(&self, painter: &mut QPainter) {
-        let runtime_window = self.self_weak.upgrade().unwrap();
-        runtime_window.clone().draw_contents(|components| {
+    fn paint_event(&self, painter: QPainterPtr) {
+        let runtime_window = WindowInner::from_pub(&self.window);
+        runtime_window.draw_contents(|components| {
             i_slint_core::animations::update_animations();
-            let cache = self.cache.clone();
             let mut renderer = QtItemRenderer {
                 painter,
-                cache,
-                default_font_properties: self.default_font_properties(),
-                window: runtime_window,
+                cache: &self.cache,
+                window: &self.window,
+                metrics: RenderingMetrics { layers_created: Some(0) },
             };
 
             for (component, origin) in components {
@@ -1160,8 +1382,8 @@ impl QtWindow {
                 );
             }
 
-            if let Some(fps_counter) = &self.fps_counter {
-                fps_counter.measure_frame_rendered(&mut renderer);
+            if let Some(collector) = &*self.rendering_metrics_collector.borrow() {
+                collector.measure_frame_rendered(&mut renderer);
             }
 
             i_slint_core::animations::CURRENT_ANIMATION_DRIVER.with(|driver| {
@@ -1179,17 +1401,23 @@ impl QtWindow {
                 }}
             });
         });
+
+        // Update the accessibility tree (if the component tree has changed)
+        if self.tree_structure_changed.replace(false) {
+            let widget_ptr = self.widget_ptr();
+            cpp! { unsafe [widget_ptr as "QWidget*"] {
+                auto accessible = dynamic_cast<Slint_accessible_window*>(QAccessible::queryAccessibleInterface(widget_ptr));
+                if (accessible->isUsed()) { accessible->updateAccessibilityTree(); }
+            }};
+        }
     }
 
     fn resize_event(&self, size: qttypes::QSize) {
-        self.self_weak
-            .upgrade()
-            .unwrap()
-            .set_window_item_geometry(size.width as _, size.height as _);
+        self.window.set_size(i_slint_core::api::PhysicalSize::new(size.width, size.height));
     }
 
     fn mouse_event(&self, event: MouseEvent) {
-        self.self_weak.upgrade().unwrap().process_mouse_input(event);
+        WindowInner::from_pub(&self.window).process_mouse_input(event);
         timer_event();
     }
 
@@ -1209,28 +1437,46 @@ impl QtWindow {
             event_type: if released { KeyEventType::KeyReleased } else { KeyEventType::KeyPressed },
             text,
             modifiers,
+            ..Default::default()
         };
-        self.self_weak.upgrade().unwrap().process_key_input(&event);
+        WindowInner::from_pub(&self.window).process_key_input(&event);
 
         timer_event();
     }
 
-    fn default_font_properties(&self) -> FontRequest {
-        self.self_weak.upgrade().unwrap().default_font_properties()
+    fn close_popup(&self) {
+        WindowInner::from_pub(&self.window).close_popup();
     }
 
-    fn close_popup(&self) {
-        self.self_weak.upgrade().unwrap().close_popup();
+    fn free_graphics_resources(&self, component: ComponentRef) {
+        // Invalidate caches:
+        self.cache.component_destroyed(component);
     }
 }
 
-#[allow(unused)]
-impl PlatformWindow for QtWindow {
-    fn show(self: Rc<Self>) {
-        let component_rc = self.self_weak.upgrade().unwrap().component();
+impl WindowAdapter for QtWindow {
+    fn window(&self) -> &i_slint_core::api::Window {
+        &self.window
+    }
+}
+
+impl WindowAdapterSealed for QtWindow {
+    fn show(&self) {
+        let component_rc = WindowInner::from_pub(&self.window).component();
         let component = ComponentRc::borrow_pin(&component_rc);
         let root_item = component.as_ref().get_item_ref(0);
-        if let Some(window_item) = ItemRef::downcast_pin(root_item) {
+        if let Some(window_item) = ItemRef::downcast_pin::<WindowItem>(root_item) {
+            if window_item.width() <= LogicalLength::zero() {
+                window_item.width.set(LogicalLength::new(
+                    component.as_ref().layout_info(Orientation::Horizontal).preferred_bounded(),
+                ))
+            }
+            if window_item.height() <= LogicalLength::zero() {
+                window_item.height.set(LogicalLength::new(
+                    component.as_ref().layout_info(Orientation::Vertical).preferred_bounded(),
+                ))
+            }
+
             self.apply_window_properties(window_item);
         }
 
@@ -1238,18 +1484,23 @@ impl PlatformWindow for QtWindow {
         cpp! {unsafe [widget_ptr as "QWidget*"] {
             widget_ptr->show();
         }};
-        if let Some(fps_counter) = &self.fps_counter {
-            let qt_platform_name = cpp! {unsafe [] -> qttypes::QString as "QString" {
-                return QGuiApplication::platformName();
-            }};
-            fps_counter.start(&format!("Qt backend (platform {})", qt_platform_name));
-        }
+        let qt_platform_name = cpp! {unsafe [] -> qttypes::QString as "QString" {
+            return QGuiApplication::platformName();
+        }};
+        *self.rendering_metrics_collector.borrow_mut() = RenderingMetricsCollector::new(
+            self.self_weak.clone(),
+            &format!("Qt backend (platform {})", qt_platform_name),
+        );
     }
 
-    fn hide(self: Rc<Self>) {
+    fn hide(&self) {
+        self.rendering_metrics_collector.take();
         let widget_ptr = self.widget_ptr();
         cpp! {unsafe [widget_ptr as "QWidget*"] {
             widget_ptr->hide();
+            // Since we don't call close(), this will force Qt to recompute wether there are any
+            // visible windows, and ends the application if needed
+            QEventLoopLocker();
         }};
     }
 
@@ -1273,35 +1524,30 @@ impl PlatformWindow for QtWindow {
         let title: qttypes::QString = window_item.title().as_str().into();
         let no_frame = window_item.no_frame();
         let mut size = qttypes::QSize {
-            width: window_item.width().ceil() as _,
-            height: window_item.height().ceil() as _,
+            width: window_item.width().get().ceil() as _,
+            height: window_item.height().get().ceil() as _,
         };
         if size.width == 0 || size.height == 0 {
             let existing_size = cpp!(unsafe [widget_ptr as "QWidget*"] -> qttypes::QSize as "QSize" {
-                auto sizeHint = widget_ptr->sizeHint();
-                return sizeHint.isValid() ? sizeHint : widget_ptr->size();
+                return widget_ptr->size();
             });
             if size.width == 0 {
-                window_item.width.set(existing_size.width as _);
+                window_item.width.set(LogicalLength::new(existing_size.width as _));
                 size.width = existing_size.width;
             }
             if size.height == 0 {
-                window_item.height.set(existing_size.height as _);
+                window_item.height.set(LogicalLength::new(existing_size.height as _));
                 size.height = existing_size.height;
             }
         }
-        let background: u32 = window_item.background().as_argb_encoded();
+
+        let background =
+            into_qbrush(window_item.background(), size.width.into(), size.height.into());
 
         match (&window_item.icon()).into() {
-            &ImageInner::AbsoluteFilePath(ref path) => {
-                let icon_name: qttypes::QString = path.as_str().into();
-                cpp! {unsafe [widget_ptr as "QWidget*", icon_name as "QString"] {
-                    widget_ptr->setWindowIcon(QIcon(icon_name));
-                }};
-            }
             &ImageInner::None => (),
             r => {
-                if let Some(pixmap) = load_image_from_resource(r, None, ImageFit::contain) {
+                if let Some(pixmap) = image_to_pixmap(r, None) {
                     cpp! {unsafe [widget_ptr as "QWidget*", pixmap as "QPixmap"] {
                         widget_ptr->setWindowIcon(QIcon(pixmap));
                     }};
@@ -1309,7 +1555,7 @@ impl PlatformWindow for QtWindow {
             }
         };
 
-        cpp! {unsafe [widget_ptr as "QWidget*",  title as "QString", size as "QSize", background as "QRgb", no_frame as "bool"] {
+        cpp! {unsafe [widget_ptr as "QWidget*",  title as "QString", size as "QSize", background as "QBrush", no_frame as "bool"] {
             if (size != widget_ptr->size()) {
                 widget_ptr->resize(size.expandedTo({1, 1}));
             }
@@ -1328,7 +1574,7 @@ impl PlatformWindow for QtWindow {
                 pal.setResolveMask(~pal.resolveMask());
             }
             #endif
-            pal.setColor(QPalette::Window, QColor::fromRgba(background));
+            pal.setBrush(QPalette::Window, background);
             widget_ptr->setPalette(pal);
         }};
     }
@@ -1354,108 +1600,209 @@ impl PlatformWindow for QtWindow {
         }};
     }
 
-    fn free_graphics_resources<'a>(&self, items: &mut dyn Iterator<Item = Pin<ItemRef<'a>>>) {
-        for item in items {
-            let cached_rendering_data = item.cached_rendering_data_offset();
-            cached_rendering_data.release(&mut self.cache.borrow_mut());
-        }
+    fn register_component(&self) {
+        self.tree_structure_changed.replace(true);
     }
 
-    fn show_popup(&self, popup: &i_slint_core::component::ComponentRc, position: Point) {
-        let window = i_slint_core::window::Window::new(|window| QtWindow::new(window));
-        let popup_window: &QtWindow =
-            <dyn std::any::Any>::downcast_ref(window.as_ref().as_any()).unwrap();
-        window.set_component(popup);
+    fn unregister_component<'a>(
+        &self,
+        component: ComponentRef,
+        _: &mut dyn Iterator<Item = Pin<ItemRef<'a>>>,
+    ) {
+        self.free_graphics_resources(component);
 
-        let runtime_window = self.self_weak.upgrade().unwrap();
-        let size = runtime_window.set_active_popup(PopupWindow {
-            location: PopupWindowLocation::TopLevel(window.clone()),
-            component: popup.clone(),
-        });
+        self.tree_structure_changed.replace(true);
+    }
 
-        let size = qttypes::QSize { width: size.width as _, height: size.height as _ };
+    fn create_popup(&self, geometry: Rect) -> Option<Rc<dyn WindowAdapter>> {
+        let popup_window = QtWindow::new();
+
+        let size = qttypes::QSize { width: geometry.width() as _, height: geometry.height() as _ };
 
         let popup_ptr = popup_window.widget_ptr();
-        let pos = qttypes::QPoint { x: position.x as _, y: position.y as _ };
+        let pos = qttypes::QPoint { x: geometry.origin.x as _, y: geometry.origin.y as _ };
         let widget_ptr = self.widget_ptr();
         cpp! {unsafe [widget_ptr as "QWidget*", popup_ptr as "QWidget*", pos as "QPoint", size as "QSize"] {
             popup_ptr->setParent(widget_ptr, Qt::Popup);
-            popup_ptr->setGeometry(QRect(pos + widget_ptr->geometry().topLeft(), size));
+            popup_ptr->setGeometry(QRect(pos + widget_ptr->mapToGlobal(QPoint(0,0)), size));
             popup_ptr->show();
         }};
+        Some(popup_window as _)
     }
 
     fn set_mouse_cursor(&self, cursor: MouseCursor) {
         let widget_ptr = self.widget_ptr();
         //unidirectional resize cursors are replaced with bidirectional ones
         let cursor_shape = match cursor {
-            MouseCursor::default => key_generated::Qt_CursorShape_ArrowCursor,
-            MouseCursor::none => key_generated::Qt_CursorShape_BlankCursor,
-            MouseCursor::help => key_generated::Qt_CursorShape_WhatsThisCursor,
-            MouseCursor::pointer => key_generated::Qt_CursorShape_PointingHandCursor,
-            MouseCursor::progress => key_generated::Qt_CursorShape_BusyCursor,
-            MouseCursor::wait => key_generated::Qt_CursorShape_WaitCursor,
-            MouseCursor::crosshair => key_generated::Qt_CursorShape_CrossCursor,
-            MouseCursor::text => key_generated::Qt_CursorShape_IBeamCursor,
-            MouseCursor::alias => key_generated::Qt_CursorShape_DragLinkCursor,
-            MouseCursor::copy => key_generated::Qt_CursorShape_DragCopyCursor,
-            MouseCursor::no_drop => key_generated::Qt_CursorShape_ForbiddenCursor,
-            MouseCursor::not_allowed => key_generated::Qt_CursorShape_ForbiddenCursor,
-            MouseCursor::grab => key_generated::Qt_CursorShape_OpenHandCursor,
-            MouseCursor::grabbing => key_generated::Qt_CursorShape_ClosedHandCursor,
-            MouseCursor::col_resize => key_generated::Qt_CursorShape_SplitHCursor,
-            MouseCursor::row_resize => key_generated::Qt_CursorShape_SplitVCursor,
-            MouseCursor::n_resize => key_generated::Qt_CursorShape_SizeVerCursor,
-            MouseCursor::e_resize => key_generated::Qt_CursorShape_SizeHorCursor,
-            MouseCursor::s_resize => key_generated::Qt_CursorShape_SizeVerCursor,
-            MouseCursor::w_resize => key_generated::Qt_CursorShape_SizeHorCursor,
-            MouseCursor::ne_resize => key_generated::Qt_CursorShape_SizeBDiagCursor,
-            MouseCursor::nw_resize => key_generated::Qt_CursorShape_SizeFDiagCursor,
-            MouseCursor::se_resize => key_generated::Qt_CursorShape_SizeFDiagCursor,
-            MouseCursor::sw_resize => key_generated::Qt_CursorShape_SizeBDiagCursor,
-            MouseCursor::ew_resize => key_generated::Qt_CursorShape_SizeHorCursor,
-            MouseCursor::ns_resize => key_generated::Qt_CursorShape_SizeVerCursor,
-            MouseCursor::nesw_resize => key_generated::Qt_CursorShape_SizeBDiagCursor,
-            MouseCursor::nwse_resize => key_generated::Qt_CursorShape_SizeFDiagCursor,
+            MouseCursor::Default => key_generated::Qt_CursorShape_ArrowCursor,
+            MouseCursor::None => key_generated::Qt_CursorShape_BlankCursor,
+            MouseCursor::Help => key_generated::Qt_CursorShape_WhatsThisCursor,
+            MouseCursor::Pointer => key_generated::Qt_CursorShape_PointingHandCursor,
+            MouseCursor::Progress => key_generated::Qt_CursorShape_BusyCursor,
+            MouseCursor::Wait => key_generated::Qt_CursorShape_WaitCursor,
+            MouseCursor::Crosshair => key_generated::Qt_CursorShape_CrossCursor,
+            MouseCursor::Text => key_generated::Qt_CursorShape_IBeamCursor,
+            MouseCursor::Alias => key_generated::Qt_CursorShape_DragLinkCursor,
+            MouseCursor::Copy => key_generated::Qt_CursorShape_DragCopyCursor,
+            MouseCursor::Move => key_generated::Qt_CursorShape_DragMoveCursor,
+            MouseCursor::NoDrop => key_generated::Qt_CursorShape_ForbiddenCursor,
+            MouseCursor::NotAllowed => key_generated::Qt_CursorShape_ForbiddenCursor,
+            MouseCursor::Grab => key_generated::Qt_CursorShape_OpenHandCursor,
+            MouseCursor::Grabbing => key_generated::Qt_CursorShape_ClosedHandCursor,
+            MouseCursor::ColResize => key_generated::Qt_CursorShape_SplitHCursor,
+            MouseCursor::RowResize => key_generated::Qt_CursorShape_SplitVCursor,
+            MouseCursor::NResize => key_generated::Qt_CursorShape_SizeVerCursor,
+            MouseCursor::EResize => key_generated::Qt_CursorShape_SizeHorCursor,
+            MouseCursor::SResize => key_generated::Qt_CursorShape_SizeVerCursor,
+            MouseCursor::WResize => key_generated::Qt_CursorShape_SizeHorCursor,
+            MouseCursor::NeResize => key_generated::Qt_CursorShape_SizeBDiagCursor,
+            MouseCursor::NwResize => key_generated::Qt_CursorShape_SizeFDiagCursor,
+            MouseCursor::SeResize => key_generated::Qt_CursorShape_SizeFDiagCursor,
+            MouseCursor::SwResize => key_generated::Qt_CursorShape_SizeBDiagCursor,
+            MouseCursor::EwResize => key_generated::Qt_CursorShape_SizeHorCursor,
+            MouseCursor::NsResize => key_generated::Qt_CursorShape_SizeVerCursor,
+            MouseCursor::NeswResize => key_generated::Qt_CursorShape_SizeBDiagCursor,
+            MouseCursor::NwseResize => key_generated::Qt_CursorShape_SizeFDiagCursor,
         };
         cpp! {unsafe [widget_ptr as "QWidget*", cursor_shape as "Qt::CursorShape"] {
             widget_ptr->setCursor(QCursor{cursor_shape});
         }};
     }
 
+    fn enable_input_method(&self, input: i_slint_core::items::InputType) {
+        let enable: bool = matches!(input, i_slint_core::items::InputType::Text);
+        let widget_ptr = self.widget_ptr();
+        cpp! {unsafe [widget_ptr as "QWidget*", enable as "bool"] {
+            widget_ptr->setAttribute(Qt::WA_InputMethodEnabled, enable);
+        }};
+    }
+
+    fn disable_input_method(&self) {
+        let widget_ptr = self.widget_ptr();
+        cpp! {unsafe [widget_ptr as "QWidget*"] {
+            widget_ptr->setAttribute(Qt::WA_InputMethodEnabled, false);
+        }};
+    }
+
+    fn set_ime_position(&self, position: LogicalPoint) {
+        let pos = qttypes::QPoint { x: position.x as _, y: position.y as _ };
+        let widget_ptr = self.widget_ptr();
+        cpp! {unsafe [widget_ptr as "SlintWidget*", pos as "QPoint"]  {
+            widget_ptr->ime_position = pos;
+            QGuiApplication::inputMethod()->update(Qt::ImQueryInput);
+        }};
+    }
+
+    fn renderer(&self) -> &dyn Renderer {
+        self
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn handle_focus_change(&self, _old: Option<ItemRc>, new: Option<ItemRc>) {
+        let widget_ptr = self.widget_ptr();
+        if let Some(ai) = accessible_item(new) {
+            let item = &ai;
+            cpp! {unsafe [widget_ptr as "QWidget*", item as "void*"] {
+                auto accessible = QAccessible::queryAccessibleInterface(widget_ptr);
+                if (auto slint_accessible = dynamic_cast<Slint_accessible*>(accessible)) {
+                    slint_accessible->clearFocus();
+                    slint_accessible->focusItem(item);
+                }
+            }};
+        }
+    }
+
+    fn position(&self) -> i_slint_core::api::PhysicalPosition {
+        let widget_ptr = self.widget_ptr();
+        let qp = cpp! {unsafe [widget_ptr as "QWidget*"] -> qttypes::QPoint as "QPoint" {
+            return widget_ptr->pos();
+        }};
+        // Qt returns logical coordinates, so scale those!
+        i_slint_core::api::LogicalPosition::new(qp.x as _, qp.y as _)
+            .to_physical(self.window().scale_factor())
+    }
+
+    fn set_position(&self, position: i_slint_core::api::WindowPosition) {
+        let physical_position = position.to_physical(self.window().scale_factor());
+        let widget_ptr = self.widget_ptr();
+        let pos = qttypes::QPoint { x: physical_position.x as _, y: physical_position.y as _ };
+        cpp! {unsafe [widget_ptr as "QWidget*", pos as "QPoint"] {
+            widget_ptr->move(pos);
+        }};
+    }
+
+    fn set_size(&self, size: i_slint_core::api::WindowSize) {
+        let logical_size = size.to_logical(self.window().scale_factor());
+        let widget_ptr = self.widget_ptr();
+        let sz = qttypes::QSize {
+            width: logical_size.width.round() as _,
+            height: logical_size.height.round() as _,
+        };
+        // Qt uses logical units!
+        cpp! {unsafe [widget_ptr as "QWidget*", sz as "QSize"] {
+            widget_ptr->resize(sz);
+        }};
+    }
+
+    fn dark_color_scheme(&self) -> bool {
+        let ds = self.dark_color_scheme.get_or_init(|| {
+            Box::pin(Property::new(cpp! {unsafe [] -> bool as "bool" {
+                return qApp->palette().color(QPalette::Window).valueF() < 0.5;
+            }}))
+        });
+        ds.as_ref().get()
+    }
+
+    fn is_visible(&self) -> bool {
+        let widget_ptr = self.widget_ptr();
+        cpp! {unsafe [widget_ptr as "QWidget*"] -> bool as "bool" {
+            return widget_ptr->isVisible();
+        }}
+    }
+}
+
+impl Renderer for QtWindow {
     fn text_size(
         &self,
         font_request: i_slint_core::graphics::FontRequest,
         text: &str,
-        max_width: Option<f32>,
-    ) -> Size {
-        get_font(font_request.merge(&self.default_font_properties())).text_size(text, max_width)
+        max_width: Option<LogicalLength>,
+        _scale_factor: ScaleFactor,
+    ) -> LogicalSize {
+        get_font(font_request).text_size(text, max_width.map(|logical_width| logical_width.get()))
     }
 
     fn text_input_byte_offset_for_position(
         &self,
         text_input: Pin<&i_slint_core::items::TextInput>,
-        pos: Point,
+        pos: LogicalPoint,
     ) -> usize {
+        if pos.y < 0. {
+            return 0;
+        }
         let rect: qttypes::QRectF = get_geometry!(items::TextInput, text_input);
         let pos = qttypes::QPointF { x: pos.x as _, y: pos.y as _ };
-        let font: QFont =
-            get_font(text_input.unresolved_font_request().merge(&self.default_font_properties()));
+        let font: QFont = get_font(
+            text_input.font_request(&WindowInner::from_pub(&self.window).window_adapter()),
+        );
         let string = qttypes::QString::from(text_input.text().as_str());
         let flags = match text_input.horizontal_alignment() {
-            TextHorizontalAlignment::left => key_generated::Qt_AlignmentFlag_AlignLeft,
-            TextHorizontalAlignment::center => key_generated::Qt_AlignmentFlag_AlignHCenter,
-            TextHorizontalAlignment::right => key_generated::Qt_AlignmentFlag_AlignRight,
+            TextHorizontalAlignment::Left => key_generated::Qt_AlignmentFlag_AlignLeft,
+            TextHorizontalAlignment::Center => key_generated::Qt_AlignmentFlag_AlignHCenter,
+            TextHorizontalAlignment::Right => key_generated::Qt_AlignmentFlag_AlignRight,
         } | match text_input.vertical_alignment() {
-            TextVerticalAlignment::top => key_generated::Qt_AlignmentFlag_AlignTop,
-            TextVerticalAlignment::center => key_generated::Qt_AlignmentFlag_AlignVCenter,
-            TextVerticalAlignment::bottom => key_generated::Qt_AlignmentFlag_AlignBottom,
+            TextVerticalAlignment::Top => key_generated::Qt_AlignmentFlag_AlignTop,
+            TextVerticalAlignment::Center => key_generated::Qt_AlignmentFlag_AlignVCenter,
+            TextVerticalAlignment::Bottom => key_generated::Qt_AlignmentFlag_AlignBottom,
         } | match text_input.wrap() {
-            TextWrap::no_wrap => 0,
-            TextWrap::word_wrap => key_generated::Qt_TextFlag_TextWordWrap,
+            TextWrap::NoWrap => 0,
+            TextWrap::WordWrap => key_generated::Qt_TextFlag_TextWordWrap,
         };
         let single_line: bool = text_input.single_line();
-        let is_password: bool = matches!(text_input.input_type(), InputType::password);
+        let is_password: bool = matches!(text_input.input_type(), InputType::Password);
         cpp! { unsafe [font as "QFont", string as "QString", pos as "QPointF", flags as "int",
                 rect as "QRectF", single_line as "bool", is_password as "bool"] -> usize as "size_t" {
             // we need to do the \n replacement in a copy because the original need to be kept to know the utf8 offset
@@ -1469,12 +1816,15 @@ impl PlatformWindow for QtWindow {
             QTextLayout layout(copy, font);
             auto line = do_text_layout(layout, flags, rect, pos.y());
             if (line < 0 || layout.lineCount() <= line)
-                return 0;
+                return string.toUtf8().size();
             QTextLine textLine = layout.lineAt(line);
             int cur;
             if (pos.x() > textLine.naturalTextWidth()) {
                 cur = textLine.textStart() + textLine.textLength();
-                if (cur > 0 && string[cur - 1] == '\n')
+                // cur is one past the last character of the line (eg, the \n or space).
+                // Go one back to get back on this line.
+                // Unless we were at the end of the text, in which case there was no \n
+                if (cur > textLine.textStart() && (cur < string.size() || string[cur-1] == '\n'))
                     cur--;
             } else {
                 cur = textLine.xToCursor(pos.x());
@@ -1486,32 +1836,33 @@ impl PlatformWindow for QtWindow {
         }}
     }
 
-    fn text_input_position_for_byte_offset(
+    fn text_input_cursor_rect_for_byte_offset(
         &self,
         text_input: Pin<&i_slint_core::items::TextInput>,
         byte_offset: usize,
-    ) -> Point {
+    ) -> LogicalRect {
         let rect: qttypes::QRectF = get_geometry!(items::TextInput, text_input);
-        let font: QFont =
-            get_font(text_input.unresolved_font_request().merge(&self.default_font_properties()));
+        let font: QFont = get_font(
+            text_input.font_request(&WindowInner::from_pub(&self.window).window_adapter()),
+        );
         let text = text_input.text();
         let mut string = qttypes::QString::from(text.as_str());
         let offset: u32 = utf8_byte_offset_to_utf16_units(text.as_str(), byte_offset) as _;
         let flags = match text_input.horizontal_alignment() {
-            TextHorizontalAlignment::left => key_generated::Qt_AlignmentFlag_AlignLeft,
-            TextHorizontalAlignment::center => key_generated::Qt_AlignmentFlag_AlignHCenter,
-            TextHorizontalAlignment::right => key_generated::Qt_AlignmentFlag_AlignRight,
+            TextHorizontalAlignment::Left => key_generated::Qt_AlignmentFlag_AlignLeft,
+            TextHorizontalAlignment::Center => key_generated::Qt_AlignmentFlag_AlignHCenter,
+            TextHorizontalAlignment::Right => key_generated::Qt_AlignmentFlag_AlignRight,
         } | match text_input.vertical_alignment() {
-            TextVerticalAlignment::top => key_generated::Qt_AlignmentFlag_AlignTop,
-            TextVerticalAlignment::center => key_generated::Qt_AlignmentFlag_AlignVCenter,
-            TextVerticalAlignment::bottom => key_generated::Qt_AlignmentFlag_AlignBottom,
+            TextVerticalAlignment::Top => key_generated::Qt_AlignmentFlag_AlignTop,
+            TextVerticalAlignment::Center => key_generated::Qt_AlignmentFlag_AlignVCenter,
+            TextVerticalAlignment::Bottom => key_generated::Qt_AlignmentFlag_AlignBottom,
         } | match text_input.wrap() {
-            TextWrap::no_wrap => 0,
-            TextWrap::word_wrap => key_generated::Qt_TextFlag_TextWordWrap,
+            TextWrap::NoWrap => 0,
+            TextWrap::WordWrap => key_generated::Qt_TextFlag_TextWordWrap,
         };
         let single_line: bool = text_input.single_line();
         let r = cpp! { unsafe [font as "QFont", mut string as "QString", offset as "int", flags as "int", rect as "QRectF", single_line as "bool"]
-                -> qttypes::QPointF as "QPointF" {
+                -> qttypes::QRectF as "QRectF" {
             if (!single_line) {
                 string.replace(QChar('\n'), QChar::LineSeparator);
             }
@@ -1520,22 +1871,67 @@ impl PlatformWindow for QtWindow {
 
             QTextLine textLine = layout.lineForTextPosition(offset);
             if (!textLine.isValid())
-                return QPointF();
-            return QPointF(textLine.x() + textLine.cursorToX(offset), textLine.y());
+                return QRectF();
+            return QRectF(textLine.x() + textLine.cursorToX(offset), layout.position().y() + textLine.y(), 1.0, textLine.height());
         }};
-        Point::new(r.x as _, r.y as _)
+
+        LogicalRect::new(
+            LogicalPoint::new(r.x as _, r.y as _),
+            LogicalSize::new(r.width as _, r.height as _),
+        )
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn register_font_from_memory(
+        &self,
+        data: &'static [u8],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let data = qttypes::QByteArray::from(data);
+        cpp! {unsafe [data as "QByteArray"] {
+            ensure_initialized(true);
+            QFontDatabase::addApplicationFontFromData(data);
+        } }
+        Ok(())
     }
+
+    fn register_font_from_path(
+        &self,
+        path: &std::path::Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let encoded_path: qttypes::QByteArray = path.to_string_lossy().as_bytes().into();
+        cpp! {unsafe [encoded_path as "QByteArray"] {
+            ensure_initialized(true);
+
+            QString requested_path = QFileInfo(QFile::decodeName(encoded_path)).canonicalFilePath();
+            static QSet<QString> loaded_app_fonts;
+            // QFontDatabase::addApplicationFont unconditionally reads the provided file from disk,
+            // while we want to do this only once to avoid things like the live-review going crazy.
+            if (!loaded_app_fonts.contains(requested_path)) {
+                loaded_app_fonts.insert(requested_path);
+                QFontDatabase::addApplicationFont(requested_path);
+            }
+        } }
+        Ok(())
+    }
+}
+
+fn accessible_item(item: Option<ItemRc>) -> Option<ItemRc> {
+    let mut current = item;
+    while let Some(c) = current {
+        if c.is_accessible() {
+            return Some(c);
+        } else {
+            current = c.parent_item();
+        }
+    }
+    None
 }
 
 fn get_font(request: FontRequest) -> QFont {
     let family: qttypes::QString = request.family.unwrap_or_default().as_str().into();
-    let pixel_size: f32 = request.pixel_size.unwrap_or(0.);
+    let pixel_size: f32 = request.pixel_size.map_or(0., |logical_size| logical_size.get());
     let weight: i32 = request.weight.unwrap_or(0);
-    let letter_spacing: f32 = request.letter_spacing.unwrap_or_default();
+    let letter_spacing: f32 =
+        request.letter_spacing.map_or(0., |logical_spacing| logical_spacing.get());
     cpp!(unsafe [family as "QString", pixel_size as "float", weight as "int", letter_spacing as "float"] -> QFont as "QFont" {
         QFont f;
         if (!family.isEmpty())
@@ -1566,7 +1962,7 @@ fn get_font(request: FontRequest) -> QFont {
 cpp_class! {pub unsafe struct QFont as "QFont"}
 
 impl QFont {
-    fn text_size(&self, text: &str, max_width: Option<f32>) -> i_slint_core::graphics::Size {
+    fn text_size(&self, text: &str, max_width: Option<f32>) -> LogicalSize {
         let string = qttypes::QString::from(text);
         let mut r = qttypes::QRectF::default();
         if let Some(max) = max_width {
@@ -1577,7 +1973,7 @@ impl QFont {
                 -> qttypes::QSizeF as "QSizeF"{
             return QFontMetricsF(*self).boundingRect(r, r.isEmpty() ? 0 : Qt::TextWordWrap , string).size();
         }};
-        i_slint_core::graphics::Size::new(size.width as _, size.height as _)
+        LogicalSize::new(size.width as _, size.height as _)
     }
 }
 
@@ -1588,24 +1984,9 @@ thread_local! {
 
 /// Called by C++'s TimerHandler::timerEvent, or every time a timer might have been started
 pub(crate) fn timer_event() {
-    i_slint_core::animations::update_animations();
-    i_slint_core::timers::TimerList::maybe_activate_timers();
+    i_slint_core::platform::update_timers_and_animations();
 
-    i_slint_core::animations::CURRENT_ANIMATION_DRIVER.with(|driver| {
-        if !driver.has_active_animations() {
-            return;
-        }
-
-        ALL_WINDOWS.with(|windows| {
-            for x in windows.borrow().iter() {
-                if let Some(x) = x.upgrade() {
-                    x.request_redraw();
-                }
-            }
-        });
-    });
-
-    let mut timeout = i_slint_core::timers::TimerList::next_timeout().map(|instant| {
+    let timeout = i_slint_core::timers::TimerList::next_timeout().map(|instant| {
         let now = std::time::Instant::now();
         let instant: std::time::Instant = instant.into();
         if instant > now {
@@ -1614,11 +1995,6 @@ pub(crate) fn timer_event() {
             0
         }
     });
-    if i_slint_core::animations::CURRENT_ANIMATION_DRIVER
-        .with(|driver| driver.has_active_animations())
-    {
-        timeout = timeout.map(|x| x.max(16)).or(Some(16));
-    };
     if let Some(timeout) = timeout {
         cpp! { unsafe [timeout as "int"] {
             ensure_initialized(true);
@@ -1744,8 +2120,10 @@ pub(crate) mod ffi {
     use super::QtWindow;
 
     #[no_mangle]
-    pub extern "C" fn slint_qt_get_widget(window: &i_slint_core::window::WindowRc) -> *mut c_void {
-        <dyn std::any::Any>::downcast_ref(window.as_any())
+    pub extern "C" fn slint_qt_get_widget(
+        window_adapter: &i_slint_core::window::WindowAdapterRc,
+    ) -> *mut c_void {
+        <dyn std::any::Any>::downcast_ref(window_adapter.as_any())
             .map_or(std::ptr::null_mut(), |win: &QtWindow| {
                 win.widget_ptr().cast::<c_void>().as_ptr()
             })

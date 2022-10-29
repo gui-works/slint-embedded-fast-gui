@@ -5,7 +5,7 @@
 
 use crate::diagnostics::BuildDiagnostics;
 use crate::expression_tree::{Expression, NamedReference};
-use crate::langtype::Type;
+use crate::langtype::{ElementType, Type};
 use crate::object_tree::*;
 use crate::typeregister::TypeRegister;
 use std::cell::RefCell;
@@ -34,7 +34,7 @@ pub fn lower_popups(
 fn lower_popup_window(
     popup_window_element: &ElementRc,
     parent_element: Option<&ElementRc>,
-    window_type: &Type,
+    window_type: &ElementType,
     diag: &mut BuildDiagnostics,
 ) {
     let parent_element = match parent_element {
@@ -48,10 +48,24 @@ fn lower_popup_window(
         Some(parent_element) => parent_element,
     };
 
-    let parent_component = parent_element.borrow().enclosing_component.upgrade().unwrap();
+    let parent_component = popup_window_element.borrow().enclosing_component.upgrade().unwrap();
+    if Rc::ptr_eq(&parent_component.root_element, popup_window_element) {
+        diag.push_error(
+            "PopupWindow cannot be directly repeated or conditional".into(),
+            &*popup_window_element.borrow(),
+        );
+        return;
+    }
 
     // Remove the popup_window_element from its parent
+    let old_size = parent_element.borrow().children.len();
     parent_element.borrow_mut().children.retain(|child| !Rc::ptr_eq(child, popup_window_element));
+    debug_assert_eq!(
+        parent_element.borrow().children.len() + 1,
+        old_size,
+        "Exactly one child must be removed (the popup itself)"
+    );
+    parent_element.borrow_mut().has_popup_child = true;
 
     popup_window_element.borrow_mut().base_type = window_type.clone();
 

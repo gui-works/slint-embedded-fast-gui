@@ -17,9 +17,9 @@ export InkPage := Page {
 
     Rectangle {
         x: (parent.width - width) / 2;
-        y: (parent.height - height) / 2;
-        height: 75%;
-        width: 50%;
+        y: (parent.height - height);
+        height: 82%;
+        width: 60%;
 
         HorizontalLayout {
             spacing: root.width * 5%;
@@ -37,15 +37,19 @@ export InkPage := Page {
                         y: -parent.y;
                     }
                     states [
-                        innactive when !root.page-visible : {
-                            height: 0;
+                        inactive when !root.page-visible : {
+                            height: 2px;
                         }
                     ]
                     transitions [
-                        out innactive : {
-                            animate height { duration: 750ms; easing: ease-in-out; }
+                        out inactive : {
+                            animate height {
+                                duration: 750ms;
+                                delay: 50ms;
+                                easing: ease-in-out;
+                            }
                         }
-                        in innactive : {
+                        in inactive : {
                             animate height { duration: 200ms; easing: ease-in; }
                         }
                     ]

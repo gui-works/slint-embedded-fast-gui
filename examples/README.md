@@ -32,6 +32,18 @@ A simple todo mvc application
 
 ![Screenshot of the Todo Demo](https://slint-ui.com/resources/todo_screenshot.png "Todo Demo")
 
+### [`carousel`](./carousel)
+
+A custom carousel widget that can be controlled by touch, mouse and keyboard
+
+The example can be run on desktop, wasm and mcu platforms
+
+| `.slint` Design | Rust Source | C++ Source | Node Source | Online wasm Preview | Open in code editor |
+| --- | --- | --- | --- | --- | --- |
+| [`ui.slint`](./carousel/ui/carousel_demo.slint) | [`main.rs`](./carousel/rust/main.rs) | [`main.cpp`](./carousel/cpp/main.cpp) | [`main.js`](./carousel/node/main.js) | [Online simulation](https://slint-ui.com/snapshots/master/demos/carousel/) | [Preview in Online Code Editor](https://slint-ui.com/snapshots/master/editor?load_url=https://raw.githubusercontent.com/slint-ui/slint/master/examples/carousel/ui/carousel_demo.slint) |
+
+![Screenshot of the Carousel Demo](https://user-images.githubusercontent.com/6715107/196679740-840a4b67-afaa-4d47-9a31-bfe643c7de48.png "Carousel Demo")
+
 ### [`slide_puzzle`](./slide_puzzle)
 
 Puzzle game based on a Flutter example. See [Readme](./slide_puzzle)
@@ -100,6 +112,12 @@ A Rust and C++ example that shows how render SixtyFPS on top of graphical effect
 | [`scene.slint`](./opengl_underlay/scene.slint) | [`main.rs`](./opengl_underlay/main.rs) | [`main.cpp`](./opengl_underlay/main.cpp) | [Online simulation](https://slint-ui.com/snapshots/master/demos/opengl_underlay/) |
 
 ![Screenshot of the OpenGL Underlay Example on Windows](https://slint-ui.com/resources/opengl_underlay_screenshot.png "OpenGL Underlay")
+
+### [`7guis`](./7guis)
+
+Our implementations of the ["7GUIs"](https://eugenkiss.github.io/7guis/) Tasks.
+
+![Composition of 7GUIs Screenshots](https://user-images.githubusercontent.com/22800467/169002497-5b90e63b-5717-4290-8ac7-c618d9e2a4f1.png "7GUIs")
 
 ### External examples
 

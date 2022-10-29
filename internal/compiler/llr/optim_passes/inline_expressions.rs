@@ -47,6 +47,7 @@ fn expression_cost(exp: &Expression, ctx: &EvaluationContext) -> isize {
         Expression::Struct { .. } => 1,
         Expression::EasingCurve(_) => 1,
         Expression::LinearGradient { .. } => ALLOC_COST,
+        Expression::RadialGradient { .. } => ALLOC_COST,
         Expression::EnumerationValue(_) => 0,
         Expression::ReturnStatement(_) => 1,
         Expression::LayoutCacheAccess { .. } => PROPERTY_ACCESS_COST,
@@ -67,6 +68,7 @@ fn callback_cost(_callback: &crate::llr::PropertyReference, _ctx: &EvaluationCon
 fn builtin_function_cost(function: BuiltinFunction) -> isize {
     match function {
         BuiltinFunction::GetWindowScaleFactor => PROPERTY_ACCESS_COST,
+        BuiltinFunction::AnimationTick => PROPERTY_ACCESS_COST,
         BuiltinFunction::Debug => isize::MAX,
         BuiltinFunction::Mod => 10,
         BuiltinFunction::Round => 10,
@@ -95,6 +97,7 @@ fn builtin_function_cost(function: BuiltinFunction) -> isize {
         BuiltinFunction::RegisterCustomFontByPath => isize::MAX,
         BuiltinFunction::RegisterCustomFontByMemory => isize::MAX,
         BuiltinFunction::RegisterBitmapFont => isize::MAX,
+        BuiltinFunction::DarkColorScheme => isize::MAX,
     }
 }
 
@@ -160,7 +163,7 @@ pub(crate) fn property_binding_and_analysis<'a>(
             PropertyReference::Local { sub_component_path, property_index } => {
                 if !sub_component_path.is_empty() {
                     let prop2 = PropertyReference::Local {
-                        sub_component_path: sub_component_path[1..].iter().copied().collect(),
+                        sub_component_path: sub_component_path[1..].to_vec(),
                         property_index: *property_index,
                     };
                     let idx = sub_component_path[0];
@@ -174,7 +177,7 @@ pub(crate) fn property_binding_and_analysis<'a>(
             PropertyReference::InNativeItem { item_index, sub_component_path, prop_name } => {
                 if !sub_component_path.is_empty() {
                     let prop2 = PropertyReference::InNativeItem {
-                        sub_component_path: sub_component_path[1..].iter().copied().collect(),
+                        sub_component_path: sub_component_path[1..].to_vec(),
                         prop_name: prop_name.clone(),
                         item_index: *item_index,
                     };
@@ -231,7 +234,7 @@ pub(crate) fn property_binding_and_analysis<'a>(
             for _ in 0..level.get() {
                 ctx = ctx.parent.as_ref().unwrap().ctx;
             }
-            let mut ret = property_binding_and_analysis(&ctx, parent_reference);
+            let mut ret = property_binding_and_analysis(ctx, parent_reference);
             match &mut ret.binding {
                 Some((_, m @ ContextMap::Identity)) => {
                     *m = ContextMap::InSubElement { path: Default::default(), parent: level.get() };

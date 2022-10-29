@@ -3,13 +3,15 @@
 
 #pragma once
 
+#include <cstdint>
 
 namespace slint {
 
 /// The Size structure is used to represent a two-dimensional size
 /// with width and height.
-template <typename T>
-struct Size {
+template<typename T>
+struct Size
+{
     /// The width of the size
     T width;
     /// The height of the size
@@ -20,10 +22,23 @@ struct Size {
 };
 
 namespace cbindgen_private {
-    // The Size types are expanded to the Size2D<...> type from the euclid crate which
-    // is binary compatible with Size<T>
-    template <typename T> using Size2D = Size<T>;
+// The Size types are expanded to the Size2D<...> type from the euclid crate which
+// is binary compatible with Size<T>
+template<typename T>
+using Size2D = Size<T>;
 }
 
+/// A size given in logical pixels
+struct LogicalSize : public Size<float>
+{
+    /// Explicitly convert a Size<float> to a LogicalSize
+    explicit LogicalSize(const Size<float> s) : Size<float>(s) {};
+};
+/// A size given in physical pixels.
+struct PhysicalSize : public Size<uint32_t>
+{
+    /// Explicitly convert a Size<uint32_t> to a LogicalSize
+    explicit PhysicalSize(const Size<uint32_t> s) : Size<uint32_t>(s) {};
+};
 
 }

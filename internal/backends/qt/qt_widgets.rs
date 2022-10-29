@@ -17,19 +17,21 @@ it needs to be kept in sync with different place.
 
 #![allow(non_upper_case_globals)]
 
+use crate::qt_window::QPainterPtr;
 use const_field_offset::FieldOffsets;
 use core::pin::Pin;
 use cpp::cpp;
-use i_slint_core::graphics::{Color, Rect};
+use i_slint_core::graphics::Color;
 use i_slint_core::input::{
     FocusEvent, InputEventFilterResult, InputEventResult, KeyEvent, KeyEventResult, MouseEvent,
 };
 use i_slint_core::item_rendering::{CachedRenderingData, ItemRenderer};
-use i_slint_core::items::{Item, ItemConsts, ItemRc, ItemVTable, VoidArg};
+use i_slint_core::items::{Item, ItemConsts, ItemRc, ItemVTable, RenderingResult, VoidArg};
 use i_slint_core::layout::{LayoutInfo, Orientation};
+use i_slint_core::lengths::{LogicalLength, LogicalPoint, LogicalRect, LogicalSize};
 #[cfg(feature = "rtti")]
 use i_slint_core::rtti::*;
-use i_slint_core::window::WindowRc;
+use i_slint_core::window::{WindowAdapter, WindowAdapterRc, WindowInner};
 use i_slint_core::{
     declare_item_vtable, Callback, ItemVTable_static, Property, SharedString, SharedVector,
 };
@@ -38,14 +40,12 @@ use std::rc::Rc;
 
 type ItemRendererRef<'a> = &'a mut dyn ItemRenderer;
 
-use qttypes::QPainter;
-
 /// Helper macro to get the size from the width and height property,
 /// and return Default::default in case the size is too small
 macro_rules! get_size {
     ($self:ident) => {{
-        let width = $self.width();
-        let height = $self.height();
+        let width = $self.width().get();
+        let height = $self.height().get();
         if width < 1. || height < 1. {
             return Default::default();
         };
@@ -55,11 +55,11 @@ macro_rules! get_size {
 
 macro_rules! fn_render {
     ($this:ident $dpr:ident $size:ident $painter:ident $widget:ident $initial_state:ident => $($tt:tt)*) => {
-        fn render(self: Pin<&Self>, backend: &mut &mut dyn ItemRenderer) {
+        fn render(self: Pin<&Self>, backend: &mut &mut dyn ItemRenderer, item_rc: &ItemRc) -> RenderingResult {
             let $dpr: f32 = backend.scale_factor();
 
             let window = backend.window();
-            let active: bool = window.active();
+            let active: bool = WindowInner::from_pub(window).active();
             // This should include self.enabled() as well, but not every native widget
             // has that property right now.
             let $initial_state = cpp!(unsafe [ active as "bool" ] -> i32 as "int" {
@@ -69,12 +69,12 @@ macro_rules! fn_render {
                 return (int)state;
             });
 
-            if let Some(painter) = <dyn std::any::Any>::downcast_mut::<QPainter>(backend.as_any()) {
+            if let Some(painter) = backend.as_any().and_then(|any| <dyn std::any::Any>::downcast_mut::<QPainterPtr>(any)) {
                 let $size: qttypes::QSize = get_size!(self);
                 let $this = self;
                 painter.save();
-                let $widget = cpp!(unsafe [painter as "QPainter*"] -> * const () as "QWidget*" {
-                    return painter->device()->devType() == QInternal::Widget ? static_cast<QWidget *>(painter->device()) : nullptr;
+                let $widget = cpp!(unsafe [painter as "QPainterPtr*"] -> * const () as "QWidget*" {
+                    return (*painter)->device()->devType() == QInternal::Widget ? static_cast<QWidget *>((*painter)->device()) : nullptr;
                 });
                 let $painter = painter;
                 $($tt)*
@@ -82,26 +82,29 @@ macro_rules! fn_render {
             } else {
                 // Fallback: this happen when the Qt backend is not used and the gl backend is used instead
                 backend.draw_cached_pixmap(
-                    &self.cached_rendering_data,
+                    item_rc,
                     &|callback| {
-                        let width = self.width() * $dpr;
-                        let height = self.height() * $dpr;
+                        let width = self.width().get() * $dpr;
+                        let height = self.height().get() * $dpr;
                         if width < 1. || height < 1. {
                             return Default::default();
                         };
                         let $size = qttypes::QSize { width: width as _, height: height as _ };
                         let mut imgarray = QImageWrapArray::new($size, $dpr);
                         let img = &mut imgarray.img;
-                        let mut painter_ = cpp!(unsafe [img as "QImage*"] -> QPainter as "QPainter" { return QPainter(img); });
+                        let mut painter = cpp!(unsafe [img as "QImage*"] -> QPainterPtr as "std::unique_ptr<QPainter>" {
+                            return std::make_unique<QPainter>(img);
+                        });
                         let $widget: * const () = core::ptr::null();
-                        let $painter = &mut painter_;
+                        let $painter = &mut painter;
                         let $this = self;
                         $($tt)*
-                        drop(painter_);
+                        drop(painter);
                         imgarray.draw(callback);
                     },
                 );
             }
+            RenderingResult::ContinueRenderingChildren
         }
     };
 }
@@ -142,6 +145,8 @@ cpp! {{
     #include <QtCore/QMimeData>
     #include <QtCore/QDebug>
     #include <QtCore/QScopeGuard>
+
+    using QPainterPtr = std::unique_ptr<QPainter>;
 
     /// Make sure there is an instance of QApplication.
     /// The `from_qt_backend` argument specifies if we know that we are running

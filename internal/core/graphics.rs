@@ -11,22 +11,24 @@
     created by the backend in a type-erased manner.
 */
 extern crate alloc;
+use crate::lengths::LogicalLength;
+use crate::Coord;
 use crate::SharedString;
 use alloc::boxed::Box;
 
 pub use euclid;
 /// 2D Rectangle
-pub type Rect = euclid::default::Rect<f32>;
+pub type Rect = euclid::default::Rect<Coord>;
 /// 2D Rectangle with integer coordinates
 pub type IntRect = euclid::default::Rect<i32>;
 /// 2D Point
-pub type Point = euclid::default::Point2D<f32>;
+pub type Point = euclid::default::Point2D<Coord>;
 /// 2D Size
-pub type Size = euclid::default::Size2D<f32>;
+pub type Size = euclid::default::Size2D<Coord>;
 /// 2D Size in integer coordinates
 pub type IntSize = euclid::default::Size2D<u32>;
 /// 2D Transform
-pub type Transform = euclid::default::Transform2D<f32>;
+pub type Transform = euclid::default::Transform2D<Coord>;
 
 pub(crate) mod color;
 pub use color::*;
@@ -46,9 +48,7 @@ pub(crate) mod bitmapfont;
 pub use self::bitmapfont::*;
 
 #[cfg(feature = "std")]
-mod fps_counter;
-#[cfg(feature = "std")]
-pub use fps_counter::*;
+pub mod rendering_metrics_collector;
 
 /// CachedGraphicsData allows the graphics backend to store an arbitrary piece of data associated with
 /// an item, which is typically computed by accessing properties. The dependency_tracker is used to allow
@@ -75,6 +75,8 @@ impl<T> CachedGraphicsData<T> {
 /// The RenderingCache, in combination with CachedGraphicsData, allows back ends to store data that's either
 /// intensive to compute or has bad CPU locality. Back ends typically keep a RenderingCache instance and use
 /// the item's cached_rendering_data() integer as index in the vec_arena::Arena.
+///
+/// This is used only for the [`crate::item_rendering::PartialRenderingCache`]
 pub struct RenderingCache<T> {
     slab: slab::Slab<CachedGraphicsData<T>>,
     generation: usize,
@@ -127,7 +129,7 @@ impl<T> RenderingCache<T> {
 }
 /// FontRequest collects all the developer-configurable properties for fonts, such as family, weight, etc.
 /// It is submitted as a request to the platform font system (i.e. CoreText on macOS) and in exchange the
-/// backend returns a Box<dyn Font>.
+/// backend returns a `Box<dyn Font>`.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FontRequest {
     /// The name of the font family to be used, such as "Helvetica". An empty family name means the system
@@ -136,24 +138,10 @@ pub struct FontRequest {
     /// If the weight is None, the system default font weight should be used.
     pub weight: Option<i32>,
     /// If the pixel size is None, the system default font size should be used.
-    pub pixel_size: Option<f32>,
+    pub pixel_size: Option<LogicalLength>,
     /// The additional spacing (or shrinking if negative) between glyphs. This is usually not submitted to
     /// the font-subsystem but collected here for API convenience
-    pub letter_spacing: Option<f32>,
-}
-
-impl FontRequest {
-    /// Consumes the FontRequest, replaces any missing fields from the specified other request and
-    /// returns the new request.
-    #[must_use]
-    pub fn merge(self, other: &FontRequest) -> Self {
-        Self {
-            family: self.family.or_else(|| other.family.clone()),
-            weight: self.weight.or(other.weight),
-            pixel_size: self.pixel_size.or(other.pixel_size),
-            letter_spacing: self.letter_spacing.or(other.letter_spacing),
-        }
-    }
+    pub letter_spacing: Option<LogicalLength>,
 }
 
 #[cfg(feature = "ffi")]

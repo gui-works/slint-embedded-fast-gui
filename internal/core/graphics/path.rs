@@ -5,7 +5,7 @@
 This module contains path related types and functions for the run-time library.
 */
 
-use super::{Point, Rect, Size};
+use crate::items::PathEvent;
 #[cfg(feature = "rtti")]
 use crate::rtti::*;
 use auto_enums::auto_enum;
@@ -135,31 +135,11 @@ pub enum PathElement {
     Close,
 }
 
-#[repr(C)]
-#[derive(Clone, Debug, PartialEq, strum::EnumString, strum::Display)]
-#[allow(non_camel_case_types)]
-/// PathEvent is a low-level data structure describing the composition of a path. Typically it is
-/// generated at compile time from a higher-level description, such as SVG commands.
-pub enum PathEvent {
-    /// The beginning of the path.
-    begin,
-    /// A straight line on the path.
-    line,
-    /// A quadratic bezier curve on the path.
-    quadratic,
-    /// A cubic bezier curve on the path.
-    cubic,
-    /// The end of the path that remains open.
-    end_open,
-    /// The end of a path that is closed.
-    end_closed,
-}
-
 struct ToLyonPathEventIterator<'a> {
     events_it: core::slice::Iter<'a, PathEvent>,
-    coordinates_it: core::slice::Iter<'a, Point>,
-    first: Option<&'a Point>,
-    last: Option<&'a Point>,
+    coordinates_it: core::slice::Iter<'a, lyon_path::math::Point>,
+    first: Option<&'a lyon_path::math::Point>,
+    last: Option<&'a lyon_path::math::Point>,
 }
 
 impl<'a> Iterator for ToLyonPathEventIterator<'a> {
@@ -168,26 +148,26 @@ impl<'a> Iterator for ToLyonPathEventIterator<'a> {
         use lyon_path::Event;
 
         self.events_it.next().map(|event| match event {
-            PathEvent::begin => Event::Begin { at: *self.coordinates_it.next().unwrap() },
-            PathEvent::line => Event::Line {
+            PathEvent::Begin => Event::Begin { at: *self.coordinates_it.next().unwrap() },
+            PathEvent::Line => Event::Line {
                 from: *self.coordinates_it.next().unwrap(),
                 to: *self.coordinates_it.next().unwrap(),
             },
-            PathEvent::quadratic => Event::Quadratic {
+            PathEvent::Quadratic => Event::Quadratic {
                 from: *self.coordinates_it.next().unwrap(),
                 ctrl: *self.coordinates_it.next().unwrap(),
                 to: *self.coordinates_it.next().unwrap(),
             },
-            PathEvent::cubic => Event::Cubic {
+            PathEvent::Cubic => Event::Cubic {
                 from: *self.coordinates_it.next().unwrap(),
                 ctrl1: *self.coordinates_it.next().unwrap(),
                 ctrl2: *self.coordinates_it.next().unwrap(),
                 to: *self.coordinates_it.next().unwrap(),
             },
-            PathEvent::end_open => {
+            PathEvent::EndOpen => {
                 Event::End { first: *self.first.unwrap(), last: *self.last.unwrap(), close: false }
             }
-            PathEvent::end_closed => {
+            PathEvent::EndClosed => {
                 Event::End { first: *self.first.unwrap(), last: *self.last.unwrap(), close: true }
             }
         })
@@ -236,7 +216,7 @@ pub struct PathDataIterator {
 
 enum LyonPathIteratorVariant {
     FromPath(lyon_path::Path),
-    FromEvents(crate::SharedVector<PathEvent>, crate::SharedVector<Point>),
+    FromEvents(crate::SharedVector<PathEvent>, crate::SharedVector<lyon_path::math::Point>),
 }
 
 impl PathDataIterator {
@@ -267,13 +247,13 @@ impl PathDataIterator {
     /// Applies a transformation on the elements this iterator provides that tries to fit everything
     /// into the specified width/height, respecting the provided viewbox. If no viewbox is specified,
     /// the bounding rectangle of the path is used.
-    pub fn fit(&mut self, width: f32, height: f32, viewbox: Option<Rect>) {
+    pub fn fit(&mut self, width: f32, height: f32, viewbox: Option<lyon_path::math::Box2D>) {
         if width > 0. || height > 0. {
             let viewbox =
-                viewbox.unwrap_or_else(|| lyon_algorithms::aabb::bounding_rect(self.iter()));
-            self.transform = lyon_algorithms::fit::fit_rectangle(
+                viewbox.unwrap_or_else(|| lyon_algorithms::aabb::bounding_box(self.iter()));
+            self.transform = lyon_algorithms::fit::fit_box(
                 &viewbox,
-                &Rect::from_size(Size::new(width, height)),
+                &lyon_path::math::Box2D::from_size(lyon_path::math::Size::new(width, height)),
                 lyon_algorithms::fit::FitStyle::Min,
             );
         }
@@ -291,7 +271,7 @@ pub enum PathData {
     Elements(crate::SharedVector<PathElement>),
     /// The Events variant describes the path as a series of low-level events and
     /// associated coordinates.
-    Events(crate::SharedVector<PathEvent>, crate::SharedVector<Point>),
+    Events(crate::SharedVector<PathEvent>, crate::SharedVector<lyon_path::math::Point>),
     /// The Commands variant describes the path as a series of SVG encoded path commands.
     Commands(crate::SharedString),
 }
@@ -315,11 +295,19 @@ impl PathData {
                     LyonPathIteratorVariant::FromEvents(events, coordinates)
                 }
                 PathData::Commands(commands) => {
-                    let path_builder = lyon_path::Path::builder().with_svg();
-                    LyonPathIteratorVariant::FromPath(
-                        lyon_svg::path_utils::build_path(path_builder, &commands)
-                            .unwrap_or_default(),
-                    )
+                    let mut builder = lyon_path::Path::builder();
+                    let mut parser = lyon_extra::parser::PathParser::new();
+                    match parser.parse(
+                        &lyon_extra::parser::ParserOptions::DEFAULT,
+                        &mut lyon_extra::parser::Source::new(commands.chars()),
+                        &mut builder,
+                    ) {
+                        Ok(()) => LyonPathIteratorVariant::FromPath(builder.build()),
+                        Err(e) => {
+                            eprintln!("Error while parsing path commands '{commands}': {e:?}");
+                            LyonPathIteratorVariant::FromPath(Default::default())
+                        }
+                    }
                 }
             },
             transform: Default::default(),

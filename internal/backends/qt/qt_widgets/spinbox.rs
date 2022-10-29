@@ -1,10 +1,7 @@
 // Copyright © SixtyFPS GmbH <info@slint-ui.com>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
-use i_slint_core::{
-    input::{FocusEventResult, KeyEventType},
-    items::{EventResult, KeyEventArg},
-};
+use i_slint_core::input::{FocusEventResult, KeyEventType};
 
 use super::*;
 
@@ -19,18 +16,16 @@ struct NativeSpinBoxData {
 #[derive(FieldOffsets, Default, SlintElement)]
 #[pin]
 pub struct NativeSpinBox {
-    pub x: Property<f32>,
-    pub y: Property<f32>,
-    pub width: Property<f32>,
-    pub height: Property<f32>,
+    pub x: Property<LogicalLength>,
+    pub y: Property<LogicalLength>,
+    pub width: Property<LogicalLength>,
+    pub height: Property<LogicalLength>,
     pub enabled: Property<bool>,
     pub has_focus: Property<bool>,
     pub value: Property<i32>,
     pub minimum: Property<i32>,
     pub maximum: Property<i32>,
     pub cached_rendering_data: CachedRenderingData,
-    pub key_pressed: Callback<KeyEventArg, EventResult>,
-    pub key_released: Callback<KeyEventArg, EventResult>,
     data: Property<NativeSpinBoxData>,
 }
 
@@ -59,13 +54,20 @@ option.frame = true;
 }}
 
 impl Item for NativeSpinBox {
-    fn init(self: Pin<&Self>, _window: &WindowRc) {}
+    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
 
-    fn geometry(self: Pin<&Self>) -> Rect {
-        euclid::rect(self.x(), self.y(), self.width(), self.height())
+    fn geometry(self: Pin<&Self>) -> LogicalRect {
+        LogicalRect::new(
+            LogicalPoint::from_lengths(self.x(), self.y()),
+            LogicalSize::from_lengths(self.width(), self.height()),
+        )
     }
 
-    fn layout_info(self: Pin<&Self>, orientation: Orientation, _window: &WindowRc) -> LayoutInfo {
+    fn layout_info(
+        self: Pin<&Self>,
+        orientation: Orientation,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+    ) -> LayoutInfo {
         //let value: i32 = self.value();
         let data = self.data();
         let active_controls = data.active_controls;
@@ -109,7 +111,7 @@ impl Item for NativeSpinBox {
     fn input_event_filter_before_children(
         self: Pin<&Self>,
         _: MouseEvent,
-        _window: &WindowRc,
+        _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
         InputEventFilterResult::ForwardEvent
@@ -118,7 +120,7 @@ impl Item for NativeSpinBox {
     fn input_event(
         self: Pin<&Self>,
         event: MouseEvent,
-        window: &WindowRc,
+        window_adapter: &Rc<dyn WindowAdapter>,
         self_rc: &i_slint_core::items::ItemRc,
     ) -> InputEventResult {
         let size: qttypes::QSize = get_size!(self);
@@ -127,8 +129,10 @@ impl Item for NativeSpinBox {
         let active_controls = data.active_controls;
         let pressed = data.pressed;
 
-        let pos =
-            event.pos().map(|p| qttypes::QPoint { x: p.x as _, y: p.y as _ }).unwrap_or_default();
+        let pos = event
+            .position()
+            .map(|p| qttypes::QPoint { x: p.x as _, y: p.y as _ })
+            .unwrap_or_default();
 
         let new_control = cpp!(unsafe [
             pos as "QPoint",
@@ -148,15 +152,15 @@ impl Item for NativeSpinBox {
         });
         let changed = new_control != active_controls
             || match event {
-                MouseEvent::MousePressed { .. } => {
+                MouseEvent::Pressed { .. } => {
                     data.pressed = true;
                     true
                 }
-                MouseEvent::MouseExit => {
+                MouseEvent::Exit => {
                     data.pressed = false;
                     true
                 }
-                MouseEvent::MouseReleased { .. } => {
+                MouseEvent::Released { .. } => {
                     data.pressed = false;
                     if new_control == cpp!(unsafe []->u32 as "int" { return QStyle::SC_SpinBoxUp;})
                         && enabled
@@ -177,38 +181,52 @@ impl Item for NativeSpinBox {
                     }
                     true
                 }
-                MouseEvent::MouseMoved { .. } => false,
-                MouseEvent::MouseWheel { .. } => false, // TODO
+                MouseEvent::Moved { .. } => false,
+                MouseEvent::Wheel { .. } => false, // TODO
             };
         data.active_controls = new_control;
         if changed {
             self.data.set(data);
         }
 
-        if let MouseEvent::MousePressed { .. } = event {
+        if let MouseEvent::Pressed { .. } = event {
             if !self.has_focus() {
-                window.clone().set_focus_item(self_rc);
+                WindowInner::from_pub(window_adapter.window()).set_focus_item(self_rc);
             }
         }
         InputEventResult::EventAccepted
     }
 
-    fn key_event(self: Pin<&Self>, event: &KeyEvent, _window: &WindowRc) -> KeyEventResult {
-        let r = match event.event_type {
-            KeyEventType::KeyPressed => {
-                Self::FIELD_OFFSETS.key_pressed.apply_pin(self).call(&(event.clone(),))
-            }
-            KeyEventType::KeyReleased => {
-                Self::FIELD_OFFSETS.key_released.apply_pin(self).call(&(event.clone(),))
-            }
-        };
-        match r {
-            EventResult::accept => KeyEventResult::EventAccepted,
-            EventResult::reject => KeyEventResult::EventIgnored,
+    fn key_event(
+        self: Pin<&Self>,
+        event: &KeyEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> KeyEventResult {
+        if !self.enabled() || event.event_type != KeyEventType::KeyPressed {
+            return KeyEventResult::EventIgnored;
+        }
+        if event.text.starts_with(i_slint_core::input::key_codes::UpArrow)
+            && self.value() < self.maximum()
+        {
+            self.value.set(self.value() + 1);
+            KeyEventResult::EventAccepted
+        } else if event.text.starts_with(i_slint_core::input::key_codes::DownArrow)
+            && self.value() > self.minimum()
+        {
+            self.value.set(self.value() - 1);
+            KeyEventResult::EventAccepted
+        } else {
+            KeyEventResult::EventIgnored
         }
     }
 
-    fn focus_event(self: Pin<&Self>, event: &FocusEvent, _window: &WindowRc) -> FocusEventResult {
+    fn focus_event(
+        self: Pin<&Self>,
+        event: &FocusEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> FocusEventResult {
         match event {
             FocusEvent::FocusIn => {
                 if self.enabled() {
@@ -232,7 +250,7 @@ impl Item for NativeSpinBox {
         let pressed = data.pressed;
 
         cpp!(unsafe [
-            painter as "QPainter*",
+            painter as "QPainterPtr*",
             widget as "QWidget*",
             value as "int",
             enabled as "bool",
@@ -251,7 +269,7 @@ impl Item for NativeSpinBox {
             }
             option.rect = QRect(QPoint(), size / dpr);
             initQSpinBoxOptions(option, pressed, enabled, active_controls);
-            style->drawComplexControl(QStyle::CC_SpinBox, &option, painter, widget);
+            style->drawComplexControl(QStyle::CC_SpinBox, &option, painter->get(), widget);
 
             QStyleOptionFrame frame;
             frame.state = option.state;
@@ -260,11 +278,11 @@ impl Item for NativeSpinBox {
                 : style->pixelMetric(QStyle::PM_DefaultFrameWidth, &option, widget);
             frame.midLineWidth = 0;
             frame.rect = style->subControlRect(QStyle::CC_SpinBox, &option, QStyle::SC_SpinBoxEditField, widget);
-            style->drawPrimitive(QStyle::PE_PanelLineEdit, &frame, painter, widget);
+            style->drawPrimitive(QStyle::PE_PanelLineEdit, &frame, painter->get(), widget);
             QRect text_rect = qApp->style()->subElementRect(QStyle::SE_LineEditContents, &frame, widget);
             text_rect.adjust(1, 2, 1, 2);
-            painter->setPen(option.palette.color(QPalette::Text));
-            painter->drawText(text_rect, QString::number(value));
+            (*painter)->setPen(option.palette.color(QPalette::Text));
+            (*painter)->drawText(text_rect, QString::number(value));
         });
     }
 }

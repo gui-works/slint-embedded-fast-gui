@@ -1,7 +1,7 @@
 // Copyright © SixtyFPS GmbH <info@slint-ui.com>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
-use i_slint_core::input::FocusEventResult;
+use i_slint_core::input::{FocusEventResult, KeyEventType};
 
 use super::*;
 
@@ -9,11 +9,12 @@ use super::*;
 #[derive(FieldOffsets, Default, SlintElement)]
 #[pin]
 pub struct NativeCheckBox {
-    pub x: Property<f32>,
-    pub y: Property<f32>,
-    pub width: Property<f32>,
-    pub height: Property<f32>,
+    pub x: Property<LogicalLength>,
+    pub y: Property<LogicalLength>,
+    pub width: Property<LogicalLength>,
+    pub height: Property<LogicalLength>,
     pub enabled: Property<bool>,
+    pub has_focus: Property<bool>,
     pub toggled: Callback<VoidArg>,
     pub text: Property<SharedString>,
     pub checked: Property<bool>,
@@ -21,13 +22,20 @@ pub struct NativeCheckBox {
 }
 
 impl Item for NativeCheckBox {
-    fn init(self: Pin<&Self>, _window: &WindowRc) {}
+    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
 
-    fn geometry(self: Pin<&Self>) -> Rect {
-        euclid::rect(self.x(), self.y(), self.width(), self.height())
+    fn geometry(self: Pin<&Self>) -> LogicalRect {
+        LogicalRect::new(
+            LogicalPoint::from_lengths(self.x(), self.y()),
+            LogicalSize::from_lengths(self.width(), self.height()),
+        )
     }
 
-    fn layout_info(self: Pin<&Self>, orientation: Orientation, _window: &WindowRc) -> LayoutInfo {
+    fn layout_info(
+        self: Pin<&Self>,
+        orientation: Orientation,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+    ) -> LayoutInfo {
         let text: qttypes::QString = self.text().as_str().into();
         let size = cpp!(unsafe [
             text as "QString"
@@ -53,7 +61,7 @@ impl Item for NativeCheckBox {
     fn input_event_filter_before_children(
         self: Pin<&Self>,
         _: MouseEvent,
-        _window: &WindowRc,
+        _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
         InputEventFilterResult::ForwardEvent
@@ -62,14 +70,19 @@ impl Item for NativeCheckBox {
     fn input_event(
         self: Pin<&Self>,
         event: MouseEvent,
-        _window: &WindowRc,
+        _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &i_slint_core::items::ItemRc,
     ) -> InputEventResult {
         if !self.enabled() {
             return InputEventResult::EventIgnored;
         }
-        if let MouseEvent::MouseReleased { pos, .. } = event {
-            if euclid::rect(0., 0., self.width(), self.height()).contains(pos) {
+        if let MouseEvent::Released { position, .. } = event {
+            if LogicalRect::new(
+                LogicalPoint::default(),
+                LogicalSize::from_lengths(self.width(), self.height()),
+            )
+            .contains(position)
+            {
                 Self::FIELD_OFFSETS.checked.apply_pin(self).set(!self.checked());
                 Self::FIELD_OFFSETS.toggled.apply_pin(self).call(&())
             }
@@ -77,26 +90,57 @@ impl Item for NativeCheckBox {
         InputEventResult::EventAccepted
     }
 
-    fn key_event(self: Pin<&Self>, _: &KeyEvent, _window: &WindowRc) -> KeyEventResult {
-        KeyEventResult::EventIgnored
+    fn key_event(
+        self: Pin<&Self>,
+        event: &KeyEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> KeyEventResult {
+        match event.event_type {
+            KeyEventType::KeyPressed if event.text == " " || event.text == "\n" => {
+                Self::FIELD_OFFSETS.checked.apply_pin(self).set(!self.checked());
+                Self::FIELD_OFFSETS.toggled.apply_pin(self).call(&());
+                KeyEventResult::EventAccepted
+            }
+            KeyEventType::KeyPressed => KeyEventResult::EventIgnored,
+            KeyEventType::KeyReleased => KeyEventResult::EventIgnored,
+            KeyEventType::UpdateComposition | KeyEventType::CommitComposition => {
+                KeyEventResult::EventIgnored
+            }
+        }
     }
 
-    fn focus_event(self: Pin<&Self>, _: &FocusEvent, _window: &WindowRc) -> FocusEventResult {
-        FocusEventResult::FocusIgnored
+    fn focus_event(
+        self: Pin<&Self>,
+        event: &FocusEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> FocusEventResult {
+        if self.enabled() {
+            Self::FIELD_OFFSETS
+                .has_focus
+                .apply_pin(self)
+                .set(event == &FocusEvent::FocusIn || event == &FocusEvent::WindowReceivedFocus);
+            FocusEventResult::FocusAccepted
+        } else {
+            FocusEventResult::FocusIgnored
+        }
     }
 
     fn_render! { this dpr size painter widget initial_state =>
         let checked: bool = this.checked();
         let enabled = this.enabled();
+        let has_focus = this.has_focus();
         let text: qttypes::QString = this.text().as_str().into();
 
         cpp!(unsafe [
-            painter as "QPainter*",
+            painter as "QPainterPtr*",
             widget as "QWidget*",
             enabled as "bool",
             text as "QString",
             size as "QSize",
             checked as "bool",
+            has_focus as "bool",
             dpr as "float",
             initial_state as "int"
         ] {
@@ -110,7 +154,10 @@ impl Item for NativeCheckBox {
             } else {
                 option.palette.setCurrentColorGroup(QPalette::Disabled);
             }
-            qApp->style()->drawControl(QStyle::CE_CheckBox, &option, painter, widget);
+            if (has_focus) {
+                option.state |= QStyle::State_HasFocus | QStyle::State_KeyboardFocusChange | QStyle::State_Item;
+            }
+            qApp->style()->drawControl(QStyle::CE_CheckBox, &option, painter->get(), widget);
         });
     }
 }

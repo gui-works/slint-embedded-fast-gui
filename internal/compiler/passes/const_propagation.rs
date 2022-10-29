@@ -4,6 +4,7 @@
 //! Try to simplify property bindings by propagating constant expressions
 
 use crate::expression_tree::*;
+use crate::langtype::ElementType;
 use crate::langtype::Type;
 use crate::object_tree::*;
 
@@ -20,7 +21,9 @@ pub fn const_propagation(component: &Component) {
 fn simplify_expression(expr: &mut Expression) -> bool {
     match expr {
         Expression::PropertyReference(nr) => {
-            if nr.is_constant() {
+            if nr.is_constant()
+                && !matches!(nr.ty(), Type::Struct { name: Some(name), .. } if name.ends_with("::StateInfo"))
+            {
                 // Inline the constant value
                 if let Some(result) = extract_constant_property_reference(nr) {
                     *expr = result;
@@ -47,7 +50,18 @@ fn simplify_expression(expr: &mut Expression) -> bool {
                 {
                     Some(Expression::NumberLiteral(*a - *b, *un1))
                 }
-                // TODO: * and / are more complicated because they need to take care about units
+                ('*', Expression::NumberLiteral(a, un1), Expression::NumberLiteral(b, un2))
+                    if *un1 == Unit::None || *un2 == Unit::None =>
+                {
+                    let preserved_unit = if *un1 == Unit::None { *un2 } else { *un1 };
+                    Some(Expression::NumberLiteral(*a * *b, preserved_unit))
+                }
+                (
+                    '/',
+                    Expression::NumberLiteral(a, un1),
+                    Expression::NumberLiteral(b, Unit::None),
+                ) => Some(Expression::NumberLiteral(*a / *b, *un1)),
+                // TODO: take care of * and / when both numbers have units
                 ('=' | '!', Expression::NumberLiteral(a, _), Expression::NumberLiteral(b, _)) => {
                     Some(Expression::BoolLiteral((a == b) == (*op == '=')))
                 }
@@ -139,7 +153,7 @@ fn extract_constant_property_reference(nr: &NamedReference) -> Option<Expression
             if let Some(alias) = &decl.is_alias {
                 return extract_constant_property_reference(alias);
             }
-        } else if let Type::Component(c) = &element.clone().borrow().base_type {
+        } else if let ElementType::Component(c) = &element.clone().borrow().base_type {
             element = c.root_element.clone();
             continue;
         }

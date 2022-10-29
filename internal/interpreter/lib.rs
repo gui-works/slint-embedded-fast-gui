@@ -66,9 +66,9 @@ instance.run();
 #![warn(missing_docs)]
 #![doc(html_logo_url = "https://slint-ui.com/logo/slint-logo-square-light.svg")]
 
-#[cfg(not(feature = "compat-0-2-0"))]
+#[cfg(not(feature = "compat-0-3-0"))]
 compile_error!(
-    "The feature `compat-0-2-0` must be enabled to ensure \
+    "The feature `compat-0-3-0` must be enabled to ensure \
     forward compatibility with future version of this crate"
 );
 
@@ -78,21 +78,10 @@ mod dynamic_type;
 mod eval;
 mod eval_layout;
 mod global_component;
-#[cfg(doc)]
-pub mod migration;
 mod value_model;
 
 #[doc(inline)]
 pub use api::*;
-
-/// This function can be used to register a custom TrueType font with Slint,
-/// for use with the `font-family` property. The provided path must refer to a valid TrueType
-/// font.
-pub(crate) fn register_font_from_path<P: AsRef<std::path::Path>>(
-    path: P,
-) -> Result<(), Box<dyn std::error::Error>> {
-    i_slint_backend_selector::backend().register_font_from_path(path.as_ref())
-}
 
 /// (Re-export from corelib.)
 #[doc(inline)]

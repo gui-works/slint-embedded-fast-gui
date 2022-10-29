@@ -5,60 +5,85 @@
 */
 #![warn(missing_docs)]
 
-use crate::graphics::Point;
-use crate::item_tree::{ItemVisitorResult, VisitChildrenResult};
-use crate::items::{ItemRc, ItemRef, ItemWeak, PointerEventButton};
-use crate::window::WindowRc;
+use crate::item_tree::{ItemRc, ItemWeak, VisitChildrenResult};
+pub use crate::items::PointerEventButton;
+use crate::items::{ItemRef, TextCursorDirection};
+use crate::lengths::{LogicalPoint, LogicalVector};
+use crate::timers::Timer;
+use crate::window::{WindowAdapter, WindowInner};
 use crate::Property;
 use crate::{component::ComponentRc, SharedString};
 use alloc::rc::Rc;
 use alloc::vec::Vec;
 use const_field_offset::FieldOffsets;
 use core::pin::Pin;
-use euclid::default::Vector2D;
 
-/// A Mouse event
+/// A mouse or touch event
+///
+/// The only difference with [`crate::api::WindowEvent`] us that it uses untyped `Point`
+/// TODO: merge with api::WindowEvent
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[allow(missing_docs)]
 pub enum MouseEvent {
-    /// The mouse was pressed
-    MousePressed { pos: Point, button: PointerEventButton },
-    /// The mouse was released
-    MouseReleased { pos: Point, button: PointerEventButton },
-    /// The mouse position has changed
-    MouseMoved { pos: Point },
+    /// The mouse or finger was pressed
+    Pressed { position: LogicalPoint, button: PointerEventButton },
+    /// The mouse or finger was released
+    Released { position: LogicalPoint, button: PointerEventButton },
+    /// The position of the pointer has changed
+    Moved { position: LogicalPoint },
     /// Wheel was operated.
     /// `pos` is the position of the mouse when the event happens.
-    /// `delta` is the amount of pixel to scroll.
-    MouseWheel { pos: Point, delta: Point },
+    /// `delta_x` is the amount of pixels to scroll in horizontal direction,
+    /// `delta_y` is the amount of pixels to scroll in vertical direction.
+    Wheel { position: LogicalPoint, delta_x: f32, delta_y: f32 },
     /// The mouse exited the item or component
-    MouseExit,
+    Exit,
 }
 
 impl MouseEvent {
-    /// The position of the cursor
-    pub fn pos(&self) -> Option<Point> {
+    /// The position of the cursor for this event, if any
+    pub fn position(&self) -> Option<LogicalPoint> {
         match self {
-            MouseEvent::MousePressed { pos, .. } => Some(*pos),
-            MouseEvent::MouseReleased { pos, .. } => Some(*pos),
-            MouseEvent::MouseMoved { pos } => Some(*pos),
-            MouseEvent::MouseWheel { pos, .. } => Some(*pos),
-            MouseEvent::MouseExit => None,
+            MouseEvent::Pressed { position, .. } => Some(*position),
+            MouseEvent::Released { position, .. } => Some(*position),
+            MouseEvent::Moved { position } => Some(*position),
+            MouseEvent::Wheel { position, .. } => Some(*position),
+            MouseEvent::Exit => None,
         }
     }
 
     /// Translate the position by the given value
-    pub fn translate(&mut self, vec: Vector2D<f32>) {
+    pub fn translate(&mut self, vec: LogicalVector) {
         let pos = match self {
-            MouseEvent::MousePressed { pos, .. } => Some(pos),
-            MouseEvent::MouseReleased { pos, .. } => Some(pos),
-            MouseEvent::MouseMoved { pos } => Some(pos),
-            MouseEvent::MouseWheel { pos, .. } => Some(pos),
-            MouseEvent::MouseExit => None,
+            MouseEvent::Pressed { position, .. } => Some(position),
+            MouseEvent::Released { position, .. } => Some(position),
+            MouseEvent::Moved { position } => Some(position),
+            MouseEvent::Wheel { position, .. } => Some(position),
+            MouseEvent::Exit => None,
         };
         if let Some(pos) = pos {
             *pos += vec;
+        }
+    }
+}
+
+impl From<crate::api::WindowEvent> for MouseEvent {
+    fn from(event: crate::api::WindowEvent) -> Self {
+        match event {
+            crate::api::WindowEvent::PointerPressed { position, button } => {
+                MouseEvent::Pressed { position: position.to_euclid().cast(), button }
+            }
+            crate::api::WindowEvent::PointerReleased { position, button } => {
+                MouseEvent::Released { position: position.to_euclid().cast(), button }
+            }
+            crate::api::WindowEvent::PointerMoved { position } => {
+                MouseEvent::Moved { position: position.to_euclid().cast() }
+            }
+            crate::api::WindowEvent::PointerScrolled { position, delta_x, delta_y } => {
+                MouseEvent::Wheel { position: position.to_euclid().cast(), delta_x, delta_y }
+            }
+            crate::api::WindowEvent::PointerExited => MouseEvent::Exit,
         }
     }
 }
@@ -89,7 +114,7 @@ impl Default for InputEventResult {
 /// can specify how to further process the event.
 /// See [`crate::items::ItemVTable::input_event_filter_before_children`].
 #[repr(C)]
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum InputEventFilterResult {
     /// The event is going to be forwarded to children, then the [`crate::items::ItemVTable::input_event`]
     /// function is called
@@ -98,11 +123,20 @@ pub enum InputEventFilterResult {
     /// going to be called for this item
     ForwardAndIgnore,
     /// Just like `ForwardEvent`, but even in the case the children grabs the mouse, this function
-    /// Will still be called for further event.
+    /// will still be called for further event
     ForwardAndInterceptGrab,
-    /// The Event will not be forwarded to children, if a children already had the grab, the
-    /// grab will be cancelled with a [`MouseEvent::MouseExit`] event
+    /// The event will not be forwarded to children, if a children already had the grab, the
+    /// grab will be cancelled with a [`MouseEvent::Exit`] event
     Intercept,
+    /// Similar to `Intercept` but the contained [`MouseEvent`] will be forwarded to children
+    InterceptAndDispatch(MouseEvent),
+    /// The event will be forwarding to the children with a delay (in milliseconds), unless it is
+    /// being intercepted.
+    /// This is what happens when the flickable wants to delay the event.
+    /// This should only be used for Press event, and the event will be sent after the delay, or
+    /// if a release event is seen before that delay
+    //(Can't use core::time::Duration because it is not repr(c))
+    DelayForwarding(u64),
 }
 
 impl Default for InputEventFilterResult {
@@ -142,19 +176,24 @@ pub struct KeyboardModifiers {
     pub shift: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, strum::EnumString, strum::Display)]
-#[repr(C)]
 /// This enum defines the different kinds of key events that can happen.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(C)]
 pub enum KeyEventType {
     /// A key on a keyboard was pressed.
     KeyPressed,
     /// A key on a keyboard was released.
     KeyReleased,
+    /// The input method updates the currently composed text. The KeyEvent's text field is the pre-edit text and
+    /// composition_selection specifies the placement of the cursor within the pre-edit text.
+    UpdateComposition,
+    /// The input method replaces the currently composed text with the final result of the composition.
+    CommitComposition,
 }
 
 impl Default for KeyEventType {
     fn default() -> Self {
-        Self::KeyPressed
+        KeyEventType::KeyPressed
     }
 }
 
@@ -170,6 +209,165 @@ pub struct KeyEvent {
     // note: this field is not exported in the .slint in the KeyEvent builtin struct
     /// Indicates whether the key was pressed or released
     pub event_type: KeyEventType,
+
+    /// If the event type is KeyEventType::UpdateComposition, then this field specifies
+    /// the start of the selection as byte offsets within the preedit text.
+    pub preedit_selection_start: usize,
+    /// If the event type is KeyEventType::UpdateComposition, then this field specifies
+    /// the end of the selection as byte offsets within the preedit text.
+    pub preedit_selection_end: usize,
+}
+
+impl KeyEvent {
+    /// If a shortcut was pressed, this function returns `Some(StandardShortcut)`.
+    /// Otherwise it returns None.
+    pub fn shortcut(&self) -> Option<StandardShortcut> {
+        if self.modifiers.control && !self.modifiers.shift {
+            match self.text.as_str() {
+                "c" => Some(StandardShortcut::Copy),
+                "x" => Some(StandardShortcut::Cut),
+                "v" => Some(StandardShortcut::Paste),
+                "a" => Some(StandardShortcut::SelectAll),
+                "f" => Some(StandardShortcut::Find),
+                "s" => Some(StandardShortcut::Save),
+                "p" => Some(StandardShortcut::Print),
+                "z" => Some(StandardShortcut::Undo),
+                #[cfg(target_os = "windows")]
+                "y" => Some(StandardShortcut::Redo),
+                "r" => Some(StandardShortcut::Refresh),
+                _ => None,
+            }
+        } else if self.modifiers.control && self.modifiers.shift {
+            match self.text.as_str() {
+                #[cfg(not(target_os = "windows"))]
+                "z" => Some(StandardShortcut::Redo),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    /// If a shortcut concerning text editing was pressed, this function
+    /// returns `Some(TextShortcut)`. Otherwise it returns None.
+    pub fn text_shortcut(&self) -> Option<TextShortcut> {
+        let keycode = self.text.chars().next()?;
+
+        let move_mod = if cfg!(target_os = "macos") {
+            self.modifiers.alt && !self.modifiers.control && !self.modifiers.meta
+        } else {
+            self.modifiers.control && !self.modifiers.alt && !self.modifiers.meta
+        };
+
+        if move_mod {
+            match keycode {
+                key_codes::LeftArrow => {
+                    return Some(TextShortcut::Move(TextCursorDirection::BackwardByWord))
+                }
+                key_codes::RightArrow => {
+                    return Some(TextShortcut::Move(TextCursorDirection::ForwardByWord))
+                }
+                key_codes::UpArrow => {
+                    return Some(TextShortcut::Move(TextCursorDirection::StartOfParagraph))
+                }
+                key_codes::DownArrow => {
+                    return Some(TextShortcut::Move(TextCursorDirection::EndOfParagraph))
+                }
+                key_codes::Backspace => {
+                    return Some(TextShortcut::DeleteWordBackward);
+                }
+                key_codes::Delete => {
+                    return Some(TextShortcut::DeleteWordForward);
+                }
+                _ => (),
+            };
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            if self.modifiers.control && !self.modifiers.alt && !self.modifiers.meta {
+                match keycode {
+                    key_codes::Home => {
+                        return Some(TextShortcut::Move(TextCursorDirection::StartOfText))
+                    }
+                    key_codes::End => {
+                        return Some(TextShortcut::Move(TextCursorDirection::EndOfText))
+                    }
+                    _ => (),
+                };
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            if self.modifiers.control {
+                match keycode {
+                    key_codes::LeftArrow => {
+                        return Some(TextShortcut::Move(TextCursorDirection::StartOfLine))
+                    }
+                    key_codes::RightArrow => {
+                        return Some(TextShortcut::Move(TextCursorDirection::EndOfLine))
+                    }
+                    key_codes::UpArrow => {
+                        return Some(TextShortcut::Move(TextCursorDirection::StartOfText))
+                    }
+                    key_codes::DownArrow => {
+                        return Some(TextShortcut::Move(TextCursorDirection::EndOfText))
+                    }
+                    _ => (),
+                };
+            }
+        }
+
+        match TextCursorDirection::try_from(keycode) {
+            Ok(direction) => return Some(TextShortcut::Move(direction)),
+            _ => (),
+        };
+
+        match keycode {
+            key_codes::Backspace => Some(TextShortcut::DeleteBackward),
+            key_codes::Delete => Some(TextShortcut::DeleteForward),
+            _ => None,
+        }
+    }
+}
+
+/// Represents a non context specific shortcut.
+pub enum StandardShortcut {
+    /// Copy Something
+    Copy,
+    /// Cut Something
+    Cut,
+    /// Paste Something
+    Paste,
+    /// Select All
+    SelectAll,
+    /// Find/Search Something
+    Find,
+    /// Save Something
+    Save,
+    /// Print Something
+    Print,
+    /// Undo the last action
+    Undo,
+    /// Redo the last undone action
+    Redo,
+    /// Refresh
+    Refresh,
+}
+
+/// Shortcuts that are used when editing text
+pub enum TextShortcut {
+    /// Move the cursor
+    Move(TextCursorDirection),
+    /// Delete the Character to the right of the cursor
+    DeleteForward,
+    /// Delete the Character to the left of the cursor (aka Backspace).
+    DeleteBackward,
+    /// Delete the word to the right of the cursor
+    DeleteWordForward,
+    /// Delete the word to the left of the cursor (aka Ctrl + Backspace).
+    DeleteWordBackward,
 }
 
 /// Represents how an item's key_event handler dealt with a key event.
@@ -217,12 +415,13 @@ pub struct MouseInputState {
     item_stack: Vec<(ItemWeak, InputEventFilterResult)>,
     /// true if the top item of the stack has the mouse grab
     grabbed: bool,
+    delayed: Option<(crate::timers::Timer, MouseEvent)>,
 }
 
 /// Try to handle the mouse grabber. Return true if the event has handled, or false otherwise
 fn handle_mouse_grab(
     mouse_event: &MouseEvent,
-    window: &WindowRc,
+    window_adapter: &Rc<dyn WindowAdapter>,
     mouse_input_state: &mut MouseInputState,
 ) -> bool {
     if !mouse_input_state.grabbed || mouse_input_state.item_stack.is_empty() {
@@ -244,15 +443,24 @@ fn handle_mouse_grab(
             return false;
         };
         if intercept {
-            item.borrow().as_ref().input_event(MouseEvent::MouseExit, window, &item);
+            item.borrow().as_ref().input_event(MouseEvent::Exit, window_adapter, &item);
             return false;
         }
-        let g = item.borrow().as_ref().geometry();
+        let g = item.geometry();
         event.translate(-g.origin.to_vector());
 
-        if it.1 == InputEventFilterResult::ForwardAndInterceptGrab
-            && item.borrow().as_ref().input_event_filter_before_children(event, window, &item)
-                == InputEventFilterResult::Intercept
+        let interested = matches!(
+            it.1,
+            InputEventFilterResult::ForwardAndInterceptGrab
+                | InputEventFilterResult::DelayForwarding(_)
+        );
+
+        if interested
+            && item.borrow().as_ref().input_event_filter_before_children(
+                event,
+                window_adapter,
+                &item,
+            ) == InputEventFilterResult::Intercept
         {
             intercept = true;
         }
@@ -263,10 +471,10 @@ fn handle_mouse_grab(
     }
 
     let grabber = mouse_input_state.item_stack.last().unwrap().0.upgrade().unwrap();
-    let input_result = grabber.borrow().as_ref().input_event(event, window, &grabber);
+    let input_result = grabber.borrow().as_ref().input_event(event, window_adapter, &grabber);
     if input_result != InputEventResult::GrabMouse {
         mouse_input_state.grabbed = false;
-        send_exit_events(mouse_input_state, mouse_event.pos(), window);
+        send_exit_events(mouse_input_state, mouse_event.position(), window_adapter);
     }
 
     true
@@ -274,18 +482,18 @@ fn handle_mouse_grab(
 
 fn send_exit_events(
     mouse_input_state: &MouseInputState,
-    mut pos: Option<Point>,
-    window: &WindowRc,
+    mut pos: Option<LogicalPoint>,
+    window_adapter: &Rc<dyn WindowAdapter>,
 ) {
     for it in mouse_input_state.item_stack.iter() {
         let item = if let Some(item) = it.0.upgrade() { item } else { break };
-        let g = item.borrow().as_ref().geometry();
+        let g = item.geometry();
         let contains = pos.map_or(false, |p| g.contains(p));
         if let Some(p) = pos.as_mut() {
             *p -= g.origin.to_vector();
         }
         if !contains {
-            item.borrow().as_ref().input_event(MouseEvent::MouseExit, window, &item);
+            item.borrow().as_ref().input_event(MouseEvent::Exit, window_adapter, &item);
         }
     }
 }
@@ -296,93 +504,173 @@ fn send_exit_events(
 pub fn process_mouse_input(
     component: ComponentRc,
     mouse_event: MouseEvent,
-    window: &WindowRc,
+    window_adapter: &Rc<dyn WindowAdapter>,
     mut mouse_input_state: MouseInputState,
 ) -> MouseInputState {
-    if handle_mouse_grab(&mouse_event, window, &mut mouse_input_state) {
+    if matches!(mouse_event, MouseEvent::Released { .. }) {
+        mouse_input_state = process_delayed_event(window_adapter, mouse_input_state);
+    }
+
+    if handle_mouse_grab(&mouse_event, window_adapter, &mut mouse_input_state) {
         return mouse_input_state;
     }
 
-    send_exit_events(&mouse_input_state, mouse_event.pos(), window);
-
     let mut result = MouseInputState::default();
-    type State = (Vector2D<f32>, Vec<(ItemWeak, InputEventFilterResult)>);
-    crate::item_tree::visit_items_with_post_visit(
-        &component,
-        crate::item_tree::TraversalOrder::FrontToBack,
-        |comp_rc: &ComponentRc,
-         item: core::pin::Pin<ItemRef>,
-         item_index: usize,
-         (offset, mouse_grabber_stack): &State| {
-            let item_rc = ItemRc::new(comp_rc.clone(), item_index);
+    let root = ItemRc::new(component.clone(), 0);
+    let r = send_mouse_event_to_item(mouse_event, root, window_adapter, &mut result, false);
+    if mouse_input_state.delayed.is_some() && !r.has_aborted() {
+        // Keep the delayed event
+        return mouse_input_state;
+    }
+    send_exit_events(&mouse_input_state, mouse_event.position(), window_adapter);
 
-            let geom = item.as_ref().geometry();
-            let geom = geom.translate(*offset);
-
-            let mut mouse_grabber_stack = mouse_grabber_stack.clone();
-
-            let post_visit_state = if mouse_event.pos().map_or(false, |p| geom.contains(p))
-                || crate::item_rendering::is_clipping_item(item)
-            {
-                let mut event2 = mouse_event;
-                event2.translate(-geom.origin.to_vector());
-                let filter_result =
-                    item.as_ref().input_event_filter_before_children(event2, window, &item_rc);
-                mouse_grabber_stack.push((item_rc.downgrade(), filter_result));
-                match filter_result {
-                    InputEventFilterResult::ForwardAndIgnore => None,
-                    InputEventFilterResult::ForwardEvent => {
-                        Some((event2, mouse_grabber_stack.clone(), item_rc, false))
-                    }
-                    InputEventFilterResult::ForwardAndInterceptGrab => {
-                        Some((event2, mouse_grabber_stack.clone(), item_rc, false))
-                    }
-                    InputEventFilterResult::Intercept => {
-                        return (
-                            ItemVisitorResult::Abort,
-                            Some((event2, mouse_grabber_stack, item_rc, true)),
-                        )
-                    }
-                }
-            } else {
-                mouse_grabber_stack
-                    .push((item_rc.downgrade(), InputEventFilterResult::ForwardAndIgnore));
-                None
-            };
-
-            (
-                ItemVisitorResult::Continue((geom.origin.to_vector(), mouse_grabber_stack)),
-                post_visit_state,
-            )
-        },
-        |_, item, post_state, r| {
-            if let Some((event2, mouse_grabber_stack, item_rc, intercept)) = post_state {
-                if r.has_aborted() && !intercept {
-                    return r;
-                }
-                match item.as_ref().input_event(event2, window, &item_rc) {
-                    InputEventResult::EventAccepted => {
-                        result.item_stack = mouse_grabber_stack;
-                        result.grabbed = false;
-                        return VisitChildrenResult::abort(item_rc.index(), 0);
-                    }
-                    InputEventResult::EventIgnored => {
-                        return VisitChildrenResult::CONTINUE;
-                    }
-                    InputEventResult::GrabMouse => {
-                        result.item_stack = mouse_grabber_stack;
-                        result.item_stack.last_mut().unwrap().1 =
-                            InputEventFilterResult::ForwardAndInterceptGrab;
-                        result.grabbed = true;
-                        return VisitChildrenResult::abort(item_rc.index(), 0);
-                    }
-                }
-            }
-            r
-        },
-        (Vector2D::new(0., 0.), Vec::new()),
-    );
     result
+}
+
+pub(crate) fn process_delayed_event(
+    window_adapter: &Rc<dyn WindowAdapter>,
+    mut mouse_input_state: MouseInputState,
+) -> MouseInputState {
+    // the take bellow will also destroy the Timer
+    let event = match mouse_input_state.delayed.take() {
+        Some(e) => e.1,
+        None => return mouse_input_state,
+    };
+
+    let top_item = match mouse_input_state.item_stack.last().unwrap().0.upgrade() {
+        Some(i) => i,
+        None => return MouseInputState::default(),
+    };
+
+    let mut actual_visitor =
+        |component: &ComponentRc, index: usize, _: Pin<ItemRef>| -> VisitChildrenResult {
+            send_mouse_event_to_item(
+                event,
+                ItemRc::new(component.clone(), index),
+                window_adapter,
+                &mut mouse_input_state,
+                true,
+            )
+        };
+    vtable::new_vref!(let mut actual_visitor : VRefMut<crate::item_tree::ItemVisitorVTable> for crate::item_tree::ItemVisitor = &mut actual_visitor);
+    vtable::VRc::borrow_pin(&top_item.component()).as_ref().visit_children_item(
+        top_item.index() as isize,
+        crate::item_tree::TraversalOrder::FrontToBack,
+        actual_visitor,
+    );
+    mouse_input_state
+}
+
+fn send_mouse_event_to_item(
+    mouse_event: MouseEvent,
+    item_rc: ItemRc,
+    window_adapter: &Rc<dyn WindowAdapter>,
+    result: &mut MouseInputState,
+    ignore_delays: bool,
+) -> VisitChildrenResult {
+    let item = item_rc.borrow();
+    let geom = item_rc.geometry();
+    // translated in our coordinate
+    let mut event_for_children = mouse_event;
+    event_for_children.translate(-geom.origin.to_vector());
+
+    let filter_result = if mouse_event.position().map_or(false, |p| geom.contains(p))
+        || crate::item_rendering::is_clipping_item(item)
+    {
+        item.as_ref().input_event_filter_before_children(
+            event_for_children,
+            window_adapter,
+            &item_rc,
+        )
+    } else {
+        InputEventFilterResult::ForwardAndIgnore
+    };
+
+    let (forward_to_children, ignore) = match filter_result {
+        InputEventFilterResult::ForwardEvent => (true, false),
+        InputEventFilterResult::ForwardAndIgnore => (true, true),
+        InputEventFilterResult::ForwardAndInterceptGrab => (true, false),
+        InputEventFilterResult::Intercept => (false, false),
+        InputEventFilterResult::InterceptAndDispatch(new_event) => {
+            event_for_children = new_event;
+            (true, false)
+        }
+        InputEventFilterResult::DelayForwarding(_) if ignore_delays => (true, false),
+        InputEventFilterResult::DelayForwarding(duration) => {
+            let timer = Timer::default();
+            let w = Rc::downgrade(window_adapter);
+            timer.start(
+                crate::timers::TimerMode::SingleShot,
+                core::time::Duration::from_millis(duration),
+                move || {
+                    if let Some(w) = w.upgrade() {
+                        WindowInner::from_pub(w.window()).process_delayed_event();
+                    }
+                },
+            );
+            result.delayed = Some((timer, event_for_children));
+            result
+                .item_stack
+                .push((item_rc.downgrade(), InputEventFilterResult::DelayForwarding(duration)));
+            return VisitChildrenResult::abort(item_rc.index(), 0);
+        }
+    };
+
+    result.item_stack.push((item_rc.downgrade(), filter_result));
+    if forward_to_children {
+        let mut actual_visitor =
+            |component: &ComponentRc, index: usize, _: Pin<ItemRef>| -> VisitChildrenResult {
+                send_mouse_event_to_item(
+                    event_for_children,
+                    ItemRc::new(component.clone(), index),
+                    window_adapter,
+                    result,
+                    ignore_delays,
+                )
+            };
+        vtable::new_vref!(let mut actual_visitor : VRefMut<crate::item_tree::ItemVisitorVTable> for crate::item_tree::ItemVisitor = &mut actual_visitor);
+        let r = vtable::VRc::borrow_pin(&item_rc.component()).as_ref().visit_children_item(
+            item_rc.index() as isize,
+            crate::item_tree::TraversalOrder::FrontToBack,
+            actual_visitor,
+        );
+        if r.has_aborted() {
+            // the event was intercepted by a children
+            if matches!(filter_result, InputEventFilterResult::InterceptAndDispatch(_)) {
+                let mut event = mouse_event;
+                event.translate(-geom.origin.to_vector());
+                item.as_ref().input_event(event, window_adapter, &item_rc);
+            }
+            return r;
+        }
+    };
+
+    let r = if ignore {
+        InputEventResult::EventIgnored
+    } else {
+        let mut event = mouse_event;
+        event.translate(-geom.origin.to_vector());
+        item.as_ref().input_event(event, window_adapter, &item_rc)
+    };
+    match r {
+        InputEventResult::EventAccepted => {
+            return VisitChildrenResult::abort(item_rc.index(), 0);
+        }
+        InputEventResult::EventIgnored => {
+            let _pop = result.item_stack.pop();
+            debug_assert_eq!(
+                _pop.map(|x| (x.0.upgrade().unwrap().index(), x.1)).unwrap(),
+                (item_rc.index(), filter_result)
+            );
+            return VisitChildrenResult::CONTINUE;
+        }
+        InputEventResult::GrabMouse => {
+            result.item_stack.last_mut().unwrap().1 =
+                InputEventFilterResult::ForwardAndInterceptGrab;
+            result.grabbed = true;
+            return VisitChildrenResult::abort(item_rc.index(), 0);
+        }
+    }
 }
 
 /// The TextCursorBlinker takes care of providing a toggled boolean property

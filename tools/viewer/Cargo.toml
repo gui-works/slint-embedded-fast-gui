@@ -3,7 +3,7 @@
 
 [package]
 name = "slint-viewer"
-version = "0.2.2"
+version = "0.3.2"
 authors = ["Slint Developers <info@slint-ui.com>"]
 edition = "2021"
 license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
@@ -15,26 +15,39 @@ keywords = ["viewer", "gui", "ui", "toolkit"]
 
 [features]
 backend-qt = ["slint-interpreter/backend-qt"]
-backend-gl-all = ["slint-interpreter/backend-gl-all"]
-backend-gl-wayland = ["slint-interpreter/backend-gl-wayland"]
-backend-gl-x11 = ["slint-interpreter/backend-gl-x11"]
+eventloop-qt = ["backend-qt"]
+renderer-winit-qt = ["backend-qt"]
 
-default = ["backend-qt", "backend-gl-all"]
+backend-winit = ["slint-interpreter/backend-winit"]
+backend-winit-wayland = ["slint-interpreter/backend-winit-wayland"]
+backend-winit-x11 = ["slint-interpreter/backend-winit-x11"]
+
+renderer-winit-femtovg = ["slint-interpreter/renderer-winit-femtovg"]
+renderer-winit-skia = ["slint-interpreter/renderer-winit-skia"]
+renderer-winit-skia-opengl = ["slint-interpreter/renderer-winit-skia-opengl"]
+
+# Compat
+backend-gl-all = ["backend-winit", "renderer-winit-femtovg"]
+backend-gl-wayland = ["backend-winit-wayland", "renderer-winit-femtovg"]
+backend-gl-x11 = ["backend-winit-x11", "renderer-winit-femtovg"]
+
+default = ["backend-qt", "backend-winit", "renderer-winit-femtovg"]
 
 [dependencies]
-i-slint-core = { version = "=0.2.2", path="../../internal/core" }
-slint-interpreter = { version = "=0.2.2", path = "../../internal/interpreter", default-features = false, features = ["display-diagnostics", "compat-0-2-0"] }
-i-slint-backend-selector = { version = "=0.2.2", path="../../internal/backends/selector" }
+i-slint-core = { version = "=0.3.2", path="../../internal/core" }
+slint-interpreter = { version = "=0.3.2", path = "../../internal/interpreter", default-features = false, features = ["display-diagnostics", "compat-0-3-0"] }
+i-slint-backend-selector = { version = "=0.3.2", path="../../internal/backends/selector" }
 
 vtable = { version = "0.1.6", path="../../helper_crates/vtable" }
 
-clap = { version = "3.1", features = ["derive", "wrap_help"] }
+clap = { version = "4.0", features = ["derive", "wrap_help"] }
 codemap = "0.1"
 codemap-diagnostic = "0.1.1"
-notify = "4.0.15"
+notify = { version = "5.0.0", default-features = false, features = ["macos_kqueue"] }
 serde_json = "1"
 shlex = "1"
 spin_on = "0.1"
+env_logger = "0.9.0"
 
 [[bin]]
 name = "slint-viewer"

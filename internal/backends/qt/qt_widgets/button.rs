@@ -1,6 +1,8 @@
 // Copyright © SixtyFPS GmbH <info@slint-ui.com>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
+// cSpell: ignore qstyle unshade
+
 use super::*;
 
 #[allow(nonstandard_style)]
@@ -90,7 +92,10 @@ mod standard_button {
     pub type QStyle_StandardPixmap = ::std::os::raw::c_uint;
 }
 
-use i_slint_core::{input::FocusEventResult, items::StandardButtonKind};
+use i_slint_core::{
+    input::{FocusEventResult, KeyEventType},
+    items::StandardButtonKind,
+};
 use standard_button::*;
 
 type ActualStandardButtonKind = Option<StandardButtonKind>;
@@ -99,15 +104,18 @@ type ActualStandardButtonKind = Option<StandardButtonKind>;
 #[derive(FieldOffsets, Default, SlintElement)]
 #[pin]
 pub struct NativeButton {
-    pub x: Property<f32>,
-    pub y: Property<f32>,
-    pub width: Property<f32>,
-    pub height: Property<f32>,
+    pub x: Property<LogicalLength>,
+    pub y: Property<LogicalLength>,
+    pub width: Property<LogicalLength>,
+    pub height: Property<LogicalLength>,
     pub text: Property<SharedString>,
     pub icon: Property<i_slint_core::graphics::Image>,
-    pub enabled: Property<bool>,
     pub pressed: Property<bool>,
+    pub checkable: Property<bool>,
+    pub checked: Property<bool>,
+    pub has_focus: Property<bool>,
     pub clicked: Callback<VoidArg>,
+    pub enabled: Property<bool>,
     pub standard_button_kind: Property<StandardButtonKind>,
     pub is_standard_button: Property<bool>,
     pub cached_rendering_data: CachedRenderingData,
@@ -124,17 +132,17 @@ impl NativeButton {
     ) -> qttypes::QString {
         // We would need to use the private API to get the text from QPlatformTheme
         match standard_button_kind {
-            Some(StandardButtonKind::ok) => "OK".into(),
-            Some(StandardButtonKind::cancel) => "Cancel".into(),
-            Some(StandardButtonKind::apply) => "Apply".into(),
-            Some(StandardButtonKind::close) => "Close".into(),
-            Some(StandardButtonKind::reset) => "Reset".into(),
-            Some(StandardButtonKind::help) => "Help".into(),
-            Some(StandardButtonKind::yes) => "Yes".into(),
-            Some(StandardButtonKind::no) => "No".into(),
-            Some(StandardButtonKind::abort) => "Abort".into(),
-            Some(StandardButtonKind::retry) => "Retry".into(),
-            Some(StandardButtonKind::ignore) => "Ignore".into(),
+            Some(StandardButtonKind::Ok) => "OK".into(),
+            Some(StandardButtonKind::Cancel) => "Cancel".into(),
+            Some(StandardButtonKind::Apply) => "Apply".into(),
+            Some(StandardButtonKind::Close) => "Close".into(),
+            Some(StandardButtonKind::Reset) => "Reset".into(),
+            Some(StandardButtonKind::Help) => "Help".into(),
+            Some(StandardButtonKind::Yes) => "Yes".into(),
+            Some(StandardButtonKind::No) => "No".into(),
+            Some(StandardButtonKind::Abort) => "Abort".into(),
+            Some(StandardButtonKind::Retry) => "Retry".into(),
+            Some(StandardButtonKind::Ignore) => "Ignore".into(),
             None => self.text().as_str().into(),
         }
     }
@@ -144,24 +152,20 @@ impl NativeButton {
         standard_button_kind: ActualStandardButtonKind,
     ) -> qttypes::QPixmap {
         let style_icon = match standard_button_kind {
-            Some(StandardButtonKind::ok) => QStyle_StandardPixmap_SP_DialogOkButton,
-            Some(StandardButtonKind::cancel) => QStyle_StandardPixmap_SP_DialogCancelButton,
-            Some(StandardButtonKind::apply) => QStyle_StandardPixmap_SP_DialogApplyButton,
-            Some(StandardButtonKind::close) => QStyle_StandardPixmap_SP_DialogCloseButton,
-            Some(StandardButtonKind::reset) => QStyle_StandardPixmap_SP_DialogResetButton,
-            Some(StandardButtonKind::help) => QStyle_StandardPixmap_SP_DialogHelpButton,
-            Some(StandardButtonKind::yes) => QStyle_StandardPixmap_SP_DialogYesButton,
-            Some(StandardButtonKind::no) => QStyle_StandardPixmap_SP_DialogNoButton,
-            Some(StandardButtonKind::abort) => QStyle_StandardPixmap_SP_DialogAbortButton,
-            Some(StandardButtonKind::retry) => QStyle_StandardPixmap_SP_DialogRetryButton,
-            Some(StandardButtonKind::ignore) => QStyle_StandardPixmap_SP_DialogIgnoreButton,
+            Some(StandardButtonKind::Ok) => QStyle_StandardPixmap_SP_DialogOkButton,
+            Some(StandardButtonKind::Cancel) => QStyle_StandardPixmap_SP_DialogCancelButton,
+            Some(StandardButtonKind::Apply) => QStyle_StandardPixmap_SP_DialogApplyButton,
+            Some(StandardButtonKind::Close) => QStyle_StandardPixmap_SP_DialogCloseButton,
+            Some(StandardButtonKind::Reset) => QStyle_StandardPixmap_SP_DialogResetButton,
+            Some(StandardButtonKind::Help) => QStyle_StandardPixmap_SP_DialogHelpButton,
+            Some(StandardButtonKind::Yes) => QStyle_StandardPixmap_SP_DialogYesButton,
+            Some(StandardButtonKind::No) => QStyle_StandardPixmap_SP_DialogNoButton,
+            Some(StandardButtonKind::Abort) => QStyle_StandardPixmap_SP_DialogAbortButton,
+            Some(StandardButtonKind::Retry) => QStyle_StandardPixmap_SP_DialogRetryButton,
+            Some(StandardButtonKind::Ignore) => QStyle_StandardPixmap_SP_DialogIgnoreButton,
             None => {
-                return crate::qt_window::load_image_from_resource(
-                    (&self.icon()).into(),
-                    None,
-                    Default::default(),
-                )
-                .unwrap_or_default();
+                return crate::qt_window::image_to_pixmap((&self.icon()).into(), None)
+                    .unwrap_or_default();
             }
         };
         cpp!(unsafe [style_icon as "QStyle::StandardPixmap"] -> qttypes::QPixmap as "QPixmap" {
@@ -172,16 +176,32 @@ impl NativeButton {
             return style->standardPixmap(style_icon);
         })
     }
+
+    fn activate(self: Pin<&Self>) {
+        Self::FIELD_OFFSETS.pressed.apply_pin(self).set(false);
+        if self.checkable() {
+            let checked = Self::FIELD_OFFSETS.checked.apply_pin(self);
+            checked.set(!checked.get());
+        }
+        Self::FIELD_OFFSETS.clicked.apply_pin(self).call(&());
+    }
 }
 
 impl Item for NativeButton {
-    fn init(self: Pin<&Self>, _window: &WindowRc) {}
+    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
 
-    fn geometry(self: Pin<&Self>) -> Rect {
-        euclid::rect(self.x(), self.y(), self.width(), self.height())
+    fn geometry(self: Pin<&Self>) -> LogicalRect {
+        LogicalRect::new(
+            LogicalPoint::from_lengths(self.x(), self.y()),
+            LogicalSize::from_lengths(self.width(), self.height()),
+        )
     }
 
-    fn layout_info(self: Pin<&Self>, orientation: Orientation, _window: &WindowRc) -> LayoutInfo {
+    fn layout_info(
+        self: Pin<&Self>,
+        orientation: Orientation,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+    ) -> LayoutInfo {
         let standard_button_kind = self.actual_standard_button_kind();
         let mut text: qttypes::QString = self.actual_text(standard_button_kind);
         let icon: qttypes::QPixmap = self.actual_icon(standard_button_kind);
@@ -216,7 +236,7 @@ impl Item for NativeButton {
     fn input_event_filter_before_children(
         self: Pin<&Self>,
         _: MouseEvent,
-        _window: &WindowRc,
+        _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
         InputEventFilterResult::ForwardEvent
@@ -225,7 +245,7 @@ impl Item for NativeButton {
     fn input_event(
         self: Pin<&Self>,
         event: MouseEvent,
-        _window: &WindowRc,
+        _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &i_slint_core::items::ItemRc,
     ) -> InputEventResult {
         let enabled = self.enabled();
@@ -234,20 +254,25 @@ impl Item for NativeButton {
         }
 
         Self::FIELD_OFFSETS.pressed.apply_pin(self).set(match event {
-            MouseEvent::MousePressed { .. } => true,
-            MouseEvent::MouseExit | MouseEvent::MouseReleased { .. } => false,
-            MouseEvent::MouseMoved { .. } => {
+            MouseEvent::Pressed { .. } => true,
+            MouseEvent::Exit | MouseEvent::Released { .. } => false,
+            MouseEvent::Moved { .. } => {
                 return if self.pressed() {
                     InputEventResult::GrabMouse
                 } else {
                     InputEventResult::EventIgnored
                 }
             }
-            MouseEvent::MouseWheel { .. } => return InputEventResult::EventIgnored,
+            MouseEvent::Wheel { .. } => return InputEventResult::EventIgnored,
         });
-        if let MouseEvent::MouseReleased { pos, .. } = event {
-            if euclid::rect(0., 0., self.width(), self.height()).contains(pos) {
-                Self::FIELD_OFFSETS.clicked.apply_pin(self).call(&());
+        if let MouseEvent::Released { position, .. } = event {
+            if LogicalRect::new(
+                LogicalPoint::default(),
+                LogicalSize::from_lengths(self.width(), self.height()),
+            )
+            .contains(position)
+            {
+                self.activate();
             }
             InputEventResult::EventAccepted
         } else {
@@ -255,29 +280,65 @@ impl Item for NativeButton {
         }
     }
 
-    fn key_event(self: Pin<&Self>, _: &KeyEvent, _window: &WindowRc) -> KeyEventResult {
-        KeyEventResult::EventIgnored
+    fn key_event(
+        self: Pin<&Self>,
+        event: &KeyEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> KeyEventResult {
+        match event.event_type {
+            KeyEventType::KeyPressed if event.text == " " || event.text == "\n" => {
+                Self::FIELD_OFFSETS.pressed.apply_pin(self).set(true);
+                KeyEventResult::EventAccepted
+            }
+            KeyEventType::KeyPressed => KeyEventResult::EventIgnored,
+            KeyEventType::KeyReleased if event.text == " " || event.text == "\n" => {
+                self.activate();
+                KeyEventResult::EventAccepted
+            }
+            KeyEventType::KeyReleased => KeyEventResult::EventIgnored,
+            KeyEventType::UpdateComposition | KeyEventType::CommitComposition => {
+                KeyEventResult::EventIgnored
+            }
+        }
     }
 
-    fn focus_event(self: Pin<&Self>, _: &FocusEvent, _window: &WindowRc) -> FocusEventResult {
-        FocusEventResult::FocusIgnored
+    fn focus_event(
+        self: Pin<&Self>,
+        event: &FocusEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> FocusEventResult {
+        if self.enabled() {
+            Self::FIELD_OFFSETS
+                .has_focus
+                .apply_pin(self)
+                .set(event == &FocusEvent::FocusIn || event == &FocusEvent::WindowReceivedFocus);
+            FocusEventResult::FocusAccepted
+        } else {
+            FocusEventResult::FocusIgnored
+        }
     }
 
     fn_render! { this dpr size painter widget initial_state =>
         let down: bool = this.pressed();
+        let checked: bool = this.checked();
         let standard_button_kind = this.actual_standard_button_kind();
         let text: qttypes::QString = this.actual_text(standard_button_kind);
         let icon: qttypes::QPixmap = this.actual_icon(standard_button_kind);
         let enabled = this.enabled();
+        let has_focus = this.has_focus();
 
         cpp!(unsafe [
-            painter as "QPainter*",
+            painter as "QPainterPtr*",
             widget as "QWidget*",
             text as "QString",
             icon as "QPixmap",
             enabled as "bool",
             size as "QSize",
             down as "bool",
+            checked as "bool",
+            has_focus as "bool",
             dpr as "float",
             initial_state as "int"
         ] {
@@ -288,16 +349,23 @@ impl Item for NativeButton {
             auto iconSize = qApp->style()->pixelMetric(QStyle::PM_ButtonIconSize, 0, nullptr);
             option.iconSize = QSize(iconSize, iconSize);
             option.rect = QRect(QPoint(), size / dpr);
-            if (down)
+            if (down) {
                 option.state |= QStyle::State_Sunken;
-            else
+            } else {
                 option.state |= QStyle::State_Raised;
+            }
+            if (checked) {
+                option.state |= QStyle::State_On;
+            }
             if (enabled) {
                 option.state |= QStyle::State_Enabled;
             } else {
                 option.palette.setCurrentColorGroup(QPalette::Disabled);
             }
-            qApp->style()->drawControl(QStyle::CE_PushButton, &option, painter, widget);
+            if (has_focus) {
+                option.state |= QStyle::State_HasFocus | QStyle::State_KeyboardFocusChange | QStyle::State_Item;
+            }
+            qApp->style()->drawControl(QStyle::CE_PushButton, &option, painter->get(), widget);
         });
     }
 }

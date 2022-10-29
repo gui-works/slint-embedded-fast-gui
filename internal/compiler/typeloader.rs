@@ -1,7 +1,6 @@
 // Copyright © SixtyFPS GmbH <info@slint-ui.com>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
-use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -58,26 +57,25 @@ impl ImportedName {
     }
 }
 
-pub struct TypeLoader<'a> {
+pub struct TypeLoader {
     pub global_type_registry: Rc<RefCell<TypeRegister>>,
-    pub compiler_config: &'a CompilerConfiguration,
-    style: Cow<'a, str>,
+    pub compiler_config: CompilerConfiguration,
+    style: String,
     all_documents: LoadedDocuments,
 }
 
-impl<'a> TypeLoader<'a> {
+impl TypeLoader {
     pub fn new(
         global_type_registry: Rc<RefCell<TypeRegister>>,
-        compiler_config: &'a CompilerConfiguration,
+        compiler_config: CompilerConfiguration,
         diag: &mut BuildDiagnostics,
     ) -> Self {
         let style = compiler_config
         .style
-        .as_ref()
-        .map(Cow::from)
-        .or_else(|| std::env::var("SLINT_STYLE").map(Cow::from).ok())
+        .clone()
+        .or_else(|| std::env::var("SLINT_STYLE").ok())
         .or_else(|| {
-            let legacy_fallback = std::env::var("SIXTYFPS_STYLE").map(Cow::from).ok();
+            let legacy_fallback = std::env::var("SIXTYFPS_STYLE").ok();
             if legacy_fallback.is_some() {
                 diag.push_diagnostic_with_span(
                     "Using `SIXTYFPS_STYLE` environment variable for dynamic backend selection. This is deprecated, use `SLINT_STYLE` instead".to_owned(),
@@ -96,7 +94,7 @@ impl<'a> TypeLoader<'a> {
                     crate::diagnostics::DiagnosticLevel::Warning
                 );
             }
-            Cow::from("fluent")
+            String::from("fluent")
         });
 
         let myself = Self {
@@ -161,12 +159,12 @@ impl<'a> TypeLoader<'a> {
         foreign_imports
     }
 
-    pub async fn import_type(
+    pub async fn import_component(
         &mut self,
         file_to_import: &str,
         type_name: &str,
         diagnostics: &mut BuildDiagnostics,
-    ) -> Option<crate::langtype::Type> {
+    ) -> Option<Rc<object_tree::Component>> {
         let doc_path = match self.ensure_document_loaded(file_to_import, None, diagnostics).await {
             Some(doc_path) => doc_path,
             None => return None,
@@ -174,9 +172,9 @@ impl<'a> TypeLoader<'a> {
 
         let doc = self.all_documents.docs.get(&doc_path).unwrap();
 
-        doc.exports().iter().find_map(|(export_name, ty)| {
+        doc.exports.0.iter().find_map(|(export_name, ty)| {
             if type_name == export_name.as_str() {
-                Some(ty.clone())
+                ty.clone().left()
             } else {
                 None
             }
@@ -360,10 +358,9 @@ impl<'a> TypeLoader<'a> {
             };
 
             let doc = self.all_documents.docs.get(&doc_path).unwrap();
-            let exports = doc.exports();
 
             for import_name in imported_types {
-                let imported_type = exports.iter().find_map(|(export_name, ty)| {
+                let imported_type = doc.exports.0.iter().find_map(|(export_name, ty)| {
                     if import_name.external_name == export_name.as_str() {
                         Some(ty.clone())
                     } else {
@@ -385,9 +382,14 @@ impl<'a> TypeLoader<'a> {
                     }
                 };
 
-                registry_to_populate
-                    .borrow_mut()
-                    .insert_type_with_name(imported_type, import_name.internal_name);
+                match imported_type {
+                    itertools::Either::Left(c) => registry_to_populate
+                        .borrow_mut()
+                        .add_with_name(import_name.internal_name, c),
+                    itertools::Either::Right(ty) => registry_to_populate
+                        .borrow_mut()
+                        .insert_type_with_name(ty, import_name.internal_name),
+                }
             }
         })
     }
@@ -501,7 +503,7 @@ fn test_dependency_loading() {
 
     let mut build_diagnostics = BuildDiagnostics::default();
 
-    let mut loader = TypeLoader::new(global_registry, &compiler_config, &mut build_diagnostics);
+    let mut loader = TypeLoader::new(global_registry, compiler_config, &mut build_diagnostics);
 
     spin_on::spin_on(loader.load_dependencies_recursively(
         &doc_node,
@@ -547,7 +549,7 @@ X := XX {}
     let global_registry = TypeRegister::builtin();
     let registry = Rc::new(RefCell::new(TypeRegister::new(&global_registry)));
     let mut build_diagnostics = BuildDiagnostics::default();
-    let mut loader = TypeLoader::new(global_registry, &compiler_config, &mut build_diagnostics);
+    let mut loader = TypeLoader::new(global_registry, compiler_config, &mut build_diagnostics);
     spin_on::spin_on(loader.load_dependencies_recursively(
         &doc_node,
         &mut build_diagnostics,
@@ -565,10 +567,13 @@ fn test_manual_import() {
     compiler_config.style = Some("fluent".into());
     let global_registry = TypeRegister::builtin();
     let mut build_diagnostics = BuildDiagnostics::default();
-    let mut loader = TypeLoader::new(global_registry, &compiler_config, &mut build_diagnostics);
+    let mut loader = TypeLoader::new(global_registry, compiler_config, &mut build_diagnostics);
 
-    let maybe_button_type =
-        spin_on::spin_on(loader.import_type("std-widgets.slint", "Button", &mut build_diagnostics));
+    let maybe_button_type = spin_on::spin_on(loader.import_component(
+        "std-widgets.slint",
+        "Button",
+        &mut build_diagnostics,
+    ));
 
     assert!(!build_diagnostics.has_error());
     assert!(maybe_button_type.is_some());
@@ -588,7 +593,7 @@ fn test_builtin_style() {
 
     let global_registry = TypeRegister::builtin();
     let mut build_diagnostics = BuildDiagnostics::default();
-    let _loader = TypeLoader::new(global_registry, &compiler_config, &mut build_diagnostics);
+    let _loader = TypeLoader::new(global_registry, compiler_config, &mut build_diagnostics);
 
     assert!(!build_diagnostics.has_error());
 }
@@ -607,7 +612,7 @@ fn test_user_style() {
 
     let global_registry = TypeRegister::builtin();
     let mut build_diagnostics = BuildDiagnostics::default();
-    let _loader = TypeLoader::new(global_registry, &compiler_config, &mut build_diagnostics);
+    let _loader = TypeLoader::new(global_registry, compiler_config, &mut build_diagnostics);
 
     assert!(!build_diagnostics.has_error());
 }
@@ -626,7 +631,7 @@ fn test_unknown_style() {
 
     let global_registry = TypeRegister::builtin();
     let mut build_diagnostics = BuildDiagnostics::default();
-    let _loader = TypeLoader::new(global_registry, &compiler_config, &mut build_diagnostics);
+    let _loader = TypeLoader::new(global_registry, compiler_config, &mut build_diagnostics);
 
     assert!(build_diagnostics.has_error());
     let diags = build_diagnostics.to_string_vec();

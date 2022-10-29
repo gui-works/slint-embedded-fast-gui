@@ -35,12 +35,23 @@ pub mod typeregister;
 
 mod passes;
 
+/// Specify how the resources are embedded by the compiler
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EmbedResourcesKind {
+    /// Only embed builtin resources
+    OnlyBuiltinResources,
+    /// Embed all images resources (the content of their files)
+    EmbedAllResources,
+    /// Embed raw texture (process images and fonts)
+    EmbedTextures,
+}
+
 /// CompilationConfiguration allows configuring different aspects of the compiler.
 #[derive(Clone)]
 pub struct CompilerConfiguration {
     /// Indicate whether to embed resources such as images in the generated output or whether
     /// to retain references to the resources on the file system.
-    pub embed_resources: bool,
+    pub embed_resources: EmbedResourcesKind,
     /// The compiler will look in these paths for components used in the file to compile.
     pub include_paths: Vec<std::path::PathBuf>,
     /// the name of the style. (eg: "native")
@@ -62,22 +73,30 @@ pub struct CompilerConfiguration {
 
     /// Compile time scale factor to apply to embedded resources such as images and glyphs.
     pub scale_factor: f64,
+
+    /// expose the accessible role and properties
+    pub accessibility: bool,
 }
 
 impl CompilerConfiguration {
     pub fn new(output_format: crate::generator::OutputFormat) -> Self {
-        let embed_resources = match std::env::var("SLINT_EMBED_RESOURCES") {
-            Ok(var) => {
-                var.parse().unwrap_or_else(|_|{
-                    panic!("SLINT_EMBED_RESOURCES has incorrect value. Must be either unset, 'true' or 'false'")
-                })
+        let embed_resources = if std::env::var_os("SLINT_EMBED_TEXTURES").is_some()
+            || std::env::var_os("DEP_MCU_BOARD_SUPPORT_MCU_EMBED_TEXTURES").is_some()
+        {
+            EmbedResourcesKind::EmbedTextures
+        } else if let Ok(var) = std::env::var("SLINT_EMBED_RESOURCES") {
+            let var = var.parse::<bool>().unwrap_or_else(|_|{
+                panic!("SLINT_EMBED_RESOURCES has incorrect value. Must be either unset, 'true' or 'false'")
+            });
+            match var {
+                true => EmbedResourcesKind::OnlyBuiltinResources,
+                false => EmbedResourcesKind::EmbedAllResources,
             }
-            Err(_) => {
-                match output_format {
-                    #[cfg(feature = "rust")]
-                    crate::generator::OutputFormat::Rust => true,
-                    _ => false,
-                }
+        } else {
+            match output_format {
+                #[cfg(feature = "rust")]
+                crate::generator::OutputFormat::Rust => EmbedResourcesKind::EmbedAllResources,
+                _ => EmbedResourcesKind::OnlyBuiltinResources,
             }
         };
 
@@ -104,6 +123,7 @@ impl CompilerConfiguration {
             open_import_fallback: Default::default(),
             inline_all_elements,
             scale_factor,
+            accessibility: true,
         }
     }
 }
@@ -111,16 +131,25 @@ impl CompilerConfiguration {
 pub async fn compile_syntax_node(
     doc_node: parser::SyntaxNode,
     mut diagnostics: diagnostics::BuildDiagnostics,
-    compiler_config: CompilerConfiguration,
+    mut compiler_config: CompilerConfiguration,
 ) -> (object_tree::Document, diagnostics::BuildDiagnostics) {
+    if compiler_config.embed_resources == EmbedResourcesKind::EmbedTextures {
+        // HACK: disable accessibility when compiling for the software renderer
+        // accessibility is not supported with backend that support sofware renderer anyway
+        compiler_config.accessibility = false;
+    }
+
     let global_type_registry = typeregister::TypeRegister::builtin();
     let type_registry =
         Rc::new(RefCell::new(typeregister::TypeRegister::new(&global_type_registry)));
 
     let doc_node: parser::syntax_nodes::Document = doc_node.into();
 
-    let mut loader =
-        typeloader::TypeLoader::new(global_type_registry, &compiler_config, &mut diagnostics);
+    let mut loader = typeloader::TypeLoader::new(
+        global_type_registry,
+        compiler_config.clone(),
+        &mut diagnostics,
+    );
 
     if diagnostics.has_error() {
         return (crate::object_tree::Document::default(), diagnostics);

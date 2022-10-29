@@ -8,10 +8,12 @@ Their appearance can change depending on the style
 
 ### Properties
 
-* **`text`** (*string*): The text written in the button.
+* **`checkable`** (*bool*): Shows whether the button can be checked or not. This enables the `checked` property to possibly become `true`.
+* **`checked`** (*bool*): Shows whether the button is checked or not. Needs `checkable` to be `true` to work.
+* **`enabled`**: (*bool*): Defaults to true. When false, the button cannot be pressed
 * **`icon`** (*image*): The image to show in the button. Note that not all styles support drawing icons.
 * **`pressed`**: (*bool*): Set to true when the button is pressed.
-* **`enabled`**: (*bool*): Defaults to true. When false, the button cannot be pressed
+* **`text`** (*string*): The text written in the button.
 
 ### Callbacks
 
@@ -20,13 +22,13 @@ Their appearance can change depending on the style
 ### Example
 
 ```slint
-import { Button } from "std-widgets.slint";
+import { Button, VerticalBox } from "std-widgets.slint";
 Example := Window {
-    Button {
-        width: parent.width;
-        height: parent.height;
-        text: "Click Me";
-        clicked => { self.text = "Clicked"; }
+    VerticalBox {
+        Button {
+            text: "Click Me";
+            clicked => { self.text = "Clicked"; }
+        }
     }
 }
 ```
@@ -169,7 +171,10 @@ A widget used to enter a single line of text
 * **`has-focus`**: (*bool*): Set to true when the line edit currently has the focus
 * **`placeholder-text`**: (*string*): A placeholder text being shown when there is no text in the edit field
 * **`enabled`**: (*bool*): Defaults to true. When false, nothing can be entered
-* **`input-type`** (*enum [`InputType`](#InputType)*): The way to allow special input viewing properties such as password fields (default value: `text`).
+* **`read-only`** (*bool*): When set to `true`, text editing via keyboard and mouse is disabled but
+    selecting text is still enabled as well as editing text programatically (default value: `false`)
+* **`input-type`** (*enum [`InputType`](builtin_enums.md#InputType)*): The way to allow special input viewing properties such as password fields (default value: `text`).
+* **`horizontal-alignment`** (*enum [`TextHorizontalAlignment`](builtin_enums.md#texthorizontalalignment)*): The horizontal alignment of the text.
 
 ### Callbacks
 
@@ -205,7 +210,10 @@ shortcut will be implemented in a future version: <https://github.com/slint-ui/s
 * **`font-size`** (*length*): the size of the font of the input text
 * **`has-focus`**: (*bool*): Set to true when the widget currently has the focus
 * **`enabled`**: (*bool*): Defaults to true. When false, nothing can be entered
-* **`wrap`** (*enum [`TextWrap`](builtin_elements.md#textwrap)*): The way the text wraps (default: word-wrap).
+* **`read-only`** (*bool*): When set to `true`, text editing via keyboard and mouse is disabled but
+   selecting text is still enabled as well as editing text programatically (default value: `false`)
+* **`wrap`** (*enum [`TextWrap`](builtin_enums.md#textwrap)*): The way the text wraps (default: word-wrap).
+* **`horizontal-alignment`** (*enum [`TextHorizontalAlignment`](builtin_enums.md#texthorizontalalignment)*): The horizontal alignment of the text.
 
 ### Callbacks
 
@@ -244,7 +252,7 @@ using for loops may be added in the future and is tracked in issue #407.
 * **`viewport-width`** and **`viewport-height`** (*length*): The `width` and `length` properties of the viewport
 * **`viewport-x`** and **`viewport-y`** (*length*): The `x` and `y` properties of the viewport. Usually these are negative
 * **`visible-width`** and **`visible-height`** (*length*): The size of the visible area of the ScrollView (not including the scrollbar)
-* **`enabled`** and **`has-focus`** (bool): property that are only used to render the frame as disabled or focused, but do not
+* **`enabled`** and **`has-focus`** (*bool*): property that are only used to render the frame as disabled or focused, but do not
   change the behavior of the widget.
 
 ### Example

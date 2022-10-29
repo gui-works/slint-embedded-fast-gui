@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
 #![no_std]
-#![cfg_attr(feature = "mcu-pico-st7789", no_main)]
+#![cfg_attr(not(feature = "simulator"), no_main)]
 
 extern crate alloc;
 
@@ -12,14 +12,6 @@ use alloc::rc::Rc;
 use slint::Model;
 
 slint::include_modules!();
-
-/// Returns the current time formated as a string
-fn current_time() -> slint::SharedString {
-    #[cfg(feature = "chrono")]
-    return chrono::Local::now().format("%H:%M:%S %d/%m/%Y").to_string().into();
-    #[cfg(not(feature = "chrono"))]
-    return "".into();
-}
 
 struct PrinterQueueData {
     data: Rc<slint::VecModel<PrinterQueueItem>>,
@@ -35,14 +27,14 @@ impl PrinterQueueData {
             owner: env!("CARGO_PKG_AUTHORS").into(),
             pages: 1,
             size: "100kB".into(),
-            submission_date: current_time(),
+            submission_date: "".into(),
         })
     }
 }
 
-#[i_slint_backend_mcu::entry]
+#[mcu_board_support::entry]
 fn main() -> ! {
-    i_slint_backend_mcu::init();
+    mcu_board_support::init();
     let main_window = MainWindow::new();
     main_window.set_ink_levels(slint::VecModel::from_slice(&[
         InkLevel { color: slint::Color::from_rgb_u8(0, 255, 255), level: 0.40 },
@@ -54,14 +46,14 @@ fn main() -> ! {
     let default_queue: Vec<PrinterQueueItem> =
         main_window.global::<PrinterQueue>().get_printer_queue().iter().collect();
     let printer_queue = Rc::new(PrinterQueueData {
-        data: Rc::new(slint::VecModel::from(default_queue)),
+        data: Rc::new(slint::VecModel::from(default_queue.clone())),
         print_progress_timer: Default::default(),
     });
     main_window.global::<PrinterQueue>().set_printer_queue(printer_queue.data.clone().into());
 
     main_window.on_quit(move || {
         #[cfg(not(target_arch = "wasm32"))]
-        slint::quit_event_loop();
+        slint::quit_event_loop().unwrap();
     });
 
     let printer_queue_copy = printer_queue.clone();
@@ -93,7 +85,7 @@ fn main() -> ! {
                     }
                     printer_queue.data.set_row_data(0, top_item);
                 } else {
-                    // FIXME: stop this timer?
+                    printer_queue.data.set_vec(default_queue.clone());
                 }
             }
         },

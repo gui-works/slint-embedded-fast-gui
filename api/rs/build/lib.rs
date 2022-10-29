@@ -17,11 +17,11 @@ In your Cargo.toml:
 build = "build.rs"
 
 [dependencies]
-slint = "0.2.1"
+slint = "0.3.1"
 ...
 
 [build-dependencies]
-slint-build = "0.2.1"
+slint-build = "0.3.1"
 ```
 
 In the `build.rs` file:
@@ -61,6 +61,21 @@ pub struct CompilerConfiguration {
     config: i_slint_compiler::CompilerConfiguration,
 }
 
+/// How should the slint compiler embed images and fonts
+///
+/// Parameter of [`CompilerConfiguration::embed_resources()`]
+#[derive(Clone, PartialEq)]
+pub enum EmbedResourcesKind {
+    /// Paths specified in .slint files are made absolute and the absolute
+    /// paths will be used at run-time to load the resources from the file system.
+    AsAbsolutePath,
+    /// The raw files in .slint files are embedded in the application binary.
+    EmbedFiles,
+    /// File names specified in .slint files will be loaded by the Slint compiler,
+    /// optimized for use with the software renderer and embedded in the application binary.
+    EmbedForSoftwareRenderer,
+}
+
 impl Default for CompilerConfiguration {
     fn default() -> Self {
         Self {
@@ -93,6 +108,26 @@ impl CompilerConfiguration {
         config.style = Some(style);
         Self { config }
     }
+
+    /// Selects how the resources such as images and font are processed.
+    ///
+    /// See [`EmbedResourcesKind`]
+    #[must_use]
+    pub fn embed_resources(self, kind: EmbedResourcesKind) -> Self {
+        let mut config = self.config;
+        config.embed_resources = match kind {
+            EmbedResourcesKind::AsAbsolutePath => {
+                i_slint_compiler::EmbedResourcesKind::OnlyBuiltinResources
+            }
+            EmbedResourcesKind::EmbedFiles => {
+                i_slint_compiler::EmbedResourcesKind::EmbedAllResources
+            }
+            EmbedResourcesKind::EmbedForSoftwareRenderer => {
+                i_slint_compiler::EmbedResourcesKind::EmbedTextures
+            }
+        };
+        Self { config }
+    }
 }
 
 /// Error returned by the `compile` function
@@ -112,30 +147,56 @@ pub enum CompileError {
 
 struct CodeFormatter<Sink> {
     indentation: usize,
+    /// We are currently in a string
     in_string: bool,
+    /// number of bytes after the last `'`, 0 if there was none
+    in_char: usize,
     sink: Sink,
+}
+
+impl<Sink> CodeFormatter<Sink> {
+    pub fn new(sink: Sink) -> Self {
+        Self { indentation: 0, in_string: false, in_char: 0, sink }
+    }
 }
 
 impl<Sink: Write> Write for CodeFormatter<Sink> {
     fn write(&mut self, mut s: &[u8]) -> std::io::Result<usize> {
         let len = s.len();
         while let Some(idx) = s.iter().position(|c| match c {
-            b'{' if !self.in_string => {
+            b'{' if !self.in_string && self.in_char == 0 => {
                 self.indentation += 1;
                 true
             }
-            b'}' if !self.in_string => {
+            b'}' if !self.in_string && self.in_char == 0 => {
                 self.indentation -= 1;
                 true
             }
-            b';' if !self.in_string => true,
-            b'"' if !self.in_string => {
+            b';' if !self.in_string && self.in_char == 0 => true,
+            b'"' if !self.in_string && self.in_char == 0 => {
                 self.in_string = true;
                 false
             }
             b'"' if self.in_string => {
                 // FIXME! escape character
                 self.in_string = false;
+                false
+            }
+            b'\'' if !self.in_string && self.in_char == 0 => {
+                self.in_char = 1;
+                false
+            }
+            b'\'' if !self.in_string && self.in_char > 0 => {
+                self.in_char = 0;
+                false
+            }
+            b' ' | b'>' if self.in_char > 2 => {
+                // probably a lifetime
+                self.in_char = 0;
+                false
+            }
+            _ if self.in_char > 0 => {
+                self.in_char += 1;
                 false
             }
             _ => false,
@@ -154,6 +215,37 @@ impl<Sink: Write> Write for CodeFormatter<Sink> {
     fn flush(&mut self) -> std::io::Result<()> {
         self.sink.flush()
     }
+}
+
+#[test]
+fn formatter_test() {
+    fn format_code(code: &str) -> String {
+        let mut res = Vec::new();
+        let mut formater = CodeFormatter::new(&mut res);
+        formater.write_all(code.as_bytes()).unwrap();
+        String::from_utf8(res).unwrap()
+    }
+
+    assert_eq!(
+        format_code("fn main() { if ';' == '}' { return \";\"; } else { panic!() } }"),
+        r#"fn main() {
+     if ';' == '}' {
+         return ";";
+         }
+     else {
+         panic!() }
+     }
+"#
+    );
+
+    assert_eq!(
+        format_code(r#"fn xx<'lt>(foo: &'lt str) { println!("{}", '\u{f700}'); return Ok(()); }"#),
+        r#"fn xx<'lt>(foo: &'lt str) {
+     println!("{}", '\u{f700}');
+     return Ok(());
+     }
+"#
+    );
 }
 
 /// Compile the `.slint` file and generate rust code for it.
@@ -198,12 +290,6 @@ pub fn compile_with_config(
     }
 
     let mut compiler_config = config.config;
-
-    if let (Ok(target), Ok(host)) = (env::var("TARGET"), env::var("HOST")) {
-        if target != host {
-            compiler_config.embed_resources = true;
-        }
-    };
     let mut rerun_if_changed = String::new();
 
     if std::env::var_os("SLINT_STYLE").is_none()
@@ -243,7 +329,7 @@ pub fn compile_with_config(
         );
 
     let file = std::fs::File::create(&output_file_path).map_err(CompileError::SaveError)?;
-    let mut code_formatter = CodeFormatter { indentation: 0, in_string: false, sink: file };
+    let mut code_formatter = CodeFormatter::new(file);
     let generated = i_slint_compiler::generator::rust::generate(&doc);
 
     for x in &diag.all_loaded_files {
@@ -269,10 +355,9 @@ pub fn compile_with_config(
     }
     println!("cargo:rerun-if-env-changed=SLINT_STYLE");
     println!("cargo:rerun-if-env-changed=SIXTYFPS_STYLE");
-    println!("cargo:rerun-if-env-changed=SLINT_EMBED_GLYPHS");
     println!("cargo:rerun-if-env-changed=SLINT_FONT_SIZES");
-    println!("cargo:rerun-if-env-changed=SLINT_PROCESS_IMAGES");
     println!("cargo:rerun-if-env-changed=SLINT_SCALE_FACTOR");
+    println!("cargo:rerun-if-env-changed=SLINT_ASSET_SECTION");
 
     println!("cargo:rustc-env=SLINT_INCLUDE_GENERATED={}", output_file_path.display());
 
@@ -283,25 +368,21 @@ pub fn compile_with_config(
 /// build flags reported by the backend
 pub fn print_rustc_flags() -> std::io::Result<()> {
     if let Some(board_config_path) =
-        std::env::var_os("DEP_I_SLINT_BACKEND_MCU_BOARD_CONFIG_PATH").map(std::path::PathBuf::from)
+        std::env::var_os("DEP_MCU_BOARD_SUPPORT_BOARD_CONFIG_PATH").map(std::path::PathBuf::from)
     {
         let config = std::fs::read_to_string(board_config_path.as_path())?;
         let toml = config.parse::<toml_edit::Document>().expect("invalid board config toml");
 
         for link_arg in
-            toml.get("link_args").map(toml_edit::Item::as_array).flatten().into_iter().flatten()
+            toml.get("link_args").and_then(toml_edit::Item::as_array).into_iter().flatten()
         {
             if let Some(option) = link_arg.as_str() {
                 println!("cargo:rustc-link-arg={}", option);
             }
         }
 
-        for link_search_path in toml
-            .get("link_search_path")
-            .map(toml_edit::Item::as_array)
-            .flatten()
-            .into_iter()
-            .flatten()
+        for link_search_path in
+            toml.get("link_search_path").and_then(toml_edit::Item::as_array).into_iter().flatten()
         {
             if let Some(mut path) = link_search_path.as_str().map(std::path::PathBuf::from) {
                 if path.is_relative() {
@@ -310,6 +391,8 @@ pub fn print_rustc_flags() -> std::io::Result<()> {
                 println!("cargo:rustc-link-search={}", path.to_string_lossy());
             }
         }
+        println!("cargo:rerun-if-env-changed=DEP_MCU_BOARD_SUPPORT_MCU_BOARD_CONFIG_PATH");
+        println!("cargo:rerun-if-changed={}", board_config_path.display());
     }
 
     Ok(())

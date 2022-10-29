@@ -55,11 +55,12 @@ App := Window {
                         }
 
                         GroupBox {
-                            title: "CheckBox";
+                            title: "Button (checkable)";
                             enabled: !disable-toggle.checked;
-                            checkbox := CheckBox {
-                                text: checkbox.checked ? "(checked)" : "(unchecked)";
-                                checked: true;
+
+                            Button {
+                                checkable: true;
+                                text: checked ? "ON" : "OFF";
                                 enabled: !disable-toggle.checked;
                             }
                         }
@@ -84,6 +85,16 @@ App := Window {
                                 enabled: !disable-toggle.checked;
                             }
                         }
+
+                        GroupBox {
+                            title: "CheckBox";
+                            enabled: !disable-toggle.checked;
+                            checkbox := CheckBox {
+                                text: checkbox.checked ? "(checked)" : "(unchecked)";
+                                checked: true;
+                                enabled: !disable-toggle.checked;
+                            }
+                        }
                     }
 
                     GroupBox {
@@ -94,6 +105,7 @@ App := Window {
                             maximum: 100;
                             value: 42;
                             enabled: !disable-toggle.checked;
+                            changed => {}
                         }
                     }
 

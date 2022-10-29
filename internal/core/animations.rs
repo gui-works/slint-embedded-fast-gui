@@ -7,13 +7,12 @@
 use alloc::boxed::Box;
 use core::cell::Cell;
 
-#[cfg(feature = "std")]
-use lyon_algorithms::geom::cubic_bezier;
-#[cfg(not(feature = "std"))]
 mod cubic_bezier {
     //! This is a copy from lyon_algorithms::geom::cubic_bezier implementation
+    //! (from lyon_algorithms 0.17)
     type S = f32;
     use euclid::default::Point2D as Point;
+    #[cfg(not(feature = "std"))]
     use num_traits::Float;
     trait Scalar {
         const ONE: f32 = 1.;
@@ -207,7 +206,9 @@ impl Instant {
     }
 
     fn duration_since_start() -> core::time::Duration {
-        crate::backend::instance().map(|backend| backend.duration_since_start()).unwrap_or_default()
+        crate::platform::PLATFORM_INSTANCE
+            .with(|p| p.get().map(|p| p.duration_since_start()))
+            .unwrap_or_default()
     }
 }
 
@@ -257,8 +258,8 @@ impl AnimationDriver {
     }
 }
 
-#[cfg(all(not(feature = "std"), feature = "unsafe_single_core"))]
-use crate::unsafe_single_core::thread_local;
+#[cfg(all(not(feature = "std"), feature = "unsafe-single-threaded"))]
+use crate::unsafe_single_threaded::thread_local;
 
 thread_local!(
 /// This is the default instance of the animation driver that's used to advance all property animations
@@ -270,6 +271,15 @@ pub static CURRENT_ANIMATION_DRIVER : AnimationDriver = AnimationDriver::default
 /// using this function register the current binding as a dependency
 pub fn current_tick() -> Instant {
     CURRENT_ANIMATION_DRIVER.with(|driver| driver.current_tick())
+}
+
+/// Same as [`current_tick`], but also register that one should be running animation
+/// on next frame
+pub fn animation_tick() -> u64 {
+    CURRENT_ANIMATION_DRIVER.with(|driver| {
+        driver.set_has_active_animations();
+        driver.current_tick().0
+    })
 }
 
 /// map a value between 0 and 1 to another value between 0 and 1 according to the curve
@@ -286,8 +296,6 @@ pub fn easing_curve(curve: &EasingCurve, value: f32) -> f32 {
                 ctrl2: (*c, *d).into(),
                 to: (1., 1.).into(),
             };
-            #[cfg(feature = "std")]
-            let curve = curve.assume_monotonic();
             curve.y(curve.solve_t_for_x(value, 0.0..1.0, 0.01))
         }
     }

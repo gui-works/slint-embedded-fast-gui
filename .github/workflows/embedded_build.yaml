@@ -15,6 +15,7 @@ jobs:
           - armv7-unknown-linux-gnueabihf
           - aarch64-unknown-linux-gnu
           - riscv64gc-unknown-linux-gnu
+          - x86_64-unknown-linux-gnu
     env:
       SLINT_NO_QT: 1
       SLINT_STYLE: fluent
@@ -45,20 +46,22 @@ jobs:
           - armv7-unknown-linux-gnueabihf
           - aarch64-unknown-linux-gnu
           - riscv64gc-unknown-linux-gnu
+          - x86_64-unknown-linux-gnu
     steps:
     - uses: actions/checkout@v2
-    - name: Install latest stable
-      uses: actions-rs/toolchain@v1
+    - uses: ./.github/actions/setup-rust
       with:
-          toolchain: stable
-          override: true
-          target: ${{ matrix.target }}
+        target: ${{ matrix.target }}
+    - name: Enable Skia build
+      if: matrix.target != 'riscv64gc-unknown-linux-gnu'
+      run: |
+          echo "EXTRA_ARGS=--features slint/renderer-winit-skia" >> $GITHUB_ENV
     - name: Build
       uses: actions-rs/cargo@v1
       with:
           use-cross: true
           command: build
-          args: --release --target=${{ matrix.target }} --workspace --exclude slint-node
+          args: --release --target=${{ matrix.target }} --workspace --exclude slint-node --exclude mcu-board-support --exclude printerdemo_mcu ${{ env.EXTRA_ARGS }}
     - name: "Upload printerdemo artifact"
       uses: actions/upload-artifact@v2
       with:

@@ -1,6 +1,8 @@
 // Copyright © SixtyFPS GmbH <info@slint-ui.com>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
+// cSpell: ignore pointee repr
+
 //! implementation of vtable::Vrc
 
 use super::*;
@@ -126,6 +128,12 @@ impl<VTable: VTableMetaDropInPlace + 'static, X> Drop for VRc<VTable, X> {
     }
 }
 
+impl<VTable: VTableMetaDropInPlace + 'static, X> core::fmt::Debug for VRc<VTable, X> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("VRc").field("inner", &self.inner).finish()
+    }
+}
+
 impl<VTable: VTableMetaDropInPlace, X: HasStaticVTable<VTable>> VRc<VTable, X> {
     /// Create a new VRc from an instance of a type that can be associated with a VTable.
     ///
@@ -187,6 +195,19 @@ impl<VTable: VTableMetaDropInPlace + 'static, X: HasStaticVTable<VTable> + 'stat
     }
 }
 
+impl<VTable: VTableMetaDropInPlace + 'static> VRc<VTable, Dyn> {
+    /// This function allows safely holding a reference to a field inside the VRc. In order to accomplish
+    /// that, you need to provide a mapping function `map_fn` in which you need to provide and return a
+    /// pinned reference to the object you would like to map. The returned `VRcMapped` allows obtaining
+    /// that pinned reference again using [`VRcMapped::as_pin_ref`].
+    /// This works similar to [`VRc::map`] except that it works on a type-erased VRc.
+    pub fn map_dyn<MappedType: ?Sized>(
+        this: Self,
+        map_fn: impl for<'r> FnOnce(Pin<VRef<'r, VTable>>) -> Pin<&'r MappedType>,
+    ) -> VRcMapped<VTable, MappedType> {
+        VRcMapped { parent_strong: this.clone(), object: map_fn(Self::borrow_pin(&this)).get_ref() }
+    }
+}
 impl<VTable: VTableMetaDropInPlace, X> VRc<VTable, X> {
     /// Create a Pinned reference to the inner.
     ///
@@ -206,7 +227,7 @@ impl<VTable: VTableMetaDropInPlace, X> VRc<VTable, X> {
         }
     }
 
-    /// Gets a Pin<VRef> pointing to this instance
+    /// Gets a `Pin<VRef>` pointing to this instance
     ///
     /// This is safe because there is no way to access a mutable reference to the pointee.
     /// (There is no `get_mut` or `make_mut`),

@@ -41,8 +41,8 @@ class Component {
         this.window.hide()
     }
 
-    get window(): Window {
-        return this.comp.window();
+    get window(): SlintWindow {
+        return new WindowAPI(this.comp.window());
     }
 
     send_mouse_click(x: number, y: number) {
@@ -54,9 +54,65 @@ class Component {
     }
 }
 
-interface Window {
+interface Point {
+    x: number;
+    y: number;
+}
+
+interface Size {
+    width: number;
+    height: number;
+}
+
+interface SlintWindow {
     show(): void;
     hide(): void;
+    logical_position: Point;
+    physical_position: Point;
+    logical_size: Size;
+    physical_size: Size;
+}
+
+/**
+ * @hidden
+ */
+class WindowAPI implements SlintWindow {
+    protected impl: any;
+
+    constructor(impl: any) {
+        this.impl = impl;
+    }
+
+    show(): void {
+        this.impl.show();
+    }
+    hide(): void {
+        this.impl.hide();
+    }
+    get logical_position(): Point {
+        return this.impl.get_logical_position();
+    }
+    set logical_position(pos: Point) {
+        this.impl.set_logical_position(pos);
+    }
+    get physical_position(): Point {
+        return this.impl.get_physical_position();
+    }
+    set physical_position(pos: Point) {
+        this.impl.set_physical_position(pos);
+    }
+    get logical_size(): Size {
+        return this.impl.get_logical_size();
+    }
+    set logical_size(size: Size) {
+        this.impl.set_logical_size(size);
+    }
+    get physical_size(): Size {
+        return this.impl.get_physical_size();
+    }
+    set physical_size(size: Size) {
+        this.impl.set_physical_size(size);
+    }
 }
 
 /**
@@ -120,6 +176,12 @@ interface ModelPeer {
      * @param count
      */
     rowRemoved(row: number, count: number): void;
+
+    /**
+     * Call this function from your own model to notify that the model has been
+     * changed and everything must be reloaded
+     */
+    reset(): void;
 }
 
 /**
@@ -160,6 +222,7 @@ class NullPeer implements ModelPeer {
     rowDataChanged(row: number): void { }
     rowAdded(row: number, count: number): void { }
     rowRemoved(row: number, count: number): void { }
+    reset(): void { }
 }
 
 /**

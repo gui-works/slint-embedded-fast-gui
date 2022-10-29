@@ -9,10 +9,10 @@ use super::*;
 #[derive(FieldOffsets, Default, SlintElement)]
 #[pin]
 pub struct NativeComboBox {
-    pub x: Property<f32>,
-    pub y: Property<f32>,
-    pub width: Property<f32>,
-    pub height: Property<f32>,
+    pub x: Property<LogicalLength>,
+    pub y: Property<LogicalLength>,
+    pub width: Property<LogicalLength>,
+    pub height: Property<LogicalLength>,
     pub enabled: Property<bool>,
     pub pressed: Property<bool>,
     pub is_open: Property<bool>,
@@ -22,13 +22,20 @@ pub struct NativeComboBox {
 }
 
 impl Item for NativeComboBox {
-    fn init(self: Pin<&Self>, _window: &WindowRc) {}
+    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
 
-    fn geometry(self: Pin<&Self>) -> Rect {
-        euclid::rect(self.x(), self.y(), self.width(), self.height())
+    fn geometry(self: Pin<&Self>) -> LogicalRect {
+        LogicalRect::new(
+            LogicalPoint::from_lengths(self.x(), self.y()),
+            LogicalSize::from_lengths(self.width(), self.height()),
+        )
     }
 
-    fn layout_info(self: Pin<&Self>, orientation: Orientation, _window: &WindowRc) -> LayoutInfo {
+    fn layout_info(
+        self: Pin<&Self>,
+        orientation: Orientation,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+    ) -> LayoutInfo {
         let size = cpp!(unsafe [] -> qttypes::QSize as "QSize" {
             ensure_initialized();
             QStyleOptionComboBox option;
@@ -49,7 +56,7 @@ impl Item for NativeComboBox {
     fn input_event_filter_before_children(
         self: Pin<&Self>,
         _: MouseEvent,
-        _window: &WindowRc,
+        _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
         InputEventFilterResult::ForwardEvent
@@ -58,7 +65,7 @@ impl Item for NativeComboBox {
     fn input_event(
         self: Pin<&Self>,
         event: MouseEvent,
-        _window: &WindowRc,
+        _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &i_slint_core::items::ItemRc,
     ) -> InputEventResult {
         let enabled = self.enabled();
@@ -68,18 +75,18 @@ impl Item for NativeComboBox {
         // FIXME: this is the input event of a button, but we need to do the proper hit test
 
         Self::FIELD_OFFSETS.pressed.apply_pin(self).set(match event {
-            MouseEvent::MousePressed { .. } => true,
-            MouseEvent::MouseExit | MouseEvent::MouseReleased { .. } => false,
-            MouseEvent::MouseMoved { .. } => {
+            MouseEvent::Pressed { .. } => true,
+            MouseEvent::Exit | MouseEvent::Released { .. } => false,
+            MouseEvent::Moved { .. } => {
                 return if self.pressed() {
                     InputEventResult::GrabMouse
                 } else {
                     InputEventResult::EventIgnored
                 }
             }
-            MouseEvent::MouseWheel { .. } => return InputEventResult::EventIgnored,
+            MouseEvent::Wheel { .. } => return InputEventResult::EventIgnored,
         });
-        if matches!(event, MouseEvent::MouseReleased { .. }) {
+        if matches!(event, MouseEvent::Released { .. }) {
             Self::FIELD_OFFSETS.is_open.apply_pin(self).set(true);
             Self::FIELD_OFFSETS.open_popup.apply_pin(self).call(&());
             InputEventResult::EventAccepted
@@ -88,11 +95,21 @@ impl Item for NativeComboBox {
         }
     }
 
-    fn key_event(self: Pin<&Self>, _: &KeyEvent, _window: &WindowRc) -> KeyEventResult {
+    fn key_event(
+        self: Pin<&Self>,
+        _: &KeyEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> KeyEventResult {
         KeyEventResult::EventIgnored
     }
 
-    fn focus_event(self: Pin<&Self>, _: &FocusEvent, _window: &WindowRc) -> FocusEventResult {
+    fn focus_event(
+        self: Pin<&Self>,
+        _: &FocusEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> FocusEventResult {
         FocusEventResult::FocusIgnored
     }
 
@@ -103,7 +120,7 @@ impl Item for NativeComboBox {
             this.current_value().as_str().into();
         let enabled = this.enabled();
         cpp!(unsafe [
-            painter as "QPainter*",
+            painter as "QPainterPtr*",
             widget as "QWidget*",
             text as "QString",
             enabled as "bool",
@@ -132,8 +149,8 @@ impl Item for NativeComboBox {
             //    option.state |= QStyle::State_On;
             }
             option.subControls = QStyle::SC_All;
-            qApp->style()->drawComplexControl(QStyle::CC_ComboBox, &option, painter, widget);
-            qApp->style()->drawControl(QStyle::CE_ComboBoxLabel, &option, painter, widget);
+            qApp->style()->drawComplexControl(QStyle::CC_ComboBox, &option, painter->get(), widget);
+            qApp->style()->drawControl(QStyle::CE_ComboBoxLabel, &option, painter->get(), widget);
         });
     }
 }
@@ -151,28 +168,35 @@ fn slint_get_NativeComboBoxVTable() -> NativeComboBoxVTable for NativeComboBox
 #[derive(FieldOffsets, Default, SlintElement)]
 #[pin]
 pub struct NativeComboBoxPopup {
-    pub x: Property<f32>,
-    pub y: Property<f32>,
-    pub width: Property<f32>,
-    pub height: Property<f32>,
+    pub x: Property<LogicalLength>,
+    pub y: Property<LogicalLength>,
+    pub width: Property<LogicalLength>,
+    pub height: Property<LogicalLength>,
     pub cached_rendering_data: CachedRenderingData,
 }
 
 impl Item for NativeComboBoxPopup {
-    fn init(self: Pin<&Self>, _window: &WindowRc) {}
+    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
 
-    fn geometry(self: Pin<&Self>) -> Rect {
-        euclid::rect(self.x(), self.y(), self.width(), self.height())
+    fn geometry(self: Pin<&Self>) -> LogicalRect {
+        LogicalRect::new(
+            LogicalPoint::from_lengths(self.x(), self.y()),
+            LogicalSize::from_lengths(self.width(), self.height()),
+        )
     }
 
-    fn layout_info(self: Pin<&Self>, _orientation: Orientation, _window: &WindowRc) -> LayoutInfo {
+    fn layout_info(
+        self: Pin<&Self>,
+        _orientation: Orientation,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+    ) -> LayoutInfo {
         Default::default()
     }
 
     fn input_event_filter_before_children(
         self: Pin<&Self>,
         _: MouseEvent,
-        _window: &WindowRc,
+        _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
         InputEventFilterResult::ForwardAndIgnore
@@ -181,23 +205,33 @@ impl Item for NativeComboBoxPopup {
     fn input_event(
         self: Pin<&Self>,
         _: MouseEvent,
-        _window: &WindowRc,
+        _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &i_slint_core::items::ItemRc,
     ) -> InputEventResult {
         InputEventResult::EventIgnored
     }
 
-    fn key_event(self: Pin<&Self>, _: &KeyEvent, _window: &WindowRc) -> KeyEventResult {
+    fn key_event(
+        self: Pin<&Self>,
+        _: &KeyEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> KeyEventResult {
         KeyEventResult::EventIgnored
     }
 
-    fn focus_event(self: Pin<&Self>, _: &FocusEvent, _window: &WindowRc) -> FocusEventResult {
+    fn focus_event(
+        self: Pin<&Self>,
+        _: &FocusEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> FocusEventResult {
         FocusEventResult::FocusIgnored
     }
 
     fn_render! { _this dpr size painter widget initial_state =>
         cpp!(unsafe [
-            painter as "QPainter*",
+            painter as "QPainterPtr*",
             widget as "QWidget*",
             size as "QSize",
             dpr as "float",
@@ -214,7 +248,7 @@ impl Item for NativeComboBoxPopup {
             auto style = qApp->style();
 
             if (style->styleHint(QStyle::SH_ComboBox_Popup, &option, widget)) {
-                style->drawPrimitive(QStyle::PE_PanelMenu, &option, painter, widget);
+                style->drawPrimitive(QStyle::PE_PanelMenu, &option, painter->get(), widget);
             } else {
                 option.lineWidth = 1;
             }
@@ -224,7 +258,7 @@ impl Item for NativeComboBoxPopup {
             else if ((frameStyle & QFrame::Shadow_Mask) == QFrame::Raised)
                 option.state |= QStyle::State_Raised;
             option.frameShape = QFrame::Shape(frameStyle & QFrame::Shape_Mask);
-            style->drawControl(QStyle::CE_ShapedFrame, &option, painter, widget);
+            style->drawControl(QStyle::CE_ShapedFrame, &option, painter->get(), widget);
         });
     }
 }

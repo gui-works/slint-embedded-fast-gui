@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use crate::diagnostics::{BuildDiagnostics, SourceLocation, Spanned};
 use crate::expression_tree::{BindingExpression, BuiltinFunction, Expression};
-use crate::langtype::Type;
+use crate::langtype::ElementType;
 use crate::object_tree::*;
 
 enum FocusCheckResult {
@@ -37,11 +37,11 @@ fn element_focus_check(element: &ElementRc) -> FocusCheckResult {
                 forwarded_focus_binding.to_source_location(),
             );
         } else {
-            panic!("internal error: forward-focus property is of type ElementReference but received non-element-reference binding");
+            assert!(matches!(forwarded_focus_binding.expression, Expression::Invalid), "internal error: forward-focus property is of type ElementReference but received non-element-reference binding");
         }
     }
 
-    if matches!(&element.borrow().base_type.clone(), Type::Builtin(b) if b.accepts_focus) {
+    if matches!(&element.borrow().base_type.clone(), ElementType::Builtin(b) if b.accepts_focus) {
         return FocusCheckResult::ElementIsFocusable;
     }
 

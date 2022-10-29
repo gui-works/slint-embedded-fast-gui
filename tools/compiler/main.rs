@@ -7,30 +7,30 @@ use i_slint_compiler::*;
 use std::io::Write;
 
 #[derive(Parser)]
-#[clap(author, version, about, long_about = None)]
+#[command(author, version, about, long_about = None)]
 struct Cli {
     /// Set output format
-    #[clap(short = 'f', long = "format", default_value = "cpp")]
+    #[arg(short = 'f', long = "format", default_value = "cpp", action)]
     format: generator::OutputFormat,
 
     /// Include path for other .slint files
-    #[clap(short = 'I', name = "include path", number_of_values = 1, parse(from_os_str))]
+    #[arg(short = 'I', name = "include path", number_of_values = 1, action)]
     include_paths: Vec<std::path::PathBuf>,
 
     /// Path to .slint file ('-' for stdin)
-    #[clap(name = "file", parse(from_os_str))]
+    #[arg(name = "file", action)]
     path: std::path::PathBuf,
 
-    /// The style name ('native', 'fluent', or 'ugly')
-    #[clap(long, name = "style name")]
+    /// The style name ('native' or 'fluent')
+    #[arg(long, name = "style name", action)]
     style: Option<String>,
 
     /// Generate a dependency file
-    #[clap(name = "dependency file", long = "depfile", number_of_values = 1, parse(from_os_str))]
+    #[arg(name = "dependency file", long = "depfile", number_of_values = 1, action)]
     depfile: Option<std::path::PathBuf>,
 
     /// Sets the output file ('-' for stdout)
-    #[clap(name = "file to generate", short = 'o', default_value = "-", parse(from_os_str))]
+    #[arg(name = "file to generate", short = 'o', default_value = "-", action)]
     output: std::path::PathBuf,
 }
 

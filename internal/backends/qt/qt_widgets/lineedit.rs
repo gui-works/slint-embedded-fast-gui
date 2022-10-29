@@ -10,22 +10,22 @@ use super::*;
 #[derive(FieldOffsets, Default, SlintElement)]
 #[pin]
 pub struct NativeLineEdit {
-    pub x: Property<f32>,
-    pub y: Property<f32>,
-    pub width: Property<f32>,
-    pub height: Property<f32>,
+    pub x: Property<LogicalLength>,
+    pub y: Property<LogicalLength>,
+    pub width: Property<LogicalLength>,
+    pub height: Property<LogicalLength>,
     pub cached_rendering_data: CachedRenderingData,
-    pub native_padding_left: Property<f32>,
-    pub native_padding_right: Property<f32>,
-    pub native_padding_top: Property<f32>,
-    pub native_padding_bottom: Property<f32>,
+    pub native_padding_left: Property<LogicalLength>,
+    pub native_padding_right: Property<LogicalLength>,
+    pub native_padding_top: Property<LogicalLength>,
+    pub native_padding_bottom: Property<LogicalLength>,
     pub has_focus: Property<bool>,
     pub enabled: Property<bool>,
     pub input_type: Property<InputType>,
 }
 
 impl Item for NativeLineEdit {
-    fn init(self: Pin<&Self>, _window: &WindowRc) {
+    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {
         let paddings = Rc::pin(Property::default());
 
         paddings.as_ref().set_binding(move || {
@@ -53,32 +53,40 @@ impl Item for NativeLineEdit {
 
         self.native_padding_left.set_binding({
             let paddings = paddings.clone();
-            move || paddings.as_ref().get().left as _
+            move || LogicalLength::new(paddings.as_ref().get().left as _)
         });
         self.native_padding_right.set_binding({
             let paddings = paddings.clone();
-            move || paddings.as_ref().get().right as _
+            move || LogicalLength::new(paddings.as_ref().get().right as _)
         });
         self.native_padding_top.set_binding({
             let paddings = paddings.clone();
-            move || paddings.as_ref().get().top as _
+            move || LogicalLength::new(paddings.as_ref().get().top as _)
         });
         self.native_padding_bottom.set_binding({
             let paddings = paddings;
-            move || paddings.as_ref().get().bottom as _
+            move || LogicalLength::new(paddings.as_ref().get().bottom as _)
         });
     }
 
-    fn geometry(self: Pin<&Self>) -> Rect {
-        euclid::rect(self.x(), self.y(), self.width(), self.height())
+    fn geometry(self: Pin<&Self>) -> LogicalRect {
+        LogicalRect::new(
+            LogicalPoint::from_lengths(self.x(), self.y()),
+            LogicalSize::from_lengths(self.width(), self.height()),
+        )
     }
 
-    fn layout_info(self: Pin<&Self>, orientation: Orientation, _window: &WindowRc) -> LayoutInfo {
+    fn layout_info(
+        self: Pin<&Self>,
+        orientation: Orientation,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+    ) -> LayoutInfo {
         LayoutInfo {
             min: match orientation {
                 Orientation::Horizontal => self.native_padding_left() + self.native_padding_right(),
                 Orientation::Vertical => self.native_padding_top() + self.native_padding_bottom(),
-            },
+            }
+            .get(),
             stretch: if orientation == Orientation::Horizontal { 1. } else { 0. },
             ..LayoutInfo::default()
         }
@@ -87,7 +95,7 @@ impl Item for NativeLineEdit {
     fn input_event_filter_before_children(
         self: Pin<&Self>,
         _: MouseEvent,
-        _window: &WindowRc,
+        _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
         InputEventFilterResult::ForwardAndIgnore
@@ -96,17 +104,27 @@ impl Item for NativeLineEdit {
     fn input_event(
         self: Pin<&Self>,
         _: MouseEvent,
-        _window: &WindowRc,
+        _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &i_slint_core::items::ItemRc,
     ) -> InputEventResult {
         InputEventResult::EventIgnored
     }
 
-    fn key_event(self: Pin<&Self>, _: &KeyEvent, _window: &WindowRc) -> KeyEventResult {
+    fn key_event(
+        self: Pin<&Self>,
+        _: &KeyEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> KeyEventResult {
         KeyEventResult::EventIgnored
     }
 
-    fn focus_event(self: Pin<&Self>, _: &FocusEvent, _window: &WindowRc) -> FocusEventResult {
+    fn focus_event(
+        self: Pin<&Self>,
+        _: &FocusEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> FocusEventResult {
         FocusEventResult::FocusIgnored
     }
 
@@ -115,7 +133,7 @@ impl Item for NativeLineEdit {
         let enabled: bool = this.enabled();
 
         cpp!(unsafe [
-            painter as "QPainter*",
+            painter as "QPainterPtr*",
             widget as "QWidget*",
             size as "QSize",
             dpr as "float",
@@ -135,7 +153,7 @@ impl Item for NativeLineEdit {
             } else {
                 option.palette.setCurrentColorGroup(QPalette::Disabled);
             }
-            qApp->style()->drawPrimitive(QStyle::PE_PanelLineEdit, &option, painter, widget);
+            qApp->style()->drawPrimitive(QStyle::PE_PanelLineEdit, &option, painter->get(), widget);
         });
     }
 }

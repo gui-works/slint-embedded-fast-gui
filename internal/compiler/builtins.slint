@@ -1,6 +1,8 @@
 // Copyright © SixtyFPS GmbH <info@slint-ui.com>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
+// cSpell: ignore langtype typeregister
+
 /**
    This file contains the definition off all builtin items
    It is parsed with the normal .slint parser, but the semantic.
@@ -19,15 +21,21 @@
    to that property.
  */
 
-import { _ } from ""; // just to silence many errorin the LSP
+import { _ } from ""; // just to silence many errors in the LSP
 
-Rectangle := _ {
-    property <brush> background;
-    property <brush> color <=> background;
+Empty := _ {
     property <length> x;
     property <length> y;
     property <length> width;
     property <length> height;
+    //-default_size_binding:expands_to_parent_geometry
+    //-is_internal
+
+}
+
+Rectangle := Empty {
+    property <brush> background;
+    property <brush> color <=> background;
 }
 
 BorderRectangle := Rectangle {
@@ -39,12 +47,8 @@ BorderRectangle := Rectangle {
 
 export { BorderRectangle as Rectangle }
 
-ImageItem := _ {
+ImageItem := Empty {
     property <image> source;
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
     property <ImageFit> image-fit;
     property <ImageRendering> image-rendering;
 }
@@ -55,23 +59,20 @@ export ClippedImage := ImageItem {
     property <int> source-clip-width;
     property <int> source-clip-height;
     property <brush> colorize;
-    property <ImageRendering> image-rendering;
     //-default_size_binding:implicit_size
 }
 
 export { ClippedImage as Image }
 
-export Rotate := _ {
-    property <angle> angle;
-    property <length> origin-x;
-    property <length> origin-y;
-    property <length> width;
-    property <length> height;
+export Rotate := Empty {
+    property <angle> rotation-angle;
+    property <length> rotation-origin-x;
+    property <length> rotation-origin-y;
     //-default_size_binding:expands_to_parent_geometry
     //-is_internal
 }
 
-export Text := _ {
+export Text := Empty {
     property <string> text;
     property <string> font-family;
     property <length> font-size;
@@ -82,10 +83,6 @@ export Text := _ {
     property <TextOverflow> overflow;
     property <TextWrap> wrap;
     property <length> letter-spacing;
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
     //-default_size_binding:implicit_size
 }
 
@@ -134,6 +131,7 @@ export FocusScope := _ {
     property <length> y;
     property <length> width;
     property <length> height;
+    property <bool> enabled: true;
     property <bool> has-focus: native_output;
     callback key_pressed(KeyEvent) -> EventResult;
     callback key_released(KeyEvent) -> EventResult;
@@ -141,11 +139,7 @@ export FocusScope := _ {
     //-accepts_focus
 }
 
-export Flickable := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
+export Flickable := Empty {
                 // These properties are actually going to be forwarded to the viewport by the
                 // code generator
     property <length> viewport-height;
@@ -159,8 +153,8 @@ export Flickable := _ {
 WindowItem := _ {
     property <length> width: native_output;
     property <length> height: native_output;
-    property <color> background; // StyleMetrics.window_background  set in apply_default_properties_from_style
-    property <color> color <=> background;
+    property <brush> background; // StyleMetrics.window_background  set in apply_default_properties_from_style
+    property <brush> color <=> background;
     property <string> title: "Slint Window";
     property <bool> no-frame;
     property <string> default-font-family;
@@ -171,16 +165,12 @@ WindowItem := _ {
 
 export Window := WindowItem {}
 
-export BoxShadow := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
+export BoxShadow := Empty {
     property <length> border_radius;
     property <length> offset_x;
     property <length> offset_y;
     property <color> color;
-    property <float> blur;
+    property <length> blur;
     //-default_size_binding:expands_to_parent_geometry
     //-is_internal
 }
@@ -209,14 +199,18 @@ export TextInput := _ {
     property <length> height;
     property <length> text-cursor-width; // StyleMetrics.text-cursor-width  set in apply_default_properties_from_style
     property <InputType> input-type;
-    property <int> cursor-position: native_output;
-    property <int> anchor-position: native_output;
+    // Internal, undocumented property, only exposed for tests.
+    property <int> cursor-position_byte-offset: native_output;
+    // Internal, undocumented property, only exposed for tests.
+    property <int> anchor-position-byte-offset: native_output;
     property <bool> has-focus: native_output;
     callback accepted;
     callback edited;
     callback cursor_position_changed(Point);
     property <bool> enabled: true;
     property <bool> single-line: true;
+    property <bool> read-only: false;
+    property <string> preedit-text: native_output;
     //-default_size_binding:expands_to_parent_geometry
     //-accepts_focus
 }
@@ -243,11 +237,17 @@ export Opacity := _ {
     //-is_internal
 }
 
+export Layer := Empty {
+    property <bool> cache-rendering-hint;
+    //-default_size_binding:expands_to_parent_geometry
+    //-is_internal
+}
+
 Row := _ {
     //-is_non_item_type
 }
 
-// Note: layouts are not NativeClass, but this is lowerd in lower_layout
+// Note: layouts are not NativeClass, but this is lowered in lower_layout
 export GridLayout := _ {
     property <length> spacing;
 
@@ -382,7 +382,8 @@ export TabWidget := _ {
     property <length> width;
     property <length> height;
 
-    property <int> current_index;
+    property <int> current-index;
+    property <int> current-focused;
 
     //-disallow_global_types_as_child_elements
     Tab {}
@@ -434,6 +435,9 @@ export NativeButton := _ {
     property <string> text;
     property <image> icon;
     property <bool> pressed: native_output;
+    property <bool> checkable;
+    property <bool> checked: native_output;
+    property <bool> has-focus: native_output;
     callback clicked;
     property <bool> enabled: true;
     property <StandardButtonKind> standard-button-kind;
@@ -449,6 +453,7 @@ export NativeCheckBox := _ {
     property <bool> enabled: true;
     property <string> text;
     property <bool> checked: native_output;
+    property <bool> has-focus: native_output;
     callback toggled;
     //-is_internal
 }
@@ -463,8 +468,6 @@ export NativeSpinBox := _ {
     property <int> value: native_output;
     property <int> minimum;
     property <int> maximum: 100;
-    callback key_pressed(KeyEvent) -> EventResult;
-    callback key_released(KeyEvent) -> EventResult;
     //-is_internal
 }
 
@@ -581,6 +584,9 @@ export NativeTabWidget := _ {
     property <length> tabbar-preferred-width;
     property <length> content-min-height;
     property <length> content-min-width;
+
+    property <int> current-index;
+    property <int> current-focused;
     //-default_size_binding:expands_to_parent_geometry
     //-is_internal
 }
@@ -596,8 +602,9 @@ export NativeTab := _ {
     property<bool> enabled : true;
     property<bool> pressed : native_output;
     property<int> current: native_output; // supposed to be a binding to the tab
-    property<int> tab_index;
-    property<int> num_tabs;
+    property<int> tab-index;
+    property<int> current-focused;
+    property<int> num-tabs;
     //-is_internal
 }
 
@@ -612,11 +619,14 @@ export global NativeStyleMetrics := {
     property <color> textedit-background-disabled : native_output;
     property <color> textedit-text-color-disabled : native_output;
 
-    property <bool> dark-style : native_output;
+    property <bool> dark-color-scheme : native_output;
 
     // specific to the Native one
     property <color> placeholder-color : native_output;
     property <color> placeholder-color-disabled : native_output;
+
+    // Tab Bar metrics:
+    property <LayoutAlignment> tab-bar-alignment : native_output;
 
     //-is_non_item_type
     //-is_internal

@@ -228,8 +228,6 @@ use core::cell::{Cell, RefCell, UnsafeCell};
 use core::marker::PhantomPinned;
 use core::pin::Pin;
 
-use crate::items::PropertyAnimation;
-
 /// if a DependencyListHead points to that value, it is because the property is actually
 /// constant and cannot have dependencies
 static CONSTANT_PROPERTY_SENTINEL: u32 = 0;
@@ -254,7 +252,9 @@ struct BindingVTable {
 }
 
 /// A binding trait object can be used to dynamically produces values for a property.
-trait BindingCallable {
+///
+/// Safety: IS_TWO_WAY_BINDNG cannot be true if Self is not a TwoWayBinding
+unsafe trait BindingCallable {
     /// This function is called by the property to evaluate the binding and produce a new value. The
     /// previous property value is provided in the value parameter.
     unsafe fn evaluate(self: Pin<&Self>, value: *mut ()) -> BindingResult;
@@ -278,9 +278,12 @@ trait BindingCallable {
     unsafe fn intercept_set_binding(self: Pin<&Self>, _new_binding: *mut BindingHolder) -> bool {
         false
     }
+
+    /// Set to true if and only if Self is a TwoWayBinding<T>
+    const IS_TWO_WAY_BINDNG: bool = false;
 }
 
-impl<F: Fn(*mut ()) -> BindingResult> BindingCallable for F {
+unsafe impl<F: Fn(*mut ()) -> BindingResult> BindingCallable for F {
     unsafe fn evaluate(self: Pin<&Self>, value: *mut ()) -> BindingResult {
         self(value)
     }
@@ -289,8 +292,8 @@ impl<F: Fn(*mut ()) -> BindingResult> BindingCallable for F {
 #[cfg(feature = "std")]
 scoped_tls_hkt::scoped_thread_local!(static CURRENT_BINDING : for<'a> Option<Pin<&'a BindingHolder>>);
 
-#[cfg(all(not(feature = "std"), feature = "unsafe_single_core"))]
-mod unsafe_single_core {
+#[cfg(all(not(feature = "std"), feature = "unsafe-single-threaded"))]
+mod unsafe_single_threaded {
     use super::BindingHolder;
     use core::cell::Cell;
     use core::pin::Pin;
@@ -317,13 +320,13 @@ mod unsafe_single_core {
             res
         }
     }
-    // Safety: the unsafe_single_core feature means we will only be called from a single thread
+    // Safety: the unsafe_single_threaded feature means we will only be called from a single thread
     unsafe impl Send for FakeThreadStorage {}
     unsafe impl Sync for FakeThreadStorage {}
 }
-#[cfg(all(not(feature = "std"), feature = "unsafe_single_core"))]
-static CURRENT_BINDING: unsafe_single_core::FakeThreadStorage =
-    unsafe_single_core::FakeThreadStorage::new();
+#[cfg(all(not(feature = "std"), feature = "unsafe-single-threaded"))]
+static CURRENT_BINDING: unsafe_single_threaded::FakeThreadStorage =
+    unsafe_single_threaded::FakeThreadStorage::new();
 
 /// Evaluate a function, but do not register any property dependencies if that function
 /// get the value of properties
@@ -331,16 +334,25 @@ pub fn evaluate_no_tracking<T>(f: impl FnOnce() -> T) -> T {
     CURRENT_BINDING.set(None, f)
 }
 
+/// Return true if there is currently a binding being evaluated so that access to
+/// properties register dependencies to that binding.
+pub fn is_currently_tracking() -> bool {
+    CURRENT_BINDING.is_set() && CURRENT_BINDING.with(|x| x.is_some())
+}
+
+/// This structure erase the `B` type with a vtable.
 #[repr(C)]
 struct BindingHolder<B = ()> {
     /// Access to the list of binding which depends on this binding
     dependencies: Cell<usize>,
     /// The binding own the nodes used in the dependencies lists of the properties
     /// From which we depend.
-    dep_nodes: RefCell<single_linked_list_pin::SingleLinkedListPinHead<DependencyNode>>,
+    dep_nodes: Cell<single_linked_list_pin::SingleLinkedListPinHead<DependencyNode>>,
     vtable: &'static BindingVTable,
     /// The binding is dirty and need to be re_evaluated
     dirty: Cell<bool>,
+    /// Specify that B is a `TwoWayBinding<T>`
+    is_two_way_binding: bool,
     pinned: PhantomPinned,
     #[cfg(slint_debug_property)]
     pub debug_name: String,
@@ -355,16 +367,17 @@ impl BindingHolder {
         #[cfg(slint_debug_property)] other_debug_name: &str,
     ) {
         let node = DependencyNode::new(self.get_ref() as *const _);
-        let mut dep_nodes = self.dep_nodes.borrow_mut();
+        let mut dep_nodes = self.dep_nodes.take();
         let node = dep_nodes.push_front(node);
         unsafe { DependencyListHead::append(&*property_that_will_notify, node) }
+        self.dep_nodes.set(dep_nodes);
     }
 }
 
 fn alloc_binding_holder<B: BindingCallable + 'static>(binding: B) -> *mut BindingHolder {
     /// Safety: _self must be a pointer that comes from a `Box<BindingHolder<B>>::into_raw()`
     unsafe fn binding_drop<B>(_self: *mut BindingHolder) {
-        Box::from_raw(_self as *mut BindingHolder<B>);
+        drop(Box::from_raw(_self as *mut BindingHolder<B>));
     }
 
     /// Safety: _self must be a pointer to a `BindingHolder<B>`
@@ -418,6 +431,7 @@ fn alloc_binding_holder<B: BindingCallable + 'static>(binding: B) -> *mut Bindin
         dep_nodes: Default::default(),
         vtable: <B as HasBindingVTable>::VT,
         dirty: Cell::new(true), // starts dirty so it evaluates the property when used
+        is_two_way_binding: B::IS_TWO_WAY_BINDNG,
         pinned: PhantomPinned,
         #[cfg(slint_debug_property)]
         debug_name: Default::default(),
@@ -520,8 +534,9 @@ impl PropertyHandle {
         debug_assert!((binding as usize) & 0b11 == 0);
         debug_assert!(self.handle.get() & 0b11 == 0);
         let const_sentinel = (&CONSTANT_PROPERTY_SENTINEL) as *const u32 as usize;
+        let is_constant = self.handle.get() == const_sentinel;
         unsafe {
-            if self.handle.get() == const_sentinel {
+            if is_constant {
                 (*binding).dependencies.set(const_sentinel);
             } else {
                 DependencyListHead::mem_move(
@@ -531,6 +546,12 @@ impl PropertyHandle {
             }
         }
         self.handle.set((binding as usize) | 0b10);
+        if !is_constant {
+            self.mark_dirty(
+                #[cfg(slint_debug_property)]
+                "",
+            );
+        }
     }
 
     fn dependencies(&self) -> *mut DependencyListHead {
@@ -549,7 +570,7 @@ impl PropertyHandle {
             if let Some(mut binding) = binding {
                 if binding.dirty.get() {
                     // clear all the nodes so that we can start from scratch
-                    *binding.dep_nodes.borrow_mut() = Default::default();
+                    binding.dep_nodes.set(Default::default());
                     let r = (binding.vtable.evaluate)(
                         binding.as_mut().get_unchecked_mut() as *mut BindingHolder,
                         value as *mut (),
@@ -644,7 +665,7 @@ unsafe fn mark_dependencies_dirty(dependencies: *mut DependencyListHead) {
     });
 }
 
-/// Types that can be set as bindings for a Property<T>
+/// Types that can be set as bindings for a `Property<T>`
 pub trait Binding<T> {
     /// Evaluate the binding and return the new value
     fn evaluate(&self, old_value: &T) -> T;
@@ -821,7 +842,7 @@ impl<T: Clone> Property<T> {
     /// If other properties have bindings depending of this property, these properties will
     /// be marked as dirty.
     ///
-    /// Closures of type `Fn()->T` implements Binding<T> and can be used as a binding
+    /// Closures of type `Fn()->T` implements `Binding<T>` and can be used as a binding
     ///
     /// ## Example
     /// ```
@@ -879,128 +900,6 @@ impl<T: Clone> Property<T> {
     }
 }
 
-impl<T: Clone + InterpolatedPropertyValue + 'static> Property<T> {
-    /// Change the value of this property, by animating (interpolating) from the current property's value
-    /// to the specified parameter value. The animation is done according to the parameters described by
-    /// the PropertyAnimation object.
-    ///
-    /// If other properties have binding depending of this property, these properties will
-    /// be marked as dirty.
-    pub fn set_animated_value(&self, value: T, animation_data: PropertyAnimation) {
-        // FIXME if the current value is a dirty binding, we must run it, but we do not have the context
-        let d = RefCell::new(PropertyValueAnimationData::new(
-            self.get_internal(),
-            value,
-            animation_data,
-        ));
-        // Safety: the BindingCallable will cast its argument to T
-        unsafe {
-            self.handle.set_binding(
-                move |val: *mut ()| {
-                    let (value, finished) = d.borrow_mut().compute_interpolated_value();
-                    *(val as *mut T) = value;
-                    if finished {
-                        BindingResult::RemoveBinding
-                    } else {
-                        crate::animations::CURRENT_ANIMATION_DRIVER
-                            .with(|driver| driver.set_has_active_animations());
-                        BindingResult::KeepBinding
-                    }
-                },
-                #[cfg(slint_debug_property)]
-                self.debug_name.borrow().as_str(),
-            );
-        }
-        self.handle.mark_dirty(
-            #[cfg(slint_debug_property)]
-            self.debug_name.borrow().as_str(),
-        );
-    }
-
-    /// Set a binding to this property.
-    ///
-    pub fn set_animated_binding(
-        &self,
-        binding: impl Binding<T> + 'static,
-        animation_data: PropertyAnimation,
-    ) {
-        let binding_callable = AnimatedBindingCallable::<T, _> {
-            original_binding: PropertyHandle {
-                handle: Cell::new(
-                    (alloc_binding_holder(move |val: *mut ()| unsafe {
-                        let val = &mut *(val as *mut T);
-                        *(val as *mut T) = binding.evaluate(val);
-                        BindingResult::KeepBinding
-                    }) as usize)
-                        | 0b10,
-                ),
-            },
-            state: Cell::new(AnimatedBindingState::NotAnimating),
-            animation_data: RefCell::new(PropertyValueAnimationData::new(
-                T::default(),
-                T::default(),
-                animation_data,
-            )),
-            compute_animation_details: || -> AnimationDetail { None },
-        };
-
-        // Safety: the `AnimatedBindingCallable`'s type match the property type
-        unsafe {
-            self.handle.set_binding(
-                binding_callable,
-                #[cfg(slint_debug_property)]
-                self.debug_name.borrow().as_str(),
-            )
-        };
-        self.handle.mark_dirty(
-            #[cfg(slint_debug_property)]
-            self.debug_name.borrow().as_str(),
-        );
-    }
-
-    /// Set a binding to this property, providing a callback for the transition animation
-    ///
-    pub fn set_animated_binding_for_transition(
-        &self,
-        binding: impl Binding<T> + 'static,
-        compute_animation_details: impl Fn() -> (PropertyAnimation, crate::animations::Instant)
-            + 'static,
-    ) {
-        let binding_callable = AnimatedBindingCallable::<T, _> {
-            original_binding: PropertyHandle {
-                handle: Cell::new(
-                    (alloc_binding_holder(move |val: *mut ()| unsafe {
-                        let val = &mut *(val as *mut T);
-                        *(val as *mut T) = binding.evaluate(val);
-                        BindingResult::KeepBinding
-                    }) as usize)
-                        | 0b10,
-                ),
-            },
-            state: Cell::new(AnimatedBindingState::NotAnimating),
-            animation_data: RefCell::new(PropertyValueAnimationData::new(
-                T::default(),
-                T::default(),
-                PropertyAnimation::default(),
-            )),
-            compute_animation_details: move || Some(compute_animation_details()),
-        };
-
-        // Safety: the `AnimatedBindingCallable`'s type match the property type
-        unsafe {
-            self.handle.set_binding(
-                binding_callable,
-                #[cfg(slint_debug_property)]
-                self.debug_name.borrow().as_str(),
-            )
-        };
-        self.handle.mark_dirty(
-            #[cfg(slint_debug_property)]
-            self.debug_name.borrow().as_str(),
-        );
-    }
-}
-
 #[test]
 fn properties_simple_test() {
     use pin_weak::rc::PinWeak;
@@ -1046,7 +945,7 @@ impl<T: PartialEq + Clone + 'static> Property<T> {
         struct TwoWayBinding<T> {
             common_property: Pin<Rc<Property<T>>>,
         }
-        impl<T: PartialEq + Clone + 'static> BindingCallable for TwoWayBinding<T> {
+        unsafe impl<T: PartialEq + Clone + 'static> BindingCallable for TwoWayBinding<T> {
             unsafe fn evaluate(self: Pin<&Self>, value: *mut ()) -> BindingResult {
                 *(value as *mut T) = self.common_property.as_ref().get();
                 BindingResult::KeepBinding
@@ -1064,19 +963,60 @@ impl<T: PartialEq + Clone + 'static> Property<T> {
                 self.common_property.handle.set_binding_impl(new_binding);
                 true
             }
+
+            const IS_TWO_WAY_BINDNG: bool = true;
         }
 
+        #[cfg(slint_debug_property)]
+        let debug_name = format!("<{}<=>{}>", prop1.debug_name.borrow(), prop2.debug_name.borrow());
+
         let value = prop2.get();
+
+        let prop1_handle_val = prop1.handle.handle.get();
+        if prop1_handle_val & 0b10 == 0b10 {
+            // Safety: the handle is a pointer to a binding
+            let holder = unsafe { &*((prop1_handle_val & !0b11) as *const BindingHolder) };
+            if holder.is_two_way_binding {
+                unsafe {
+                    // Safety: the handle is a pointer to a binding whose B is a TwoWayBinding<T>
+                    let holder =
+                        &*((prop1_handle_val & !0b11) as *const BindingHolder<TwoWayBinding<T>>);
+                    // Safety: TwoWayBinding's T is the same as the type for both properties
+                    prop2.handle.set_binding(
+                        TwoWayBinding { common_property: holder.binding.common_property.clone() },
+                        #[cfg(slint_debug_property)]
+                        debug_name.as_str(),
+                    );
+                }
+                return;
+            }
+        };
+
         let prop2_handle_val = prop2.handle.handle.get();
         let handle = if prop2_handle_val & 0b10 == 0b10 {
+            // Safety: the handle is a pointer to a binding
+            let holder = unsafe { &*((prop2_handle_val & !0b11) as *const BindingHolder) };
+            if holder.is_two_way_binding {
+                unsafe {
+                    // Safety: the handle is a pointer to a binding whose B is a TwoWayBinding<T>
+                    let holder =
+                        &*((prop2_handle_val & !0b11) as *const BindingHolder<TwoWayBinding<T>>);
+                    // Safety: TwoWayBinding's T is the same as the type for both properties
+                    prop1.handle.set_binding(
+                        TwoWayBinding { common_property: holder.binding.common_property.clone() },
+                        #[cfg(slint_debug_property)]
+                        debug_name.as_str(),
+                    );
+                }
+                return;
+            }
             // If prop2 is a binding, just "steal it"
             prop2.handle.handle.set(0);
             PropertyHandle { handle: Cell::new(prop2_handle_val) }
         } else {
             PropertyHandle::default()
         };
-        #[cfg(slint_debug_property)]
-        let debug_name = format!("<{}<=>{}>", prop1.debug_name.borrow(), prop2.debug_name.borrow());
+
         let common_property = Rc::pin(Property {
             handle,
             value: UnsafeCell::new(value),
@@ -1097,10 +1037,6 @@ impl<T: PartialEq + Clone + 'static> Property<T> {
                 debug_name.as_str(),
             );
         }
-        prop1.handle.mark_dirty(
-            #[cfg(slint_debug_property)]
-            debug_name.as_str(),
-        );
     }
 }
 
@@ -1155,840 +1091,8 @@ fn property_two_ways_test_binding() {
     assert_eq!(depends.as_ref().get(), 55 + 9 + 8);
 }
 
-enum AnimationState {
-    Delaying,
-    Animating { current_iteration: u64 },
-    Done,
-}
-
-struct PropertyValueAnimationData<T> {
-    from_value: T,
-    to_value: T,
-    details: PropertyAnimation,
-    start_time: crate::animations::Instant,
-    state: AnimationState,
-}
-
-impl<T: InterpolatedPropertyValue + Clone> PropertyValueAnimationData<T> {
-    fn new(from_value: T, to_value: T, details: PropertyAnimation) -> Self {
-        let start_time = crate::animations::current_tick();
-
-        Self { from_value, to_value, details, start_time, state: AnimationState::Delaying }
-    }
-
-    fn compute_interpolated_value(&mut self) -> (T, bool) {
-        let new_tick = crate::animations::current_tick();
-        let mut time_progress = new_tick.duration_since(self.start_time).as_millis() as u64;
-
-        match self.state {
-            AnimationState::Delaying => {
-                if self.details.delay <= 0 {
-                    self.state = AnimationState::Animating { current_iteration: 0 };
-                    return self.compute_interpolated_value();
-                }
-
-                let delay = self.details.delay as u64;
-
-                if time_progress < delay {
-                    (self.from_value.clone(), false)
-                } else {
-                    self.start_time =
-                        new_tick - core::time::Duration::from_millis(time_progress - delay);
-
-                    // Decide on next state:
-                    self.state = AnimationState::Animating { current_iteration: 0 };
-                    self.compute_interpolated_value()
-                }
-            }
-            AnimationState::Animating { mut current_iteration } => {
-                if self.details.duration <= 0 || self.details.iteration_count == 0. {
-                    self.state = AnimationState::Done;
-                    return self.compute_interpolated_value();
-                }
-
-                let duration = self.details.duration as u64;
-                if time_progress >= duration {
-                    // wrap around
-                    current_iteration += time_progress / duration;
-                    time_progress %= duration;
-                    self.start_time =
-                        new_tick - core::time::Duration::from_millis(time_progress as u64);
-                }
-
-                if (self.details.iteration_count < 0.)
-                    || (((current_iteration * duration) + time_progress) as f64)
-                        < ((self.details.iteration_count as f64) * (duration as f64))
-                {
-                    self.state = AnimationState::Animating { current_iteration };
-
-                    let progress =
-                        (time_progress as f32 / self.details.duration as f32).clamp(0., 1.);
-                    let t = crate::animations::easing_curve(&self.details.easing, progress);
-                    let val = self.from_value.interpolate(&self.to_value, t);
-
-                    (val, false)
-                } else {
-                    self.state = AnimationState::Done;
-                    self.compute_interpolated_value()
-                }
-            }
-            AnimationState::Done => (self.to_value.clone(), true),
-        }
-    }
-
-    fn reset(&mut self) {
-        self.state = AnimationState::Delaying;
-        self.start_time = crate::animations::current_tick();
-    }
-}
-
-#[derive(Clone, Copy, Eq, PartialEq, Debug)]
-enum AnimatedBindingState {
-    Animating,
-    NotAnimating,
-    ShouldStart,
-}
-
-struct AnimatedBindingCallable<T, A> {
-    original_binding: PropertyHandle,
-    state: Cell<AnimatedBindingState>,
-    animation_data: RefCell<PropertyValueAnimationData<T>>,
-    compute_animation_details: A,
-}
-
-type AnimationDetail = Option<(PropertyAnimation, crate::animations::Instant)>;
-
-impl<T: InterpolatedPropertyValue + Clone, A: Fn() -> AnimationDetail> BindingCallable
-    for AnimatedBindingCallable<T, A>
-{
-    unsafe fn evaluate(self: Pin<&Self>, value: *mut ()) -> BindingResult {
-        let original_binding = Pin::new_unchecked(&self.original_binding);
-        original_binding.register_as_dependency_to_current_binding(
-            #[cfg(slint_debug_property)]
-            "<AnimatedBindingCallable>",
-        );
-        match self.state.get() {
-            AnimatedBindingState::Animating => {
-                let (val, finished) = self.animation_data.borrow_mut().compute_interpolated_value();
-                *(value as *mut T) = val;
-                if finished {
-                    self.state.set(AnimatedBindingState::NotAnimating)
-                } else {
-                    crate::animations::CURRENT_ANIMATION_DRIVER
-                        .with(|driver| driver.set_has_active_animations());
-                }
-            }
-            AnimatedBindingState::NotAnimating => {
-                self.original_binding.update(value);
-            }
-            AnimatedBindingState::ShouldStart => {
-                let value = &mut *(value as *mut T);
-                self.state.set(AnimatedBindingState::Animating);
-                let mut animation_data = self.animation_data.borrow_mut();
-                // animation_data.details.iteration_count = 1.;
-                animation_data.from_value = value.clone();
-                self.original_binding.update((&mut animation_data.to_value) as *mut T as *mut ());
-                if let Some((details, start_time)) = (self.compute_animation_details)() {
-                    animation_data.start_time = start_time;
-                    animation_data.details = details;
-                }
-                let (val, finished) = animation_data.compute_interpolated_value();
-                *value = val;
-                if finished {
-                    self.state.set(AnimatedBindingState::NotAnimating)
-                } else {
-                    crate::animations::CURRENT_ANIMATION_DRIVER
-                        .with(|driver| driver.set_has_active_animations());
-                }
-            }
-        };
-        BindingResult::KeepBinding
-    }
-    fn mark_dirty(self: Pin<&Self>) {
-        if self.state.get() == AnimatedBindingState::ShouldStart {
-            return;
-        }
-        let original_dirty = self.original_binding.access(|b| b.unwrap().dirty.get());
-        if original_dirty {
-            self.state.set(AnimatedBindingState::ShouldStart);
-            self.animation_data.borrow_mut().reset();
-        }
-    }
-}
-
-/// InterpolatedPropertyValue is a trait used to enable properties to be used with
-/// animations that interpolate values. The basic requirement is the ability to apply
-/// a progress that's typically between 0 and 1 to a range.
-pub trait InterpolatedPropertyValue: PartialEq + Default + 'static {
-    /// Returns the interpolated value between self and target_value according to the
-    /// progress parameter t that's usually between 0 and 1. With certain animation
-    /// easing curves it may over- or undershoot though.
-    #[must_use]
-    fn interpolate(&self, target_value: &Self, t: f32) -> Self;
-}
-
-impl InterpolatedPropertyValue for f32 {
-    fn interpolate(&self, target_value: &Self, t: f32) -> Self {
-        self + t * (target_value - self)
-    }
-}
-
-impl InterpolatedPropertyValue for i32 {
-    fn interpolate(&self, target_value: &Self, t: f32) -> Self {
-        self + (t * (target_value - self) as f32) as i32
-    }
-}
-
-impl InterpolatedPropertyValue for i64 {
-    fn interpolate(&self, target_value: &Self, t: f32) -> Self {
-        self + (t * (target_value - self) as f32) as Self
-    }
-}
-
-impl InterpolatedPropertyValue for u8 {
-    fn interpolate(&self, target_value: &Self, t: f32) -> Self {
-        ((*self as f32) + (t * ((*target_value as f32) - (*self as f32)))).min(255.).max(0.) as u8
-    }
-}
-
-#[cfg(test)]
-mod animation_tests {
-    use super::*;
-    use crate::items::PropertyAnimation;
-    use std::rc::Rc;
-
-    #[derive(Default)]
-    struct Component {
-        width: Property<i32>,
-        width_times_two: Property<i32>,
-        feed_property: Property<i32>, // used by binding to feed values into width
-    }
-
-    impl Component {
-        fn new_test_component() -> Rc<Self> {
-            let compo = Rc::new(Component::default());
-            let w = Rc::downgrade(&compo);
-            compo.width_times_two.set_binding(move || {
-                let compo = w.upgrade().unwrap();
-                get_prop_value(&compo.width) * 2
-            });
-
-            compo
-        }
-    }
-
-    const DURATION: instant::Duration = instant::Duration::from_millis(10000);
-    const DELAY: instant::Duration = instant::Duration::from_millis(800);
-
-    // Helper just for testing
-    fn get_prop_value<T: Clone>(prop: &Property<T>) -> T {
-        unsafe { Pin::new_unchecked(prop).get() }
-    }
-
-    #[test]
-    fn properties_test_animation_negative_delay_triggered_by_set() {
-        let compo = Component::new_test_component();
-
-        let animation_details = PropertyAnimation {
-            delay: -25,
-            duration: DURATION.as_millis() as _,
-            iteration_count: 1.,
-            ..PropertyAnimation::default()
-        };
-
-        compo.width.set(100);
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        let start_time = crate::animations::current_tick();
-
-        compo.width.set_animated_value(200, animation_details);
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DURATION / 2));
-        assert_eq!(get_prop_value(&compo.width), 150);
-        assert_eq!(get_prop_value(&compo.width_times_two), 300);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DURATION));
-        assert_eq!(get_prop_value(&compo.width), 200);
-        assert_eq!(get_prop_value(&compo.width_times_two), 400);
-
-        // Overshoot: Always to_value.
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DURATION + DURATION / 2));
-        assert_eq!(get_prop_value(&compo.width), 200);
-        assert_eq!(get_prop_value(&compo.width_times_two), 400);
-
-        // the binding should be removed
-        compo.width.handle.access(|binding| assert!(binding.is_none()));
-    }
-
-    #[test]
-    fn properties_test_animation_triggered_by_set() {
-        let compo = Component::new_test_component();
-
-        let animation_details = PropertyAnimation {
-            duration: DURATION.as_millis() as _,
-            iteration_count: 1.,
-            ..PropertyAnimation::default()
-        };
-
-        compo.width.set(100);
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        let start_time = crate::animations::current_tick();
-
-        compo.width.set_animated_value(200, animation_details);
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DURATION / 2));
-        assert_eq!(get_prop_value(&compo.width), 150);
-        assert_eq!(get_prop_value(&compo.width_times_two), 300);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DURATION));
-        assert_eq!(get_prop_value(&compo.width), 200);
-        assert_eq!(get_prop_value(&compo.width_times_two), 400);
-
-        // Overshoot: Always to_value.
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DURATION + DURATION / 2));
-        assert_eq!(get_prop_value(&compo.width), 200);
-        assert_eq!(get_prop_value(&compo.width_times_two), 400);
-
-        // the binding should be removed
-        compo.width.handle.access(|binding| assert!(binding.is_none()));
-    }
-
-    #[test]
-    fn properties_test_delayed_animation_triggered_by_set() {
-        let compo = Component::new_test_component();
-
-        let animation_details = PropertyAnimation {
-            delay: DELAY.as_millis() as _,
-            iteration_count: 1.,
-            duration: DURATION.as_millis() as _,
-            ..PropertyAnimation::default()
-        };
-
-        compo.width.set(100);
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        let start_time = crate::animations::current_tick();
-
-        compo.width.set_animated_value(200, animation_details);
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        // In delay:
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY / 2));
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        // In animation:
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY));
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY + DURATION / 2));
-        assert_eq!(get_prop_value(&compo.width), 150);
-        assert_eq!(get_prop_value(&compo.width_times_two), 300);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY + DURATION));
-        assert_eq!(get_prop_value(&compo.width), 200);
-        assert_eq!(get_prop_value(&compo.width_times_two), 400);
-
-        // Overshoot: Always to_value.
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY + DURATION + DURATION / 2));
-        assert_eq!(get_prop_value(&compo.width), 200);
-        assert_eq!(get_prop_value(&compo.width_times_two), 400);
-
-        // the binding should be removed
-        compo.width.handle.access(|binding| assert!(binding.is_none()));
-    }
-
-    #[test]
-    fn properties_test_delayed_animation_fractual_interation_triggered_by_set() {
-        let compo = Component::new_test_component();
-
-        let animation_details = PropertyAnimation {
-            delay: DELAY.as_millis() as _,
-            iteration_count: 1.5,
-            duration: DURATION.as_millis() as _,
-            ..PropertyAnimation::default()
-        };
-
-        compo.width.set(100);
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        let start_time = crate::animations::current_tick();
-
-        compo.width.set_animated_value(200, animation_details);
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        // In delay:
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY / 2));
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        // In animation:
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY));
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY + DURATION / 2));
-        assert_eq!(get_prop_value(&compo.width), 150);
-        assert_eq!(get_prop_value(&compo.width_times_two), 300);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY + DURATION));
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        // (fractual) end of animation
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY + DURATION + DURATION / 4));
-        assert_eq!(get_prop_value(&compo.width), 125);
-        assert_eq!(get_prop_value(&compo.width_times_two), 250);
-
-        // End of animation:
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY + DURATION + DURATION / 2));
-        assert_eq!(get_prop_value(&compo.width), 200);
-        assert_eq!(get_prop_value(&compo.width_times_two), 400);
-
-        // the binding should be removed
-        compo.width.handle.access(|binding| assert!(binding.is_none()));
-    }
-    #[test]
-    fn properties_test_delayed_animation_null_duration_triggered_by_set() {
-        let compo = Component::new_test_component();
-
-        let animation_details = PropertyAnimation {
-            delay: DELAY.as_millis() as _,
-            iteration_count: 1.0,
-            duration: 0,
-            ..PropertyAnimation::default()
-        };
-
-        compo.width.set(100);
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        let start_time = crate::animations::current_tick();
-
-        compo.width.set_animated_value(200, animation_details);
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        // In delay:
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY / 2));
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        // No animation:
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY));
-        assert_eq!(get_prop_value(&compo.width), 200);
-        assert_eq!(get_prop_value(&compo.width_times_two), 400);
-
-        // Overshoot: Always to_value.
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY + DURATION + DURATION / 2));
-        assert_eq!(get_prop_value(&compo.width), 200);
-        assert_eq!(get_prop_value(&compo.width_times_two), 400);
-
-        // the binding should be removed
-        compo.width.handle.access(|binding| assert!(binding.is_none()));
-    }
-
-    #[test]
-    fn properties_test_delayed_animation_negative_duration_triggered_by_set() {
-        let compo = Component::new_test_component();
-
-        let animation_details = PropertyAnimation {
-            delay: DELAY.as_millis() as _,
-            iteration_count: 1.0,
-            duration: -25,
-            ..PropertyAnimation::default()
-        };
-
-        compo.width.set(100);
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        let start_time = crate::animations::current_tick();
-
-        compo.width.set_animated_value(200, animation_details);
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        // In delay:
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY / 2));
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        // No animation:
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY));
-        assert_eq!(get_prop_value(&compo.width), 200);
-        assert_eq!(get_prop_value(&compo.width_times_two), 400);
-
-        // Overshoot: Always to_value.
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY + DURATION + DURATION / 2));
-        assert_eq!(get_prop_value(&compo.width), 200);
-        assert_eq!(get_prop_value(&compo.width_times_two), 400);
-
-        // the binding should be removed
-        compo.width.handle.access(|binding| assert!(binding.is_none()));
-    }
-
-    #[test]
-    fn properties_test_delayed_animation_no_iteration_triggered_by_set() {
-        let compo = Component::new_test_component();
-
-        let animation_details = PropertyAnimation {
-            delay: DELAY.as_millis() as _,
-            iteration_count: 0.0,
-            duration: DURATION.as_millis() as _,
-            ..PropertyAnimation::default()
-        };
-
-        compo.width.set(100);
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        let start_time = crate::animations::current_tick();
-
-        compo.width.set_animated_value(200, animation_details);
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        // In delay:
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY / 2));
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        // No animation:
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY));
-        assert_eq!(get_prop_value(&compo.width), 200);
-        assert_eq!(get_prop_value(&compo.width_times_two), 400);
-
-        // Overshoot: Always to_value.
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY + DURATION + DURATION / 2));
-        assert_eq!(get_prop_value(&compo.width), 200);
-        assert_eq!(get_prop_value(&compo.width_times_two), 400);
-
-        // the binding should be removed
-        compo.width.handle.access(|binding| assert!(binding.is_none()));
-    }
-
-    #[test]
-    fn properties_test_delayed_animation_negative_iteration_triggered_by_set() {
-        let compo = Component::new_test_component();
-
-        let animation_details = PropertyAnimation {
-            delay: DELAY.as_millis() as _,
-            iteration_count: -42., // loop forever!
-            duration: DURATION.as_millis() as _,
-            ..PropertyAnimation::default()
-        };
-
-        compo.width.set(100);
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        let start_time = crate::animations::current_tick();
-
-        compo.width.set_animated_value(200, animation_details);
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        // In delay:
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY / 2));
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        // In animation:
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY));
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY + DURATION / 2));
-        assert_eq!(get_prop_value(&compo.width), 150);
-        assert_eq!(get_prop_value(&compo.width_times_two), 300);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY + DURATION));
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        // In animation (again):
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY + 500 * DURATION));
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER.with(|driver| {
-            driver.update_animations(start_time + DELAY + 50000 * DURATION + DURATION / 2)
-        });
-        assert_eq!(get_prop_value(&compo.width), 150);
-        assert_eq!(get_prop_value(&compo.width_times_two), 300);
-
-        // the binding should not be removed as it is still animating!
-        compo.width.handle.access(|binding| assert!(binding.is_some()));
-    }
-
-    #[test]
-    fn properties_test_animation_triggered_by_binding() {
-        let compo = Component::new_test_component();
-
-        let start_time = crate::animations::current_tick();
-
-        let animation_details = PropertyAnimation {
-            duration: DURATION.as_millis() as _,
-            iteration_count: 1.,
-            ..PropertyAnimation::default()
-        };
-
-        let w = Rc::downgrade(&compo);
-        compo.width.set_animated_binding(
-            move || {
-                let compo = w.upgrade().unwrap();
-                get_prop_value(&compo.feed_property)
-            },
-            animation_details,
-        );
-
-        compo.feed_property.set(100);
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        compo.feed_property.set(200);
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DURATION / 2));
-        assert_eq!(get_prop_value(&compo.width), 150);
-        assert_eq!(get_prop_value(&compo.width_times_two), 300);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DURATION));
-        assert_eq!(get_prop_value(&compo.width), 200);
-        assert_eq!(get_prop_value(&compo.width_times_two), 400);
-    }
-
-    #[test]
-    fn properties_test_delayed_animation_triggered_by_binding() {
-        let compo = Component::new_test_component();
-
-        let start_time = crate::animations::current_tick();
-
-        let animation_details = PropertyAnimation {
-            delay: DELAY.as_millis() as _,
-            duration: DURATION.as_millis() as _,
-            iteration_count: 1.0,
-            ..PropertyAnimation::default()
-        };
-
-        let w = Rc::downgrade(&compo);
-        compo.width.set_animated_binding(
-            move || {
-                let compo = w.upgrade().unwrap();
-                get_prop_value(&compo.feed_property)
-            },
-            animation_details,
-        );
-
-        compo.feed_property.set(100);
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        compo.feed_property.set(200);
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        // In delay:
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY / 2));
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        // In animation:
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY));
-        assert_eq!(get_prop_value(&compo.width), 100);
-        assert_eq!(get_prop_value(&compo.width_times_two), 200);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY + DURATION / 2));
-        assert_eq!(get_prop_value(&compo.width), 150);
-        assert_eq!(get_prop_value(&compo.width_times_two), 300);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY + DURATION));
-        assert_eq!(get_prop_value(&compo.width), 200);
-        assert_eq!(get_prop_value(&compo.width_times_two), 400);
-
-        // Overshoot: Always to_value.
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DELAY + DURATION + DURATION / 2));
-        assert_eq!(get_prop_value(&compo.width), 200);
-        assert_eq!(get_prop_value(&compo.width_times_two), 400);
-    }
-
-    #[test]
-    fn test_loop() {
-        let compo = Component::new_test_component();
-
-        let animation_details = PropertyAnimation {
-            duration: DURATION.as_millis() as _,
-            iteration_count: 2.,
-            ..PropertyAnimation::default()
-        };
-
-        compo.width.set(100);
-
-        let start_time = crate::animations::current_tick();
-
-        compo.width.set_animated_value(200, animation_details);
-        assert_eq!(get_prop_value(&compo.width), 100);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DURATION / 2));
-        assert_eq!(get_prop_value(&compo.width), 150);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DURATION));
-        assert_eq!(get_prop_value(&compo.width), 100);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DURATION + DURATION / 2));
-        assert_eq!(get_prop_value(&compo.width), 150);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DURATION * 2));
-        assert_eq!(get_prop_value(&compo.width), 200);
-
-        // the binding should be removed
-        compo.width.handle.access(|binding| assert!(binding.is_none()));
-    }
-
-    #[test]
-    fn test_loop_via_binding() {
-        // Loop twice, restart the animation and still loop twice.
-
-        let compo = Component::new_test_component();
-
-        let start_time = crate::animations::current_tick();
-
-        let animation_details = PropertyAnimation {
-            duration: DURATION.as_millis() as _,
-            iteration_count: 2.,
-            ..PropertyAnimation::default()
-        };
-
-        let w = Rc::downgrade(&compo);
-        compo.width.set_animated_binding(
-            move || {
-                let compo = w.upgrade().unwrap();
-                get_prop_value(&compo.feed_property)
-            },
-            animation_details,
-        );
-
-        compo.feed_property.set(100);
-        assert_eq!(get_prop_value(&compo.width), 100);
-
-        compo.feed_property.set(200);
-        assert_eq!(get_prop_value(&compo.width), 100);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DURATION / 2));
-
-        assert_eq!(get_prop_value(&compo.width), 150);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DURATION));
-
-        assert_eq!(get_prop_value(&compo.width), 100);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DURATION + DURATION / 2));
-
-        assert_eq!(get_prop_value(&compo.width), 150);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + 2 * DURATION));
-
-        assert_eq!(get_prop_value(&compo.width), 200);
-
-        // Overshoot a bit:
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + 2 * DURATION + DURATION / 2));
-
-        assert_eq!(get_prop_value(&compo.width), 200);
-
-        // Restart the animation by setting a new value.
-
-        let start_time = crate::animations::current_tick();
-
-        compo.feed_property.set(300);
-        assert_eq!(get_prop_value(&compo.width), 200);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DURATION / 2));
-
-        assert_eq!(get_prop_value(&compo.width), 250);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DURATION));
-
-        assert_eq!(get_prop_value(&compo.width), 200);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + DURATION + DURATION / 2));
-
-        assert_eq!(get_prop_value(&compo.width), 250);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + 2 * DURATION));
-
-        assert_eq!(get_prop_value(&compo.width), 300);
-
-        crate::animations::CURRENT_ANIMATION_DRIVER
-            .with(|driver| driver.update_animations(start_time + 2 * DURATION + DURATION / 2));
-
-        assert_eq!(get_prop_value(&compo.width), 300);
-    }
-}
+mod properties_animations;
+pub use properties_animations::*;
 
 /// Value of the state property
 ///
@@ -2009,7 +1113,7 @@ struct StateInfoBinding<F> {
     binding: F,
 }
 
-impl<F: Fn() -> i32> crate::properties::BindingCallable for StateInfoBinding<F> {
+unsafe impl<F: Fn() -> i32> crate::properties::BindingCallable for StateInfoBinding<F> {
     unsafe fn evaluate(self: Pin<&Self>, value: *mut ()) -> BindingResult {
         // Safety: We should ony set this binding on a property of type StateInfo
         let value = &mut *(value as *mut StateInfo);
@@ -2044,15 +1148,15 @@ pub fn set_state_binding(property: Pin<&Property<StateInfo>>, binding: impl Fn()
 }
 
 #[doc(hidden)]
-pub trait PropertyChangeHandler {
+pub trait PropertyDirtyHandler {
     fn notify(&self);
 }
 
-impl PropertyChangeHandler for () {
+impl PropertyDirtyHandler for () {
     fn notify(&self) {}
 }
 
-impl<F: Fn()> PropertyChangeHandler for F {
+impl<F: Fn()> PropertyDirtyHandler for F {
     fn notify(&self) {
         self()
     }
@@ -2060,8 +1164,8 @@ impl<F: Fn()> PropertyChangeHandler for F {
 
 /// This structure allow to run a closure that queries properties, and can report
 /// if any property we accessed have become dirty
-pub struct PropertyTracker<ChangeHandler = ()> {
-    holder: BindingHolder<ChangeHandler>,
+pub struct PropertyTracker<DirtyHandler = ()> {
+    holder: BindingHolder<DirtyHandler>,
 }
 
 impl Default for PropertyTracker<()> {
@@ -2079,6 +1183,7 @@ impl Default for PropertyTracker<()> {
             dep_nodes: Default::default(),
             vtable: VT,
             dirty: Cell::new(true), // starts dirty so it evaluates the property when used
+            is_two_way_binding: false,
             pinned: PhantomPinned,
             binding: (),
             #[cfg(slint_debug_property)]
@@ -2088,7 +1193,7 @@ impl Default for PropertyTracker<()> {
     }
 }
 
-impl<ChangeHandler> Drop for PropertyTracker<ChangeHandler> {
+impl<DirtyHandler> Drop for PropertyTracker<DirtyHandler> {
     fn drop(&mut self) {
         unsafe {
             DependencyListHead::drop(self.holder.dependencies.as_ptr() as *mut DependencyListHead);
@@ -2096,7 +1201,7 @@ impl<ChangeHandler> Drop for PropertyTracker<ChangeHandler> {
     }
 }
 
-impl<ChangeHandler: PropertyChangeHandler> PropertyTracker<ChangeHandler> {
+impl<DirtyHandler: PropertyDirtyHandler> PropertyTracker<DirtyHandler> {
     #[cfg(slint_debug_property)]
     /// set the debug name when `cfg(slint_debug_property`
     pub fn set_debug_name(&mut self, debug_name: String) {
@@ -2104,7 +1209,7 @@ impl<ChangeHandler: PropertyChangeHandler> PropertyTracker<ChangeHandler> {
     }
 
     /// Register this property tracker as a dependency to the current binding/property tracker being evaluated
-    fn register_as_dependency_to_current_binding(self: Pin<&Self>) {
+    pub fn register_as_dependency_to_current_binding(self: Pin<&Self>) {
         if CURRENT_BINDING.is_set() {
             CURRENT_BINDING.with(|cur_binding| {
                 if let Some(cur_binding) = cur_binding {
@@ -2137,12 +1242,12 @@ impl<ChangeHandler: PropertyChangeHandler> PropertyTracker<ChangeHandler> {
     /// any changes to accessed properties will not propagate to the other tracker.
     pub fn evaluate_as_dependency_root<R>(self: Pin<&Self>, f: impl FnOnce() -> R) -> R {
         // clear all the nodes so that we can start from scratch
-        *self.holder.dep_nodes.borrow_mut() = Default::default();
+        self.holder.dep_nodes.set(Default::default());
 
         // Safety: it is safe to project the holder as we don't implement drop or unpin
         let pinned_holder = unsafe {
             self.map_unchecked(|s| {
-                core::mem::transmute::<&BindingHolder<ChangeHandler>, &BindingHolder<()>>(&s.holder)
+                core::mem::transmute::<&BindingHolder<DirtyHandler>, &BindingHolder<()>>(&s.holder)
             })
         };
         let r = CURRENT_BINDING.set(Some(pinned_holder), f);
@@ -2164,10 +1269,18 @@ impl<ChangeHandler: PropertyChangeHandler> PropertyTracker<ChangeHandler> {
     }
 
     /// Sets the specified callback handler function, which will be called if any
-    /// properties that this tracker depends on change their value.
-    pub fn new_with_change_handler(handler: ChangeHandler) -> Self {
-        /// Safety: _self must be a pointer to a `BindingHolder<ChangeHandler>`
-        unsafe fn mark_dirty<B: PropertyChangeHandler>(
+    /// properties that this tracker depends on becomes dirty.
+    ///
+    /// The `handmer` `PropertyDirtyHandler` is a trait which is implemented for
+    /// any `Fn()` closure
+    ///
+    /// Note that the handler will be invoked immediatly when a property is modified or
+    /// marked as dirty. In particular, the involved property are still in a locked
+    /// state and should not be accessed while the handler is run. This function can be
+    /// usefull to mark some work to be done later.
+    pub fn new_with_dirty_handler(handler: DirtyHandler) -> Self {
+        /// Safety: _self must be a pointer to a `BindingHolder<DirtyHandler>`
+        unsafe fn mark_dirty<B: PropertyDirtyHandler>(
             _self: *const BindingHolder,
             was_dirty: bool,
         ) {
@@ -2179,7 +1292,7 @@ impl<ChangeHandler: PropertyChangeHandler> PropertyTracker<ChangeHandler> {
         trait HasBindingVTable {
             const VT: &'static BindingVTable;
         }
-        impl<B: PropertyChangeHandler> HasBindingVTable for B {
+        impl<B: PropertyDirtyHandler> HasBindingVTable for B {
             const VT: &'static BindingVTable = &BindingVTable {
                 drop: |_| (),
                 evaluate: |_, _| BindingResult::KeepBinding,
@@ -2192,8 +1305,9 @@ impl<ChangeHandler: PropertyChangeHandler> PropertyTracker<ChangeHandler> {
         let holder = BindingHolder {
             dependencies: Cell::new(0),
             dep_nodes: Default::default(),
-            vtable: <ChangeHandler as HasBindingVTable>::VT,
+            vtable: <DirtyHandler as HasBindingVTable>::VT,
             dirty: Cell::new(true), // starts dirty so it evaluates the property when used
+            is_two_way_binding: false,
             pinned: PhantomPinned,
             binding: handler,
             #[cfg(slint_debug_property)]
@@ -2252,9 +1366,9 @@ fn test_nested_property_trackers() {
 }
 
 #[test]
-fn test_property_change_handler() {
+fn test_property_dirty_handler() {
     let call_flag = Rc::new(Cell::new(false));
-    let tracker = Box::pin(PropertyTracker::new_with_change_handler({
+    let tracker = Box::pin(PropertyTracker::new_with_dirty_handler({
         let call_flag = call_flag.clone();
         move || {
             (*call_flag).set(true);
@@ -2339,458 +1453,4 @@ fn test_nested_property_tracker_evaluate_if_dirty() {
 }
 
 #[cfg(feature = "ffi")]
-pub(crate) mod ffi {
-    use super::*;
-    use crate::graphics::{Brush, Color};
-    use core::pin::Pin;
-
-    #[allow(non_camel_case_types)]
-    type c_void = ();
-    #[repr(C)]
-    /// Has the same layout as PropertyHandle
-    pub struct PropertyHandleOpaque(PropertyHandle);
-
-    /// Initialize the first pointer of the Property. Does not initialize the content.
-    /// `out` is assumed to be uninitialized
-    #[no_mangle]
-    pub unsafe extern "C" fn slint_property_init(out: *mut PropertyHandleOpaque) {
-        core::ptr::write(out, PropertyHandleOpaque(PropertyHandle::default()));
-    }
-
-    /// To be called before accessing the value
-    #[no_mangle]
-    pub unsafe extern "C" fn slint_property_update(
-        handle: &PropertyHandleOpaque,
-        val: *mut c_void,
-    ) {
-        let handle = Pin::new_unchecked(&handle.0);
-        handle.update(val);
-        handle.register_as_dependency_to_current_binding();
-    }
-
-    /// Mark the fact that the property was changed and that its binding need to be removed, and
-    /// the dependencies marked dirty.
-    /// To be called after the `value` has been changed
-    #[no_mangle]
-    pub unsafe extern "C" fn slint_property_set_changed(
-        handle: &PropertyHandleOpaque,
-        value: *const c_void,
-    ) {
-        if !handle.0.access(|b| {
-            b.map_or(false, |b| (b.vtable.intercept_set)(&*b as *const BindingHolder, value))
-        }) {
-            handle.0.remove_binding();
-        }
-        handle.0.mark_dirty();
-    }
-
-    fn make_c_function_binding(
-        binding: extern "C" fn(*mut c_void, *mut c_void),
-        user_data: *mut c_void,
-        drop_user_data: Option<extern "C" fn(*mut c_void)>,
-        intercept_set: Option<
-            extern "C" fn(user_data: *mut c_void, pointer_to_value: *const c_void) -> bool,
-        >,
-        intercept_set_binding: Option<
-            extern "C" fn(user_data: *mut c_void, new_binding: *mut c_void) -> bool,
-        >,
-    ) -> impl BindingCallable {
-        struct CFunctionBinding<T> {
-            binding_function: extern "C" fn(*mut c_void, *mut T),
-            user_data: *mut c_void,
-            drop_user_data: Option<extern "C" fn(*mut c_void)>,
-            intercept_set: Option<
-                extern "C" fn(user_data: *mut c_void, pointer_to_value: *const c_void) -> bool,
-            >,
-            intercept_set_binding:
-                Option<extern "C" fn(user_data: *mut c_void, new_binding: *mut c_void) -> bool>,
-        }
-
-        impl<T> Drop for CFunctionBinding<T> {
-            fn drop(&mut self) {
-                if let Some(x) = self.drop_user_data {
-                    x(self.user_data)
-                }
-            }
-        }
-
-        impl<T> BindingCallable for CFunctionBinding<T> {
-            unsafe fn evaluate(self: Pin<&Self>, value: *mut ()) -> BindingResult {
-                (self.binding_function)(self.user_data, value as *mut T);
-                BindingResult::KeepBinding
-            }
-            unsafe fn intercept_set(self: Pin<&Self>, value: *const ()) -> bool {
-                match self.intercept_set {
-                    None => false,
-                    Some(intercept_set) => intercept_set(self.user_data, value),
-                }
-            }
-            unsafe fn intercept_set_binding(
-                self: Pin<&Self>,
-                new_binding: *mut BindingHolder,
-            ) -> bool {
-                match self.intercept_set_binding {
-                    None => false,
-                    Some(intercept_set_b) => intercept_set_b(self.user_data, new_binding.cast()),
-                }
-            }
-        }
-
-        CFunctionBinding {
-            binding_function: binding,
-            user_data,
-            drop_user_data,
-            intercept_set,
-            intercept_set_binding,
-        }
-    }
-
-    /// Set a binding
-    ///
-    /// The current implementation will do usually two memory allocation:
-    ///  1. the allocation from the calling code to allocate user_data
-    ///  2. the box allocation within this binding
-    /// It might be possible to reduce that by passing something with a
-    /// vtable, so there is the need for less memory allocation.
-    #[no_mangle]
-    pub unsafe extern "C" fn slint_property_set_binding(
-        handle: &PropertyHandleOpaque,
-        binding: extern "C" fn(user_data: *mut c_void, pointer_to_value: *mut c_void),
-        user_data: *mut c_void,
-        drop_user_data: Option<extern "C" fn(*mut c_void)>,
-        intercept_set: Option<
-            extern "C" fn(user_data: *mut c_void, pointer_to_Value: *const c_void) -> bool,
-        >,
-        intercept_set_binding: Option<
-            extern "C" fn(user_data: *mut c_void, new_binding: *mut c_void) -> bool,
-        >,
-    ) {
-        let binding = make_c_function_binding(
-            binding,
-            user_data,
-            drop_user_data,
-            intercept_set,
-            intercept_set_binding,
-        );
-        handle.0.set_binding(binding);
-    }
-
-    /// Set a binding using an already allocated building holder
-    ///
-    //// (take ownership of the binding)
-    #[no_mangle]
-    pub unsafe extern "C" fn slint_property_set_binding_internal(
-        handle: &PropertyHandleOpaque,
-        binding: *mut c_void,
-    ) {
-        handle.0.set_binding_impl(binding.cast());
-    }
-
-    /// Returns whether the property behind this handle is marked as dirty
-    #[no_mangle]
-    pub extern "C" fn slint_property_is_dirty(handle: &PropertyHandleOpaque) -> bool {
-        handle.0.access(|binding| binding.map_or(false, |b| b.dirty.get()))
-    }
-
-    /// Marks the property as dirty and notifies dependencies.
-    #[no_mangle]
-    pub extern "C" fn slint_property_mark_dirty(handle: &PropertyHandleOpaque) {
-        handle.0.mark_dirty()
-    }
-
-    /// Destroy handle
-    #[no_mangle]
-    pub unsafe extern "C" fn slint_property_drop(handle: *mut PropertyHandleOpaque) {
-        core::ptr::drop_in_place(handle);
-    }
-
-    fn c_set_animated_value<T: InterpolatedPropertyValue + Clone>(
-        handle: &PropertyHandleOpaque,
-        from: T,
-        to: T,
-        animation_data: &PropertyAnimation,
-    ) {
-        let d = RefCell::new(PropertyValueAnimationData::new(from, to, animation_data.clone()));
-        // Safety: The BindingCallable is for type T
-        unsafe {
-            handle.0.set_binding(move |val: *mut ()| {
-                let (value, finished) = d.borrow_mut().compute_interpolated_value();
-                *(val as *mut T) = value;
-                if finished {
-                    BindingResult::RemoveBinding
-                } else {
-                    crate::animations::CURRENT_ANIMATION_DRIVER
-                        .with(|driver| driver.set_has_active_animations());
-                    BindingResult::KeepBinding
-                }
-            })
-        };
-        handle.0.mark_dirty();
-    }
-
-    /// Internal function to set up a property animation to the specified target value for an integer property.
-    #[no_mangle]
-    pub unsafe extern "C" fn slint_property_set_animated_value_int(
-        handle: &PropertyHandleOpaque,
-        from: i32,
-        to: i32,
-        animation_data: &PropertyAnimation,
-    ) {
-        c_set_animated_value(handle, from, to, animation_data)
-    }
-
-    /// Internal function to set up a property animation to the specified target value for a float property.
-    #[no_mangle]
-    pub unsafe extern "C" fn slint_property_set_animated_value_float(
-        handle: &PropertyHandleOpaque,
-        from: f32,
-        to: f32,
-        animation_data: &PropertyAnimation,
-    ) {
-        c_set_animated_value(handle, from, to, animation_data)
-    }
-
-    /// Internal function to set up a property animation to the specified target value for a color property.
-    #[no_mangle]
-    pub unsafe extern "C" fn slint_property_set_animated_value_color(
-        handle: &PropertyHandleOpaque,
-        from: Color,
-        to: Color,
-        animation_data: &PropertyAnimation,
-    ) {
-        c_set_animated_value(handle, from, to, animation_data);
-    }
-
-    unsafe fn c_set_animated_binding<T: InterpolatedPropertyValue + Clone>(
-        handle: &PropertyHandleOpaque,
-        binding: extern "C" fn(*mut c_void, *mut T),
-        user_data: *mut c_void,
-        drop_user_data: Option<extern "C" fn(*mut c_void)>,
-        animation_data: Option<&PropertyAnimation>,
-        transition_data: Option<
-            extern "C" fn(user_data: *mut c_void, start_instant: &mut u64) -> PropertyAnimation,
-        >,
-    ) {
-        let binding = core::mem::transmute::<
-            extern "C" fn(*mut c_void, *mut T),
-            extern "C" fn(*mut c_void, *mut ()),
-        >(binding);
-        let original_binding = PropertyHandle {
-            handle: Cell::new(
-                (alloc_binding_holder(make_c_function_binding(
-                    binding,
-                    user_data,
-                    drop_user_data,
-                    None,
-                    None,
-                )) as usize)
-                    | 0b10,
-            ),
-        };
-        let animation_data = RefCell::new(PropertyValueAnimationData::new(
-            T::default(),
-            T::default(),
-            animation_data.cloned().unwrap_or_default(),
-        ));
-        if let Some(transition_data) = transition_data {
-            handle.0.set_binding(AnimatedBindingCallable::<T, _> {
-                original_binding,
-                state: Cell::new(AnimatedBindingState::NotAnimating),
-                animation_data,
-                compute_animation_details: move || -> AnimationDetail {
-                    let mut start_instant = 0;
-                    let anim = transition_data(user_data, &mut start_instant);
-                    Some((anim, crate::animations::Instant(start_instant)))
-                },
-            });
-        } else {
-            handle.0.set_binding(AnimatedBindingCallable::<T, _> {
-                original_binding,
-                state: Cell::new(AnimatedBindingState::NotAnimating),
-                animation_data,
-                compute_animation_details: || -> AnimationDetail { None },
-            });
-        }
-        handle.0.mark_dirty();
-    }
-
-    /// Internal function to set up a property animation between values produced by the specified binding for an integer property.
-    #[no_mangle]
-    pub unsafe extern "C" fn slint_property_set_animated_binding_int(
-        handle: &PropertyHandleOpaque,
-        binding: extern "C" fn(*mut c_void, *mut i32),
-        user_data: *mut c_void,
-        drop_user_data: Option<extern "C" fn(*mut c_void)>,
-        animation_data: Option<&PropertyAnimation>,
-        transition_data: Option<
-            extern "C" fn(user_data: *mut c_void, start_instant: &mut u64) -> PropertyAnimation,
-        >,
-    ) {
-        c_set_animated_binding(
-            handle,
-            binding,
-            user_data,
-            drop_user_data,
-            animation_data,
-            transition_data,
-        );
-    }
-
-    /// Internal function to set up a property animation between values produced by the specified binding for a float property.
-    #[no_mangle]
-    pub unsafe extern "C" fn slint_property_set_animated_binding_float(
-        handle: &PropertyHandleOpaque,
-        binding: extern "C" fn(*mut c_void, *mut f32),
-        user_data: *mut c_void,
-        drop_user_data: Option<extern "C" fn(*mut c_void)>,
-        animation_data: Option<&PropertyAnimation>,
-        transition_data: Option<
-            extern "C" fn(user_data: *mut c_void, start_instant: &mut u64) -> PropertyAnimation,
-        >,
-    ) {
-        c_set_animated_binding(
-            handle,
-            binding,
-            user_data,
-            drop_user_data,
-            animation_data,
-            transition_data,
-        );
-    }
-
-    /// Internal function to set up a property animation between values produced by the specified binding for a color property.
-    #[no_mangle]
-    pub unsafe extern "C" fn slint_property_set_animated_binding_color(
-        handle: &PropertyHandleOpaque,
-        binding: extern "C" fn(*mut c_void, *mut Color),
-        user_data: *mut c_void,
-        drop_user_data: Option<extern "C" fn(*mut c_void)>,
-        animation_data: Option<&PropertyAnimation>,
-        transition_data: Option<
-            extern "C" fn(user_data: *mut c_void, start_instant: &mut u64) -> PropertyAnimation,
-        >,
-    ) {
-        c_set_animated_binding(
-            handle,
-            binding,
-            user_data,
-            drop_user_data,
-            animation_data,
-            transition_data,
-        );
-    }
-
-    /// Internal function to set up a property animation between values produced by the specified binding for a brush property.
-    #[no_mangle]
-    pub unsafe extern "C" fn slint_property_set_animated_binding_brush(
-        handle: &PropertyHandleOpaque,
-        binding: extern "C" fn(*mut c_void, *mut Brush),
-        user_data: *mut c_void,
-        drop_user_data: Option<extern "C" fn(*mut c_void)>,
-        animation_data: Option<&PropertyAnimation>,
-        transition_data: Option<
-            extern "C" fn(user_data: *mut c_void, start_instant: &mut u64) -> PropertyAnimation,
-        >,
-    ) {
-        c_set_animated_binding(
-            handle,
-            binding,
-            user_data,
-            drop_user_data,
-            animation_data,
-            transition_data,
-        );
-    }
-
-    /// Internal function to set up a state binding on a Property<StateInfo>.
-    #[no_mangle]
-    pub unsafe extern "C" fn slint_property_set_state_binding(
-        handle: &PropertyHandleOpaque,
-        binding: extern "C" fn(*mut c_void) -> i32,
-        user_data: *mut c_void,
-        drop_user_data: Option<extern "C" fn(*mut c_void)>,
-    ) {
-        struct CStateBinding {
-            binding: extern "C" fn(*mut c_void) -> i32,
-            user_data: *mut c_void,
-            drop_user_data: Option<extern "C" fn(*mut c_void)>,
-        }
-
-        impl Drop for CStateBinding {
-            fn drop(&mut self) {
-                if let Some(x) = self.drop_user_data {
-                    x(self.user_data)
-                }
-            }
-        }
-
-        impl CStateBinding {
-            fn call(&self) -> i32 {
-                (self.binding)(self.user_data)
-            }
-        }
-
-        let c_state_binding = CStateBinding { binding, user_data, drop_user_data };
-        let bind_callable = StateInfoBinding {
-            dirty_time: Cell::new(None),
-            binding: move || c_state_binding.call(),
-        };
-        handle.0.set_binding(bind_callable)
-    }
-
-    #[repr(C)]
-    /// Opaque type representing the PropertyTracker
-    pub struct PropertyTrackerOpaque {
-        dependencies: usize,
-        dep_nodes: [usize; 2],
-        vtable: usize,
-        dirty: bool,
-    }
-
-    static_assertions::assert_eq_align!(PropertyTrackerOpaque, PropertyTracker);
-    static_assertions::assert_eq_size!(PropertyTrackerOpaque, PropertyTracker);
-
-    /// Initialize the first pointer of the PropertyTracker.
-    /// `out` is assumed to be uninitialized
-    /// slint_property_tracker_drop need to be called after that
-    #[no_mangle]
-    pub unsafe extern "C" fn slint_property_tracker_init(out: *mut PropertyTrackerOpaque) {
-        core::ptr::write(out as *mut PropertyTracker, PropertyTracker::default());
-    }
-
-    /// Call the callback with the user data. Any properties access within the callback will be registered.
-    /// Any currently evaluated bindings or property trackers will be notified if accessed properties are changed.
-    #[no_mangle]
-    pub unsafe extern "C" fn slint_property_tracker_evaluate(
-        handle: *const PropertyTrackerOpaque,
-        callback: extern "C" fn(user_data: *mut c_void),
-        user_data: *mut c_void,
-    ) {
-        Pin::new_unchecked(&*(handle as *const PropertyTracker)).evaluate(|| callback(user_data))
-    }
-
-    /// Call the callback with the user data. Any properties access within the callback will be registered.
-    /// Any currently evaluated bindings or property trackers will be not notified if accessed properties are changed.
-    #[no_mangle]
-    pub unsafe extern "C" fn slint_property_tracker_evaluate_as_dependency_root(
-        handle: *const PropertyTrackerOpaque,
-        callback: extern "C" fn(user_data: *mut c_void),
-        user_data: *mut c_void,
-    ) {
-        Pin::new_unchecked(&*(handle as *const PropertyTracker))
-            .evaluate_as_dependency_root(|| callback(user_data))
-    }
-    /// Query if the property tracker is dirty
-    #[no_mangle]
-    pub unsafe extern "C" fn slint_property_tracker_is_dirty(
-        handle: *const PropertyTrackerOpaque,
-    ) -> bool {
-        (*(handle as *const PropertyTracker)).is_dirty()
-    }
-
-    /// Destroy handle
-    #[no_mangle]
-    pub unsafe extern "C" fn slint_property_tracker_drop(handle: *mut PropertyTrackerOpaque) {
-        core::ptr::drop_in_place(handle as *mut PropertyTracker);
-    }
-}
+pub(crate) mod ffi;

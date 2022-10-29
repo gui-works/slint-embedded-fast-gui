@@ -14,7 +14,8 @@ use crate::diagnostics::Spanned;
 use crate::expression_tree::BindingExpression;
 use crate::expression_tree::BuiltinFunction;
 use crate::expression_tree::Expression;
-use crate::langtype::Type;
+use crate::langtype::ElementType;
+
 use crate::layout::LayoutItem;
 use crate::layout::Orientation;
 use crate::namedreference::NamedReference;
@@ -57,16 +58,21 @@ impl PropertyPath {
     /// Given a namedReference accessed by something on the same leaf component
     /// as self, return a new PropertyPath that represent the property pointer
     /// to by nr in the higher possible element
-    fn relative(&self, nr: &NamedReference) -> Self {
-        let mut element = nr.element();
+    fn relative(&self, second: &PropertyPath) -> Self {
+        let mut element =
+            second.elements.first().map_or_else(|| second.prop.element(), |f| f.0.clone());
         if element.borrow().enclosing_component.upgrade().unwrap().is_global() {
-            return Self::from(nr.clone());
+            return second.clone();
         }
         let mut elements = self.elements.clone();
-        while Rc::ptr_eq(
-            &element,
-            &element.borrow().enclosing_component.upgrade().unwrap().root_element,
-        ) {
+        loop {
+            let enclosing = element.borrow().enclosing_component.upgrade().unwrap();
+            if enclosing.parent_element.upgrade().is_some()
+                || !Rc::ptr_eq(&element, &enclosing.root_element)
+            {
+                break;
+            }
+
             if let Some(last) = elements.pop() {
                 #[cfg(debug_assertions)]
                 fn check_that_element_is_in_the_component(
@@ -88,15 +94,21 @@ impl PropertyPath {
                     ),
                     "The element is not in the component pointed at by the path ({:?} / {:?})",
                     self,
-                    nr
+                    second
                 );
                 element = last.0;
             } else {
                 break;
             }
         }
-        debug_assert!(elements.last().map_or(true, |x| *x != ByAddress(nr.element())));
-        Self { elements, prop: NamedReference::new(&element, nr.name()) }
+        if second.elements.is_empty() {
+            debug_assert!(elements.last().map_or(true, |x| *x != ByAddress(second.prop.element())));
+            Self { elements, prop: NamedReference::new(&element, second.prop.name()) }
+        } else {
+            elements.push(ByAddress(element));
+            elements.extend(second.elements.iter().skip(1).cloned());
+            Self { elements, prop: second.prop.clone() }
+        }
     }
 }
 
@@ -146,6 +158,9 @@ fn analyze_element(
             diag,
         );
     }
+    for (_, nr) in &elem.borrow().accessibility_props.0 {
+        process_property(&PropertyPath::from(nr.clone()), context, reverse_aliases, diag);
+    }
 }
 
 #[derive(Copy, Clone, dm::BitAnd, dm::BitOr, dm::BitAndAssign, dm::BitOrAssign)]
@@ -163,8 +178,12 @@ fn analyse_binding(
     if context.currently_analyzing.back().map_or(false, |r| r == current)
         && !element.borrow().bindings[name].borrow().two_way_bindings.is_empty()
     {
-        // This is already reported as an error by the remove_alias pass.
-        // FIXME: maybe we should report it there instead
+        let span = element.borrow().bindings[name]
+            .borrow()
+            .span
+            .clone()
+            .or_else(|| element.borrow().node.as_ref().map(|n| n.to_source_location()));
+        diag.push_error(format!("Property '{name}' cannot refer to itself"), &span);
         return depends_on_external;
     }
 
@@ -205,18 +224,26 @@ fn analyse_binding(
     let b = binding.borrow();
     for nr in &b.two_way_bindings {
         if nr != &current.prop {
-            depends_on_external |=
-                process_property(&current.relative(nr), context, reverse_aliases, diag);
+            depends_on_external |= process_property(
+                &current.relative(&nr.clone().into()),
+                context,
+                reverse_aliases,
+                diag,
+            );
         }
     }
 
-    let mut process_prop = |prop: &NamedReference| {
+    let mut process_prop = |prop: &PropertyPath| {
         depends_on_external |=
             process_property(&current.relative(prop), context, reverse_aliases, diag);
-        for x in reverse_aliases.get(prop).unwrap_or(&Default::default()) {
-            if x != &current.prop && x != prop {
-                depends_on_external |=
-                    process_property(&current.relative(x), context, reverse_aliases, diag);
+        for x in reverse_aliases.get(&prop.prop).unwrap_or(&Default::default()) {
+            if x != &current.prop && x != &prop.prop {
+                depends_on_external |= process_property(
+                    &current.relative(&x.clone().into()),
+                    context,
+                    reverse_aliases,
+                    diag,
+                );
             }
         }
     };
@@ -283,7 +310,7 @@ fn process_property(
         if element.borrow().bindings.contains_key(prop.prop.name()) {
             analyse_binding(&prop, context, reverse_aliases, diag);
         }
-        let next = if let Type::Component(base) = &element.borrow().base_type {
+        let next = if let ElementType::Component(base) = &element.borrow().base_type {
             if element.borrow().property_declarations.contains_key(prop.prop.name()) {
                 break;
             }
@@ -304,15 +331,19 @@ fn process_property(
 }
 
 // Same as in crate::visit_all_named_references_in_element, but not mut
-fn recurse_expression(expr: &Expression, vis: &mut impl FnMut(&NamedReference)) {
+fn recurse_expression(expr: &Expression, vis: &mut impl FnMut(&PropertyPath)) {
     expr.visit(|sub| recurse_expression(sub, vis));
     match expr {
-        Expression::PropertyReference(r) | Expression::CallbackReference(r) => vis(r),
-        Expression::LayoutCacheAccess { layout_cache_prop, .. } => vis(layout_cache_prop),
+        Expression::PropertyReference(r) | Expression::CallbackReference(r) => {
+            vis(&r.clone().into())
+        }
+        Expression::LayoutCacheAccess { layout_cache_prop, .. } => {
+            vis(&layout_cache_prop.clone().into())
+        }
         Expression::SolveLayout(l, o) | Expression::ComputeLayoutInfo(l, o) => {
             // we should only visit the layout geometry for the orientation
             if matches!(expr, Expression::SolveLayout(..)) {
-                l.rect().size_reference(*o).map(&mut |nr| vis(nr));
+                l.rect().size_reference(*o).map(|nr| vis(&nr.clone().into()));
             }
             match l {
                 crate::layout::Layout::GridLayout(l) => {
@@ -323,15 +354,15 @@ fn recurse_expression(expr: &Expression, vis: &mut impl FnMut(&NamedReference)) 
                 }
                 crate::layout::Layout::PathLayout(l) => {
                     for it in &l.elements {
-                        vis(&NamedReference::new(it, "width"));
-                        vis(&NamedReference::new(it, "height"));
+                        vis(&NamedReference::new(it, "width").into());
+                        vis(&NamedReference::new(it, "height").into());
                     }
                 }
             }
             if let Some(g) = l.geometry() {
                 let mut g = g.clone();
                 g.rect = Default::default(); // already visited;
-                g.visit_named_references(&mut |nr| vis(nr))
+                g.visit_named_references(&mut |nr| vis(&nr.clone().into()))
             }
         }
         Expression::FunctionCall { function, arguments, .. } => {
@@ -356,22 +387,30 @@ fn recurse_expression(expr: &Expression, vis: &mut impl FnMut(&NamedReference)) 
 fn visit_layout_items_dependencies<'a>(
     items: impl Iterator<Item = &'a LayoutItem>,
     orientation: Orientation,
-    vis: &mut impl FnMut(&NamedReference),
+    vis: &mut impl FnMut(&PropertyPath),
 ) {
     for it in items {
-        if let Some(nr) = it.element.borrow().layout_info_prop(orientation) {
-            vis(nr);
+        let mut element = it.element.clone();
+        if element.borrow().repeated.is_some() {
+            element = it.element.borrow().base_type.as_component().root_element.clone();
+        }
+
+        if let Some(nr) = element.borrow().layout_info_prop(orientation) {
+            vis(&nr.clone().into());
         } else {
-            if let Type::Component(base) = &it.element.borrow().base_type {
+            if let ElementType::Component(base) = &element.borrow().base_type {
                 if let Some(nr) = base.root_element.borrow().layout_info_prop(orientation) {
-                    vis(nr);
+                    vis(&PropertyPath {
+                        elements: vec![ByAddress(element.clone())],
+                        prop: nr.clone(),
+                    });
                 }
             }
-            visit_implicit_layout_info_dependencies(orientation, &it.element, vis);
+            visit_implicit_layout_info_dependencies(orientation, &element, vis);
         }
 
         for (nr, _) in it.constraints.for_each_restrictions(orientation) {
-            vis(nr)
+            vis(&nr.clone().into())
         }
     }
 }
@@ -380,23 +419,23 @@ fn visit_layout_items_dependencies<'a>(
 fn visit_implicit_layout_info_dependencies(
     orientation: crate::layout::Orientation,
     item: &ElementRc,
-    vis: &mut impl FnMut(&NamedReference),
+    vis: &mut impl FnMut(&PropertyPath),
 ) {
     let base_type = item.borrow().base_type.to_string();
     match base_type.as_str() {
         "Image" => {
-            vis(&NamedReference::new(item, "source"));
+            vis(&NamedReference::new(item, "source").into());
             if orientation == Orientation::Vertical {
-                vis(&NamedReference::new(item, "width"));
+                vis(&NamedReference::new(item, "width").into());
             }
         }
         "Text" | "TextInput" => {
-            vis(&NamedReference::new(item, "text"));
-            vis(&NamedReference::new(item, "font-family"));
-            vis(&NamedReference::new(item, "font-size"));
-            vis(&NamedReference::new(item, "font-weight"));
-            vis(&NamedReference::new(item, "letter-spacing"));
-            vis(&NamedReference::new(item, "wrap"));
+            vis(&NamedReference::new(item, "text").into());
+            vis(&NamedReference::new(item, "font-family").into());
+            vis(&NamedReference::new(item, "font-size").into());
+            vis(&NamedReference::new(item, "font-weight").into());
+            vis(&NamedReference::new(item, "letter-spacing").into());
+            vis(&NamedReference::new(item, "wrap").into());
             let wrap_set = item.borrow().is_binding_set("wrap", false)
                 || item
                     .borrow()
@@ -405,12 +444,12 @@ fn visit_implicit_layout_info_dependencies(
                     .get("wrap")
                     .map_or(false, |a| a.is_set || a.is_set_externally);
             if wrap_set && orientation == Orientation::Vertical {
-                vis(&NamedReference::new(item, "width"));
+                vis(&NamedReference::new(item, "width").into());
             }
             if base_type.as_str() == "TextInput" {
-                vis(&NamedReference::new(item, "single-line"));
+                vis(&NamedReference::new(item, "single-line").into());
             } else {
-                vis(&NamedReference::new(item, "overflow"));
+                vis(&NamedReference::new(item, "overflow").into());
             }
         }
 
@@ -505,7 +544,7 @@ fn mark_used_base_properties(component: &Rc<Component>) {
         component,
         &(),
         &mut |element, _| {
-            if !matches!(element.borrow().base_type, Type::Component(_)) {
+            if !matches!(element.borrow().base_type, ElementType::Component(_)) {
                 return;
             }
             for (name, binding) in &element.borrow().bindings {

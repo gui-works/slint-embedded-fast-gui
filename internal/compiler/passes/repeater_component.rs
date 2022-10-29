@@ -6,7 +6,7 @@ Make sure that the Repeated expression are just components without any children
  */
 
 use crate::expression_tree::{Expression, NamedReference};
-use crate::langtype::Type;
+use crate::langtype::ElementType;
 use crate::object_tree::*;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -41,7 +41,9 @@ fn create_repeater_components(component: &Rc<Component>) {
                 transitions: std::mem::take(&mut elem.transitions),
                 child_of_layout: elem.child_of_layout || is_listview.is_some(),
                 layout_info_prop: elem.layout_info_prop.take(),
+                accessibility_props: std::mem::take(&mut elem.accessibility_props),
                 is_flickable_viewport: elem.is_flickable_viewport,
+                has_popup_child: elem.has_popup_child,
                 item_index: Default::default(), // Not determined yet
                 item_index_of_first_children: Default::default(),
                 inline_depth: 0,
@@ -51,7 +53,7 @@ fn create_repeater_components(component: &Rc<Component>) {
         });
 
         if let Some(listview) = is_listview {
-            if !comp.root_element.borrow().bindings.contains_key("height") {
+            if !comp.root_element.borrow().is_binding_set("height", false) {
                 let preferred = Expression::PropertyReference(NamedReference::new(
                     &comp.root_element,
                     "preferred-height",
@@ -61,7 +63,7 @@ fn create_repeater_components(component: &Rc<Component>) {
                     .bindings
                     .insert("height".into(), RefCell::new(preferred.into()));
             }
-            if !comp.root_element.borrow().bindings.contains_key("width") {
+            if !comp.root_element.borrow().is_binding_set("width", false) {
                 comp.root_element.borrow_mut().bindings.insert(
                     "width".into(),
                     RefCell::new(Expression::PropertyReference(listview.listview_width).into()),
@@ -76,8 +78,12 @@ fn create_repeater_components(component: &Rc<Component>) {
             e.borrow_mut().enclosing_component = weak.clone()
         });
         create_repeater_components(&comp);
-        elem.base_type = Type::Component(comp);
+        elem.base_type = ElementType::Component(comp);
     });
+
+    for p in component.popup_windows.borrow().iter() {
+        create_repeater_components(&p.component);
+    }
 }
 
 /// Make sure that references to property within the repeated element actually point to the reference
@@ -89,7 +95,7 @@ fn adjust_references(comp: &Rc<Component>) {
         }
         let e = nr.element();
         if e.borrow().repeated.is_some() {
-            if let Type::Component(c) = e.borrow().base_type.clone() {
+            if let ElementType::Component(c) = e.borrow().base_type.clone() {
                 *nr = NamedReference::new(&c.root_element, nr.name())
             };
         }

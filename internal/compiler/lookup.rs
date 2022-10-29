@@ -9,11 +9,12 @@ use crate::diagnostics::{BuildDiagnostics, Spanned};
 use crate::expression_tree::{
     BuiltinFunction, BuiltinMacroFunction, EasingCurve, Expression, Unit,
 };
-use crate::langtype::{Enumeration, EnumerationValue, Type};
+use crate::langtype::{ElementType, Enumeration, EnumerationValue, Type};
 use crate::namedreference::NamedReference;
-use crate::object_tree::{find_parent_element, ElementRc};
+use crate::object_tree::{ElementRc, PropertyVisibility};
 use crate::parser::NodeOrToken;
 use crate::typeregister::TypeRegister;
+use std::cell::RefCell;
 
 /// Contains information which allow to lookup identifier in expressions
 pub struct LookupCtx<'a> {
@@ -24,7 +25,7 @@ pub struct LookupCtx<'a> {
     /// (some property come in the scope)
     pub property_type: Type,
 
-    /// Here is the stack in which id applies
+    /// Here is the stack in which id applies. (the last element in the scope is looked up first)
     pub component_scope: &'a [ElementRc],
 
     /// Somewhere to report diagnostics
@@ -38,7 +39,7 @@ pub struct LookupCtx<'a> {
 
     /// The type loader instance, which may be used to resolve relative path references
     /// for example for img!
-    pub type_loader: Option<&'a crate::typeloader::TypeLoader<'a>>,
+    pub type_loader: Option<&'a crate::typeloader::TypeLoader>,
 
     /// The token currently processed
     pub current_token: Option<NodeOrToken>,
@@ -82,6 +83,7 @@ pub enum BuiltinNamespace {
     Colors,
     Math,
     Keys,
+    SlintInternal,
 }
 
 impl From<Expression> for LookupResult {
@@ -144,6 +146,9 @@ impl LookupObject for LookupResult {
             }
             LookupResult::Namespace(BuiltinNamespace::Math) => MathFunctions.for_each_entry(ctx, f),
             LookupResult::Namespace(BuiltinNamespace::Keys) => KeysLookup.for_each_entry(ctx, f),
+            LookupResult::Namespace(BuiltinNamespace::SlintInternal) => {
+                SlintInternal.for_each_entry(ctx, f)
+            }
         }
     }
 
@@ -156,6 +161,9 @@ impl LookupObject for LookupResult {
             }
             LookupResult::Namespace(BuiltinNamespace::Math) => MathFunctions.lookup(ctx, name),
             LookupResult::Namespace(BuiltinNamespace::Keys) => KeysLookup.lookup(ctx, name),
+            LookupResult::Namespace(BuiltinNamespace::SlintInternal) => {
+                SlintInternal.lookup(ctx, name)
+            }
         }
     }
 }
@@ -192,11 +200,16 @@ impl LookupObject for SpecialIdLookup {
         let last = ctx.component_scope.last();
         None.or_else(|| f("self", Expression::ElementReference(Rc::downgrade(last?)).into()))
             .or_else(|| {
-                f(
-                    "parent",
-                    Expression::ElementReference(Rc::downgrade(&find_parent_element(last?)?))
-                        .into(),
-                )
+                let len = ctx.component_scope.len();
+                if len >= 2 {
+                    f(
+                        "parent",
+                        Expression::ElementReference(Rc::downgrade(&ctx.component_scope[len - 2]))
+                            .into(),
+                    )
+                } else {
+                    None
+                }
             })
             .or_else(|| f("true", Expression::BoolLiteral(true).into()))
             .or_else(|| f("false", Expression::BoolLiteral(false).into()))
@@ -212,44 +225,59 @@ impl LookupObject for IdLookup {
         f: &mut impl FnMut(&str, LookupResult) -> Option<R>,
     ) -> Option<R> {
         fn visit<R>(
-            roots: &[ElementRc],
+            root: &ElementRc,
             f: &mut impl FnMut(&str, LookupResult) -> Option<R>,
         ) -> Option<R> {
-            for e in roots.iter().rev() {
-                if !e.borrow().id.is_empty() {
-                    if let Some(r) =
-                        f(&e.borrow().id, Expression::ElementReference(Rc::downgrade(e)).into())
-                    {
-                        return Some(r);
-                    }
+            if !root.borrow().id.is_empty() {
+                if let Some(r) =
+                    f(&root.borrow().id, Expression::ElementReference(Rc::downgrade(root)).into())
+                {
+                    return Some(r);
                 }
-                for x in &e.borrow().children {
-                    if x.borrow().repeated.is_some() {
-                        continue;
-                    }
-                    if let Some(r) = visit(&[x.clone()], f) {
-                        return Some(r);
-                    }
+            }
+            for x in &root.borrow().children {
+                if x.borrow().repeated.is_some() {
+                    continue;
+                }
+                if let Some(r) = visit(&x, f) {
+                    return Some(r);
                 }
             }
             None
         }
-        visit(ctx.component_scope, f)
+        for e in ctx.component_scope.iter().rev() {
+            if e.borrow().repeated.is_some() {
+                if let Some(r) = visit(e, f) {
+                    return Some(r);
+                }
+            }
+        }
+        if let Some(root) = ctx.component_scope.first() {
+            if let Some(r) = visit(root, f) {
+                return Some(r);
+            }
+        }
+        None
     }
     // TODO: hash based lookup
 }
 
 struct InScopeLookup;
-impl LookupObject for InScopeLookup {
-    fn for_each_entry<R>(
-        &self,
+impl InScopeLookup {
+    fn visit_scope<R>(
         ctx: &LookupCtx,
-        f: &mut impl FnMut(&str, LookupResult) -> Option<R>,
+        mut visit_entry: impl FnMut(&str, LookupResult) -> Option<R>,
+        mut visit_legacy_scope: impl FnMut(&ElementRc) -> Option<R>,
+        mut visit_scope: impl FnMut(&ElementRc) -> Option<R>,
     ) -> Option<R> {
-        for elem in ctx.component_scope.iter().rev() {
+        let is_legacy = ctx
+            .component_scope
+            .first()
+            .map_or(false, |e| e.borrow().enclosing_component.upgrade().unwrap().is_legacy_syntax);
+        for (idx, elem) in ctx.component_scope.iter().rev().enumerate() {
             if let Some(repeated) = &elem.borrow().repeated {
                 if !repeated.index_id.is_empty() {
-                    if let Some(r) = f(
+                    if let Some(r) = visit_entry(
                         &repeated.index_id,
                         Expression::RepeaterIndexReference { element: Rc::downgrade(elem) }.into(),
                     ) {
@@ -257,45 +285,74 @@ impl LookupObject for InScopeLookup {
                     }
                 }
                 if !repeated.model_data_id.is_empty() {
-                    if let Some(r) = f(
+                    if let Some(r) = visit_entry(
                         &repeated.model_data_id,
-                        Expression::RepeaterIndexReference { element: Rc::downgrade(elem) }.into(),
+                        Expression::RepeaterModelReference { element: Rc::downgrade(elem) }.into(),
                     ) {
                         return Some(r);
                     }
                 }
             }
 
-            if let Some(r) = elem.for_each_entry(ctx, f) {
-                return Some(r);
+            if is_legacy {
+                if elem.borrow().repeated.is_some()
+                    || idx == 0
+                    || idx == ctx.component_scope.len() - 1
+                {
+                    if let Some(r) = visit_legacy_scope(elem) {
+                        return Some(r);
+                    }
+                }
+            } else {
+                if let Some(r) = visit_scope(elem) {
+                    return Some(r);
+                }
             }
         }
         None
+    }
+}
+impl LookupObject for InScopeLookup {
+    fn for_each_entry<R>(
+        &self,
+        ctx: &LookupCtx,
+        f: &mut impl FnMut(&str, LookupResult) -> Option<R>,
+    ) -> Option<R> {
+        let f = RefCell::new(f);
+        Self::visit_scope(
+            ctx,
+            |str, r| f.borrow_mut()(str, r),
+            |elem| elem.for_each_entry(ctx, *f.borrow_mut()),
+            |elem| {
+                for (name, prop) in &elem.borrow().property_declarations {
+                    let e = expression_from_reference(
+                        NamedReference::new(elem, name),
+                        &prop.property_type,
+                    );
+                    if let Some(r) = f.borrow_mut()(name, e.into()) {
+                        return Some(r);
+                    }
+                }
+                None
+            },
+        )
     }
 
     fn lookup(&self, ctx: &LookupCtx, name: &str) -> Option<LookupResult> {
         if name.is_empty() {
             return None;
         }
-        for elem in ctx.component_scope.iter().rev() {
-            if let Some(repeated) = &elem.borrow().repeated {
-                if repeated.index_id == name {
-                    return Some(LookupResult::from(Expression::RepeaterIndexReference {
-                        element: Rc::downgrade(elem),
-                    }));
-                }
-                if repeated.model_data_id == name {
-                    return Some(LookupResult::from(Expression::RepeaterModelReference {
-                        element: Rc::downgrade(elem),
-                    }));
-                }
-            }
-
-            if let Some(r) = elem.lookup(ctx, name) {
-                return Some(r);
-            }
-        }
-        None
+        Self::visit_scope(
+            ctx,
+            |str, r| (str == name).then(|| r),
+            |elem| elem.lookup(ctx, name),
+            |elem| {
+                elem.borrow().property_declarations.get(name).map(|prop| {
+                    expression_from_reference(NamedReference::new(elem, name), &prop.property_type)
+                        .into()
+                })
+            },
+        )
     }
 }
 
@@ -328,15 +385,22 @@ impl LookupObject for ElementRc {
     }
 
     fn lookup(&self, _ctx: &LookupCtx, name: &str) -> Option<LookupResult> {
-        let crate::langtype::PropertyLookupResult { resolved_name, property_type } =
-            self.borrow().lookup_property(name);
-        (property_type != Type::Invalid).then(|| LookupResult::Expression {
-            expression: expression_from_reference(
-                NamedReference::new(self, &resolved_name),
-                &property_type,
-            ),
-            deprecated: (resolved_name != name).then(|| resolved_name.to_string()),
-        })
+        let lookup_result = self.borrow().lookup_property(name);
+        if lookup_result.property_type != Type::Invalid
+            && (lookup_result.is_local_to_component
+                || lookup_result.property_visibility != PropertyVisibility::Private)
+        {
+            Some(LookupResult::Expression {
+                expression: expression_from_reference(
+                    NamedReference::new(self, &lookup_result.resolved_name),
+                    &lookup_result.property_type,
+                ),
+                deprecated: (lookup_result.resolved_name != name)
+                    .then(|| lookup_result.resolved_name.to_string()),
+            })
+        } else {
+            None
+        }
     }
 }
 
@@ -358,7 +422,12 @@ impl LookupObject for LookupType {
         f: &mut impl FnMut(&str, LookupResult) -> Option<R>,
     ) -> Option<R> {
         for (name, ty) in ctx.type_register.all_types() {
-            if let Some(r) = Self::as_result(ty).and_then(|e| f(&name, e)) {
+            if let Some(r) = Self::from_type(ty).and_then(|e| f(&name, e)) {
+                return Some(r);
+            }
+        }
+        for (name, ty) in ctx.type_register.all_elements() {
+            if let Some(r) = Self::from_element(ty).and_then(|e| f(&name, e)) {
                 return Some(r);
             }
         }
@@ -366,16 +435,23 @@ impl LookupObject for LookupType {
     }
 
     fn lookup(&self, ctx: &LookupCtx, name: &str) -> Option<LookupResult> {
-        Self::as_result(ctx.type_register.lookup(name)).map(LookupResult::from)
+        Self::from_type(ctx.type_register.lookup(name))
+            .or_else(|| Self::from_element(ctx.type_register.lookup_element(name).ok()?))
     }
 }
 impl LookupType {
-    fn as_result(ty: Type) -> Option<LookupResult> {
+    fn from_type(ty: Type) -> Option<LookupResult> {
         match ty {
-            Type::Component(c) if c.is_global() => {
+            Type::Enumeration(e) => Some(LookupResult::Enumeration(e)),
+            _ => None,
+        }
+    }
+
+    fn from_element(el: ElementType) -> Option<LookupResult> {
+        match el {
+            ElementType::Component(c) if c.is_global() => {
                 Some(Expression::ElementReference(Rc::downgrade(&c.root_element)).into())
             }
-            Type::Enumeration(e) => Some(LookupResult::Enumeration(e)),
             _ => None,
         }
     }
@@ -523,7 +599,7 @@ impl LookupObject for MathFunctions {
         let t = &ctx.current_token;
         let sl = || t.as_ref().map(|t| t.to_source_location());
         let mut f = |n, e: Expression| f(n, e.into());
-        None.or_else(|| f("mod", BuiltinFunctionReference(BuiltinFunction::Mod, sl())))
+        None.or_else(|| f("mod", BuiltinMacroReference(BuiltinMacroFunction::Mod, t.clone())))
             .or_else(|| f("round", BuiltinFunctionReference(BuiltinFunction::Round, sl())))
             .or_else(|| f("ceil", BuiltinFunctionReference(BuiltinFunction::Ceil, sl())))
             .or_else(|| f("floor", BuiltinFunctionReference(BuiltinFunction::Floor, sl())))
@@ -539,6 +615,29 @@ impl LookupObject for MathFunctions {
             .or_else(|| f("atan", BuiltinFunctionReference(BuiltinFunction::ATan, sl())))
             .or_else(|| f("log", BuiltinFunctionReference(BuiltinFunction::Log, sl())))
             .or_else(|| f("pow", BuiltinFunctionReference(BuiltinFunction::Pow, sl())))
+    }
+}
+
+struct SlintInternal;
+impl LookupObject for SlintInternal {
+    fn for_each_entry<R>(
+        &self,
+        ctx: &LookupCtx,
+        f: &mut impl FnMut(&str, LookupResult) -> Option<R>,
+    ) -> Option<R> {
+        f(
+            "dark-color-scheme",
+            Expression::FunctionCall {
+                function: Expression::BuiltinFunctionReference(
+                    BuiltinFunction::DarkColorScheme,
+                    None,
+                )
+                .into(),
+                arguments: vec![],
+                source_location: ctx.current_token.as_ref().map(|t| t.to_source_location()),
+            }
+            .into(),
+        )
     }
 }
 
@@ -564,16 +663,28 @@ impl LookupObject for BuiltinFunctionLookup {
         ctx: &LookupCtx,
         f: &mut impl FnMut(&str, LookupResult) -> Option<R>,
     ) -> Option<R> {
-        (MathFunctions, ColorFunctions).for_each_entry(ctx, f).or_else(|| {
-            f(
-                "debug",
-                Expression::BuiltinMacroReference(
-                    BuiltinMacroFunction::Debug,
-                    ctx.current_token.clone(),
+        (MathFunctions, ColorFunctions)
+            .for_each_entry(ctx, f)
+            .or_else(|| {
+                f(
+                    "debug",
+                    Expression::BuiltinMacroReference(
+                        BuiltinMacroFunction::Debug,
+                        ctx.current_token.clone(),
+                    )
+                    .into(),
                 )
-                .into(),
-            )
-        })
+            })
+            .or_else(|| {
+                f(
+                    "animation-tick",
+                    Expression::BuiltinFunctionReference(
+                        BuiltinFunction::AnimationTick,
+                        ctx.current_token.as_ref().map(|t| t.to_source_location()),
+                    )
+                    .into(),
+                )
+            })
     }
 }
 
@@ -587,6 +698,9 @@ impl LookupObject for BuiltinNamespaceLookup {
         None.or_else(|| f("Colors", LookupResult::Namespace(BuiltinNamespace::Colors)))
             .or_else(|| f("Math", LookupResult::Namespace(BuiltinNamespace::Math)))
             .or_else(|| f("Keys", LookupResult::Namespace(BuiltinNamespace::Keys)))
+            .or_else(|| {
+                f("SlintInternal", LookupResult::Namespace(BuiltinNamespace::SlintInternal))
+            })
     }
 }
 
@@ -633,9 +747,8 @@ impl LookupObject for Expression {
                     }
                     None
                 }
-                Type::Component(c) => c.root_element.for_each_entry(ctx, f),
                 Type::String => StringExpression(self).for_each_entry(ctx, f),
-                Type::Color => ColorExpression(self).for_each_entry(ctx, f),
+                Type::Brush | Type::Color => ColorExpression(self).for_each_entry(ctx, f),
                 Type::Image => ImageExpression(self).for_each_entry(ctx, f),
                 Type::Array(_) => ArrayExpression(self).for_each_entry(ctx, f),
                 _ => None,
@@ -653,9 +766,8 @@ impl LookupObject for Expression {
                         name: name.to_string(),
                     })
                 }),
-                Type::Component(c) => c.root_element.lookup(ctx, name),
                 Type::String => StringExpression(self).lookup(ctx, name),
-                Type::Color => ColorExpression(self).lookup(ctx, name),
+                Type::Brush | Type::Color => ColorExpression(self).lookup(ctx, name),
                 Type::Image => ImageExpression(self).lookup(ctx, name),
                 Type::Array(_) => ArrayExpression(self).lookup(ctx, name),
                 _ => None,

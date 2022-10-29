@@ -1,6 +1,23 @@
 # Changelog
 All notable changes to this crate will be documented in this file.
 
+## [0.1.9] - 2022-09-14
+
+ - Added `VRc::map_dyn`, the equivalent of `VRc::map` to create a `VRcMapped`
+   when the VRc is already type erased
+ - Fixed warnings
+ - Update `atomic-polyfill` dependency
+
+## [0.1.8] - 2022-07-05
+
+ - Changed the representation of the different types to use NonNull
+ - Added `VRef::as_ptr`
+
+## [0.1.7] - 2022-05-04
+
+ - Implement `Debug` for `VRc`
+ - Quieten warning about unused unsafe in the `#[vtable]` generated code
+
 ## [0.1.6] - 2022-03-09
 
  - Add `VWeak::ptr_eq`

@@ -37,7 +37,8 @@ fn main() -> std::io::Result<()> {
                 output,
                 r"
 #[test] fn t_{}() -> Result<(), Box<dyn std::error::Error>> {{
-    i_slint_backend_testing::init();
+    use i_slint_backend_testing as slint_testing;
+    slint_testing::init();
     {}
     Ok(())
 }}",
@@ -107,6 +108,7 @@ fn generate_source(
     let syntax_node = parser::parse(source.to_owned(), Some(&testcase.absolute_path), &mut diag);
     let mut compiler_config = CompilerConfiguration::new(generator::OutputFormat::Rust);
     compiler_config.include_paths = include_paths;
+    compiler_config.style = Some("fluent".to_string());
     let (root_component, diag) =
         spin_on::spin_on(compile_syntax_node(syntax_node, diag, compiler_config));
 
@@ -116,6 +118,8 @@ fn generate_source(
             std::io::ErrorKind::Other,
             format!("build error in {:?}", testcase.absolute_path),
         ));
+    } else {
+        diag.print();
     }
 
     generator::generate(generator::OutputFormat::Rust, output, &root_component)?;

@@ -20,21 +20,16 @@ on:
 
 jobs:
   build_windows:
-    runs-on: windows-2019
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v2
-      - name: Install latest stable Rust
-        uses: actions-rs/toolchain@v1
+      - uses: ./.github/actions/setup-rust
         with:
-          toolchain: stable
           target: x86_64-pc-windows-msvc
       - name: Install Qt
-        uses: jurplel/install-qt-action@v2
+        uses: jurplel/install-qt-action@v3
         with:
           version: 6.2.1
-      - uses: Swatinem/rust-cache@v1
-        with:
-          key: x
       - uses: actions-rs/install@v0.1
         with:
           crate: cargo-about
@@ -75,25 +70,13 @@ jobs:
     runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@v2
-      - name: Install latest stable Rust
-        uses: actions-rs/toolchain@v1
+      - uses: ./.github/actions/setup-rust
         with:
-          toolchain: stable
           target: x86_64-unknown-linux-gnu
-      - name: Cache Qt
-        id: cache-qt
-        uses: actions/cache@v2
-        with:
-          path: ~/work/slint/Qt
-          key: ${{ runner.os }}-${{ github.job }}-qt
       - name: Install Qt
-        uses: jurplel/install-qt-action@v2
+        uses: jurplel/install-qt-action@v3
         with:
           version: 5.15.2
-          cached: ${{ steps.cache-qt.outputs.cache-hit }}
-      - uses: Swatinem/rust-cache@v1
-        with:
-          key: x
       - uses: actions-rs/install@v0.1
         with:
           crate: cargo-about
@@ -119,30 +102,16 @@ jobs:
     runs-on: macOS-11
     steps:
       - uses: actions/checkout@v2
-      - name: Install latest stable Rust
-        uses: actions-rs/toolchain@v1
+      - uses: ./.github/actions/setup-rust
         with:
-          toolchain: stable
           target: x86_64-apple-darwin
-      - name: Install latest stable Rust
-        uses: actions-rs/toolchain@v1
+      - uses: ./.github/actions/setup-rust
         with:
-          toolchain: stable
           target: aarch64-apple-darwin
-      - name: Cache Qt
-        id: cache-qt
-        uses: actions/cache@v2
-        with:
-          path: ~/work/slint/Qt
-          key: ${{ runner.os }}-${{ github.job }}-Qt
       - name: Install Qt
-        uses: jurplel/install-qt-action@v2
+        uses: jurplel/install-qt-action@v3
         with:
-          version: 6.2.1 # for Apple Silicon support
-          cached: ${{ steps.cache-qt.outputs.cache-hit }}
-      - uses: Swatinem/rust-cache@v1
-        with:
-          key: x
+          version: 6.2.1
       - uses: actions-rs/install@v0.1
         with:
           crate: cargo-about

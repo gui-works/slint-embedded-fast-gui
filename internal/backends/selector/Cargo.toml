@@ -3,7 +3,7 @@
 
 [package]
 name = "i-slint-backend-selector"
-version = "0.2.2"
+version = "0.3.2"
 authors = ["Slint Developers <info@slint-ui.com>"]
 edition = "2021"
 license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
@@ -15,16 +15,20 @@ homepage = "https://slint-ui.com"
 path = "lib.rs"
 
 [features]
-backend-gl-all = ["backend-gl-x11", "backend-gl-wayland"]
-backend-gl-wayland = ["i-slint-backend-gl/wayland"]
-backend-gl-x11 = ["i-slint-backend-gl/x11"]
+backend-winit = ["backend-winit-x11", "backend-winit-wayland"]
+backend-winit-x11 = ["i-slint-backend-winit/x11"]
+backend-winit-wayland = ["i-slint-backend-winit/wayland"]
 
-rtti-gl = ["i-slint-backend-gl/rtti"]
-rtti-qt = ["i-slint-backend-qt/rtti"]
+renderer-winit-femtovg = ["i-slint-backend-winit/renderer-winit-femtovg"]
+renderer-winit-skia = ["i-slint-backend-winit/renderer-winit-skia"]
+renderer-winit-skia-opengl = ["i-slint-backend-winit/renderer-winit-skia-opengl"]
+renderer-winit-software = ["i-slint-backend-winit/renderer-winit-software"]
+
+rtti = ["i-slint-backend-winit?/rtti", "i-slint-backend-qt?/rtti"]
 
 [dependencies]
-i-slint-core = { version = "=0.2.2", path = "../../../internal/core", default-features = false }
-i-slint-backend-gl = { version = "=0.2.2", path = "../gl", optional = true }
-i-slint-backend-qt = { version = "=0.2.2", path = "../qt", optional = true }
+i-slint-core = { version = "=0.3.2", path = "../../../internal/core", default-features = false }
+i-slint-backend-winit = { version = "=0.3.2", path = "../winit", optional = true }
+i-slint-backend-qt = { version = "=0.3.2", path = "../qt", optional = true }
 
 cfg-if = "1"

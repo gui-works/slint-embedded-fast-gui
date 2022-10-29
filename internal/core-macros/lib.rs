@@ -36,6 +36,7 @@ pub fn slint_element(input: TokenStream) -> TokenStream {
     let mut property_names = Vec::new();
     let mut property_visibility = Vec::new();
     let mut property_types = Vec::new();
+
     for field in fields {
         if let Some(property_type) = property_type(&field.ty) {
             let name = field.ident.as_ref().unwrap();
@@ -44,6 +45,7 @@ pub fn slint_element(input: TokenStream) -> TokenStream {
                 pub_prop_field_names.push(name);
                 pub_prop_field_types.push(&field.ty);
             }
+
             property_names.push(name);
             property_visibility.push(field.vis.clone());
             property_types.push(property_type);

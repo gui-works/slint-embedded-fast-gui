@@ -6,7 +6,8 @@
 #![allow(unsafe_code)]
 
 use crate::input::{KeyEvent, KeyEventType, KeyboardModifiers, MouseEvent};
-use crate::window::WindowRc;
+use crate::window::WindowInner;
+use crate::Coord;
 use crate::SharedString;
 
 /// Slint animations do not use real time, but use a mocked time.
@@ -15,41 +16,43 @@ use crate::SharedString;
 /// This function will add some milliseconds to the fake time
 #[no_mangle]
 pub extern "C" fn slint_mock_elapsed_time(time_in_ms: u64) {
-    crate::animations::CURRENT_ANIMATION_DRIVER.with(|driver| {
+    let tick = crate::animations::CURRENT_ANIMATION_DRIVER.with(|driver| {
         let mut tick = driver.current_tick();
         tick += core::time::Duration::from_millis(time_in_ms);
-        driver.update_animations(tick)
-    })
+        driver.update_animations(tick);
+        tick
+    });
+    crate::timers::TimerList::maybe_activate_timers(tick);
 }
 
 /// Simulate a click on a position within the component.
 #[no_mangle]
 pub extern "C" fn slint_send_mouse_click(
     component: &crate::component::ComponentRc,
-    x: f32,
-    y: f32,
-    window: &WindowRc,
+    x: Coord,
+    y: Coord,
+    window_adapter: &crate::window::WindowAdapterRc,
 ) {
     let mut state = crate::input::MouseInputState::default();
-    let pos = euclid::point2(x, y);
+    let position = euclid::point2(x, y);
 
     state = crate::input::process_mouse_input(
         component.clone(),
-        MouseEvent::MouseMoved { pos },
-        window,
+        MouseEvent::Moved { position },
+        window_adapter,
         state,
     );
     state = crate::input::process_mouse_input(
         component.clone(),
-        MouseEvent::MousePressed { pos, button: crate::items::PointerEventButton::left },
-        window,
+        MouseEvent::Pressed { position, button: crate::items::PointerEventButton::Left },
+        window_adapter,
         state,
     );
     slint_mock_elapsed_time(50);
     crate::input::process_mouse_input(
         component.clone(),
-        MouseEvent::MouseReleased { pos, button: crate::items::PointerEventButton::left },
-        window,
+        MouseEvent::Released { position, button: crate::items::PointerEventButton::Left },
+        window_adapter,
         state,
     );
 }
@@ -59,7 +62,7 @@ pub extern "C" fn slint_send_mouse_click(
 pub extern "C" fn send_keyboard_string_sequence(
     sequence: &crate::SharedString,
     modifiers: KeyboardModifiers,
-    window: &WindowRc,
+    window_adapter: &crate::window::WindowAdapterRc,
 ) {
     for ch in sequence.chars() {
         let mut modifiers = modifiers;
@@ -69,52 +72,52 @@ pub extern "C" fn send_keyboard_string_sequence(
         let mut buffer = [0; 6];
         let text = SharedString::from(ch.encode_utf8(&mut buffer) as &str);
 
-        window.clone().process_key_input(&KeyEvent {
+        WindowInner::from_pub(window_adapter.window()).process_key_input(&KeyEvent {
             event_type: KeyEventType::KeyPressed,
             text: text.clone(),
             modifiers,
+            ..Default::default()
         });
-        window.clone().process_key_input(&KeyEvent {
+        WindowInner::from_pub(window_adapter.window()).process_key_input(&KeyEvent {
             event_type: KeyEventType::KeyReleased,
             text,
             modifiers,
+            ..Default::default()
         });
     }
 }
 
-cfg_if::cfg_if! {
-    if #[cfg(target_arch = "wasm32")] {
-        use wasm_bindgen::prelude::*;
+/// implementation details for debug_log()
+#[doc(hidden)]
+pub fn debug_log_impl(args: core::fmt::Arguments) {
+    crate::platform::PLATFORM_INSTANCE.with(|p| match p.get() {
+        Some(platform) => platform.debug_log(args),
+        None => default_debug_log(args),
+    });
+}
 
-        #[wasm_bindgen]
-        extern "C" {
-            #[wasm_bindgen(js_namespace = console)]
-            pub fn log(s: &str);
-        }
+#[doc(hidden)]
+pub fn default_debug_log(_arguments: core::fmt::Arguments) {
+    cfg_if::cfg_if! {
+        if #[cfg(target_arch = "wasm32")] {
+            use wasm_bindgen::prelude::*;
 
-        #[macro_export]
-        /// This macro allows producing debug output that will appear on stderr in regular builds
-        /// and in the console log for wasm builds.
-        macro_rules! debug_log {
-            ($($t:tt)*) => ($crate::tests::log(&format_args!($($t)*).to_string()))
-        }
-    } else if #[cfg(feature = "std")] {
-        /// This macro allows producing debug output that will appear on stderr in regular builds
-        /// and in the console log for wasm builds.
-        #[macro_export]
-        macro_rules! debug_log {
-            ($($t:tt)*) => (eprintln!($($t)*))
-        }
-    } else if #[cfg(feature = "defmt")] {
-        #[doc(hidden)]
-        pub fn log(s: &str) {
-            defmt::println!("{=str}", s);
-        }
+            #[wasm_bindgen]
+            extern "C" {
+                #[wasm_bindgen(js_namespace = console)]
+                pub fn log(s: &str);
+            }
 
-        #[macro_export]
-        /// This macro allows producing debug output that will appear on the output of the debug probe
-        macro_rules! debug_log {
-            ($($t:tt)*) => ($crate::tests::log({ use alloc::string::ToString; &format_args!($($t)*).to_string() }))
+            log(&_arguments.to_string());
+        } else if #[cfg(feature = "std")] {
+            eprintln!("{}", _arguments);
         }
     }
+}
+
+#[macro_export]
+/// This macro allows producing debug output that will appear on stderr in regular builds
+/// and in the console log for wasm builds.
+macro_rules! debug_log {
+    ($($t:tt)*) => ($crate::tests::debug_log_impl(format_args!($($t)*)))
 }

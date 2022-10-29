@@ -30,7 +30,7 @@ The recommended and most flexible way to use the C++ API is to build Slint from 
 First you need to install the prerequisites:
 
 * Install Rust by following the [Rust Getting Started Guide](https://www.rust-lang.org/learn/get-started). If you already
-  have Rust installed, make sure that it's at least version 1.56 or newer. You can check which version you have installed
+  have Rust installed, make sure that it's at least version 1.60 or newer. You can check which version you have installed
   by running `rustc --version`. Once this is done, you should have the ```rustc``` compiler and the ```cargo``` build system installed in your path.
 * **[cmake](https://cmake.org/download/)** (3.19 or newer)
 * A C++ compiler that supports C++20 (e.g., **MSVC 2019 16.6** on Windows)
@@ -43,7 +43,7 @@ include(FetchContent)
 FetchContent_Declare(
     Slint
     GIT_REPOSITORY https://github.com/slint-ui/slint.git
-    GIT_TAG release/0.2
+    GIT_TAG release/0.3
     SOURCE_SUBDIR api/cpp
 )
 FetchContent_MakeAvailable(Slint)
@@ -59,16 +59,36 @@ not enabled by default but that is revelant for you, or you may want to disable 
 therefore reduce the size of the resulting library.
 
 The CMake configure step offers CMake options for various feature that are all prefixed with `SLINT_FEATURE_`. For example
-you can make a build that exclusively supports Wayland on Linux by enabling the `SLINT_FEATURE_BACKEND_GL_WAYLAND` feature and turning
-off `SLINT_FEATURE_BACKEND_GL_ALL`. There are different ways of toggling CMake options. For example on the command line using the `-D` parameter:
+you can make a build that exclusively supports Wayland on Linux by enabling the `SLINT_FEATURE_BACKEND_WINIT_WAYLAND` feature and turning
+off `SLINT_FEATURE_BACKEND_WINIT`. There are different ways of toggling CMake options. For example on the command line using the `-D` parameter:
 
-   `cmake -DSLINT_FEATURE_BACKEND_GL_ALL=OFF -DSLINT_FEATURE_BACKEND_GL_WAYLAND=ON ...`
+   `cmake -DSLINT_FEATURE_BACKEND_WINIT=OFF -DSLINT_FEATURE_BACKEND_WINIT_WAYLAND=ON ...`
 
 Alternatively, after the configure step you can use `cmake-gui` or `ccmake` on the build directory for a list of all features
 and their description.
 
 This works when compiling Slint as a package, using `cmake --build` and `cmake --install`, or when including Slint
 using `FetchContent`.
+
+### Backends
+
+Slint needs a backend that will act as liaison between Slint and the OS.
+By default, Slint will use the Qt backend, if Qt is installed, otherwise, it
+will use [Winit](https://crates.io/crates/winit) with [Femtovg](https://crates.io/crates/femtovg).
+Both backends are compiled in. If you want to not compile one of these you need
+to disable the `SLINT_FEATURE_BACKEND_WINIT` and `SLINT_FEATURE_RENDERER_WINIT_FEMTOVG` features and enable
+the backend and renderer features you choose.
+
+If you enable the Winit backend, you need to also include a renderer.
+`SLINT_FEATURE_RENDERER_WINIT_FEMTOVG` is the only stable renderer, the other ones are experimental
+It is also possible to select the backend and renderer at runtime when several
+are enabled, using the `SLINT_BACKEND`  environment variable.
+ * `SLINT_BACKEND=Qt` selects the Qt backend
+ * `SLINT_BACKEND=winit` selects the winit backend
+ * `SLINT_BACKEND=winit-femtovg` selects the winit backend with the femtovg renderer
+ * `SLINT_BACKEND=winit-skia` selects the winit backend with the skia renderer
+ * `SLINT_BACKEND=winit-software` selects the winit backend with the software renderer
+If the selected backend is not available, the default will be used.
 
 ### Cross-compiling
 

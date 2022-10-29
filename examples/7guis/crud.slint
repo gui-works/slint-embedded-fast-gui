@@ -1,0 +1,78 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+import { LineEdit, Button, Slider, StandardListView, GridBox, HorizontalBox } from "std-widgets.slint";
+
+MainWindow := Window {
+
+    GridBox {
+        Text {
+            text: "Filter prefix:";
+            vertical-alignment: center;
+            horizontal-alignment: right;
+        }
+        LineEdit {
+            text <=> root.prefix;
+            edited => { root.prefixEdited() }
+        }
+
+        list := StandardListView {
+            row: 1;
+            rowspan: 3;
+            colspan: 2;
+            model: root.names-list;
+        }
+
+        Text {
+            col: 2;
+            row: 1;
+            text: "Name: "; 
+            vertical-alignment: center;
+            horizontal-alignment: right;
+        }
+        LineEdit { text <=> root.name; }
+
+        Text {
+            col: 2;
+            row: 2;
+            text: "Surname: "; 
+            vertical-alignment: center;
+            horizontal-alignment: right;
+        }
+        LineEdit { text <=> root.surname; }
+
+        HorizontalBox {
+            padding-left: 0;
+            padding-bottom: 0;
+            row: 4;
+            alignment: start;
+            Button {
+                text: "Create";
+                clicked => { root.createClicked() }
+            }
+            Button {
+                text: "Update";
+                enabled: list.current-item != -1 && list.current-item < names-list.length;
+                clicked => { root.updateClicked() }
+            }
+            Button {
+                text: "Delete";
+                enabled: list.current-item != -1 && list.current-item < names-list.length;
+                clicked => { root.deleteClicked() }
+            }
+        }
+
+    }
+    property <[StandardListViewItem]> names-list;
+    property <int> current-item: list.current-item;
+
+    property <string> name;
+    property <string> surname;
+
+    property <string> prefix;
+
+    callback prefixEdited();
+    callback createClicked();
+    callback updateClicked();
+    callback deleteClicked();
+}

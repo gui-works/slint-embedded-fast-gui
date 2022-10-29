@@ -35,7 +35,16 @@ pub fn test(testcase: &test_driver_lib::TestCase) -> Result<(), Box<dyn Error>> 
     }
 
     generated_cpp.write_all(
-        b"#ifdef NDEBUG\n#undef NDEBUG\n#endif\n#include <assert.h>\n#include <cmath>\n#include <iostream>\n#include <slint_testing.h>\n",
+        br"
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
+#include <assert.h>
+#include <cmath>
+#include <iostream>
+#include <slint_testing.h>
+namespace slint_testing = slint::testing;
+",
     )?;
     generated_cpp.write_all(b"int main() {\n    slint::testing::init();\n")?;
     for x in test_driver_lib::extract_test_functions(&source).filter(|x| x.language_id == "cpp") {
@@ -81,6 +90,16 @@ pub fn test(testcase: &test_driver_lib::TestCase) -> Result<(), Box<dyn Error>> 
 
     compiler_command.arg(&*cpp_file);
 
+    if keep_temp_files {
+        println!(
+            "Leaving temporary files behind for {} : source {} binary {}",
+            testcase.absolute_path.display(),
+            cpp_file.display(),
+            binary_path.display()
+        );
+        cpp_file.keep()?;
+    }
+
     if compiler.is_like_clang() || compiler.is_like_gnu() {
         compiler_command.arg("-std=c++20");
         compiler_command.arg("-g");
@@ -112,6 +131,7 @@ pub fn test(testcase: &test_driver_lib::TestCase) -> Result<(), Box<dyn Error>> 
     }
 
     let output = cmd
+        .envs(library_search_path_env_with(env!("CPP_LIB_PATH")))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -129,15 +149,22 @@ pub fn test(testcase: &test_driver_lib::TestCase) -> Result<(), Box<dyn Error>> 
         }
     }
 
-    if keep_temp_files {
-        println!(
-            "Left temporary files behind for {} : source {} binary {}",
-            testcase.absolute_path.display(),
-            cpp_file.display(),
-            binary_path.display()
-        );
-        cpp_file.keep()?;
-    }
-
     Ok(())
+}
+
+fn library_search_path_env_with(
+    value_to_prepend: &str,
+) -> impl IntoIterator<Item = (&'static str, String)> {
+    let (var, separator) = if cfg!(target_os = "windows") {
+        ("PATH", ';')
+    } else if cfg!(target_os = "macos") {
+        ("DYLD_FALLBACK_LIBRARY_PATH", ':')
+    } else {
+        ("LD_LIBRARY_PATH", ':')
+    };
+
+    std::iter::once((
+        var,
+        format!("{}{}{}", value_to_prepend, separator, std::env::var(var).unwrap_or_default()),
+    ))
 }

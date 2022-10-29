@@ -1,6 +1,8 @@
 // Copyright © SixtyFPS GmbH <info@slint-ui.com>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
+// cSpell: ignore asyncness constness containee defaultness impls qself supertraits vref
+
 /*!
 Implementation detail for the vtable crate
 */
@@ -422,7 +424,7 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 vtable_ctor.push(quote!(#ident: {
                     #sig_extern {
                         unsafe {
-                            Box::from_raw((#self_call).0 as *mut _);
+                            ::core::mem::drop(Box::from_raw((#self_call).0 as *mut _));
                         }
                     }
                     #ident::<T>
@@ -449,7 +451,9 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
             if ident == "drop_in_place" {
                 vtable_ctor.push(quote!(#ident: {
+                    #[allow(unsafe_code)]
                     #sig_extern {
+                        #[allow(unused_unsafe)]
                         unsafe { ::core::ptr::drop_in_place((#self_call).0 as *mut T) };
                         ::core::alloc::Layout::new::<T>().into()
                     }
@@ -457,6 +461,7 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 },));
 
                 drop_impls.push(quote! {
+                    #[allow(unsafe_code)]
                     unsafe impl VTableMetaDropInPlace for #vtable_name {
                         unsafe fn #ident(vtable: &Self::VTable, ptr: *mut u8) -> vtable::Layout {
                             // Safety: The vtable is valid and ptr is a type corresponding to the vtable,
@@ -471,6 +476,7 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
             }
             if ident == "dealloc" {
                 vtable_ctor.push(quote!(#ident: {
+                    #[allow(unsafe_code)]
                     unsafe extern "C" fn #ident(_: &#vtable_name, ptr: *mut u8, layout: vtable::Layout) {
                         use ::core::convert::TryInto;
                         vtable::internal::dealloc(ptr, layout.try_into().unwrap())
@@ -495,6 +501,7 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 block: parse2(if has_self {
                     quote!({
                         // Safety: this rely on the vtable being valid, and the ptr being a valid instance for this vtable
+                        #[allow(unsafe_code)]
                         unsafe {
                             let vtable = self.vtable.as_ref();
                             if let #some(func) = vtable.#ident {
@@ -530,6 +537,7 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     block: parse2(quote!({
                         let vtable = self;
                         // Safety: this rely on the vtable being valid, and the ptr being a valid instance for this vtable
+                        #[allow(unsafe_code)]
                         unsafe { (self.#ident)(#call_code) }
                     }))
                     .unwrap(),
@@ -539,6 +547,7 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     #sig_extern {
                         // This is safe since the self must be a instance of our type
                         #[allow(unused)]
+                        #[allow(unsafe_code)]
                         let vtable = unsafe { core::ptr::NonNull::from(&*_0) };
                         #wrap_trait_call(T::#ident(#self_call #forward_code))
                     }
@@ -554,6 +563,7 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 vtable_ctor.push(quote!(#ident: {
                     #sig_extern {
                         // This is safe since the self must be a instance of our type
+                        #[allow(unsafe_code)]
                         unsafe { #erase_return_type_lifetime(T::#ident(#self_call #forward_code)) }
                     }
                     #ident::<T>
@@ -716,7 +726,7 @@ and implements HasStaticVTable for it.
             #generated_trait
             #generated_trait_assoc_const
 
-            /// Invariant, same as vtable::Inner: vtable and ptr has to be valid and ptr an instance macthcin the vtable
+            /// Invariant, same as vtable::Inner: vtable and ptr has to be valid and ptr an instance matching the vtable
             #[doc(hidden)]
             #[repr(C)]
             pub struct #to_name {
@@ -759,6 +769,7 @@ and implements HasStaticVTable for it.
                         #(#vtable_ctor)*
                     }
                 };
+                #[allow(unsafe_code)]
                 unsafe impl vtable::HasStaticVTable<#vtable_name> for $ty {
                     fn static_vtable() -> &'static #vtable_name {
                         &$ident

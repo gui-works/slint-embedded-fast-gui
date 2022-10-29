@@ -3,7 +3,7 @@
 
 [package]
 name = "vtable-macro"
-version = "0.1.6"
+version = "0.1.9"
 authors = ["Slint Developers <info@slint-ui.com>"]
 edition = "2021"
 license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
@@ -20,5 +20,5 @@ syn = { version = "1.0", features = ["full"] }
 quote = "1.0"
 proc-macro2 = "1.0"
 
-[dev_dependencies]
+[dev-dependencies]
 vtable = { path = ".." }

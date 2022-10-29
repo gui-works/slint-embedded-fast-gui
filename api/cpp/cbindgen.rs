@@ -2,10 +2,35 @@
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
 use anyhow::Context;
+use std::io::Write;
 use std::iter::Extend;
 use std::path::{Path, PathBuf};
 
-// cspell::ignore compat constexpr corelib sharedvector pathdata
+// cSpell: ignore compat constexpr corelib deps sharedvector pathdata
+
+fn enums(path: &Path) -> anyhow::Result<()> {
+    let mut enums =
+        std::fs::File::create(path).context("Error creating slint_internal_enums.h file")?;
+    writeln!(enums, "#pragma once")?;
+    writeln!(enums, "// This file is auto-generated from {}", file!())?;
+    writeln!(enums, "namespace slint::cbindgen_private {{")?;
+    macro_rules! print_enums {
+         ($( $(#[doc = $enum_doc:literal])* enum $Name:ident { $( $(#[doc = $value_doc:literal])* $Value:ident,)* })*) => {
+             $(
+                $(writeln!(enums, "///{}", $enum_doc)?;)*
+                writeln!(enums, "enum class {} {{", stringify!($Name))?;
+                $(
+                    $(writeln!(enums, "    ///{}", $value_doc)?;)*
+                    writeln!(enums, "    {},", stringify!($Value).trim_start_matches("r#"))?;
+                )*
+                writeln!(enums, "}};")?;
+             )*
+         }
+    }
+    i_slint_common::for_each_enums!(print_enums);
+    writeln!(enums, "}}")?;
+    Ok(())
+}
 
 fn ensure_cargo_rerun_for_crate(
     crate_dir: &Path,
@@ -39,6 +64,8 @@ fn default_config() -> cbindgen::Config {
                 ("KeyEventArg".into(), "KeyEvent".into()),
                 ("PointerEventArg".into(), "PointerEvent".into()),
                 ("PointArg".into(), "Point".into()),
+                ("FloatArg".into(), "float".into()),
+                ("Coord".into(), "float".into()),
             ]
             .iter()
             .cloned()
@@ -87,6 +114,7 @@ fn gen_corelib(
     let mut config = default_config();
 
     let items = [
+        "Empty",
         "Rectangle",
         "BorderRectangle",
         "ImageItem",
@@ -102,12 +130,13 @@ fn gen_corelib(
         "BoxShadow",
         "Rotate",
         "Opacity",
+        "Layer",
     ];
 
     config.export.include = [
         "ComponentVTable",
         "Slice",
-        "WindowRcOpaque",
+        "WindowAdapterRcOpaque",
         "PropertyAnimation",
         "EasingCurve",
         "TextHorizontalAlignment",
@@ -123,6 +152,7 @@ fn gen_corelib(
         "PointerEventKind",
         "PointerEventButton",
         "PointerEvent",
+        "Rect",
     ]
     .iter()
     .chain(items.iter())
@@ -132,10 +162,20 @@ fn gen_corelib(
     let mut private_exported_types: std::collections::HashSet<String> =
         config.export.include.iter().cloned().collect();
 
+    // included in generated_public.h
+    let public_exported_types = [
+        "TimerMode",
+        "RenderingState",
+        "SetRenderingNotifierError",
+        "GraphicsAPI",
+        "CloseRequestResponse",
+    ];
+
     config.export.exclude = [
         "SharedString",
         "SharedVector",
         "ImageInner",
+        "ImageCacheKey",
         "Image",
         "Color",
         "PathData",
@@ -151,7 +191,7 @@ fn gen_corelib(
         "slint_property_listener_scope_is_dirty",
         "PropertyTrackerOpaque",
         "CallbackOpaque",
-        "WindowRc",
+        "WindowAdapterRc",
         "VoidArg",
         "KeyEventArg",
         "PointerEventArg",
@@ -161,12 +201,15 @@ fn gen_corelib(
         "slint_color_darker",
         "slint_image_size",
         "slint_image_path",
-        "TimerMode",                 // included in generated_public.h
-        "RenderingState",            // included in generated_public.h
-        "SetRenderingNotifierError", // included in generated_public.h
-        "GraphicsAPI",               // included in generated_public.h
+        "slint_image_load_from_path",
+        "slint_image_load_from_embedded_data",
+        "Coord",
+        "LogicalRect",
+        "LogicalPoint",
+        "LogicalLength",
     ]
     .iter()
+    .chain(public_exported_types.iter())
     .map(|x| x.to_string())
     .collect();
 
@@ -211,38 +254,50 @@ fn gen_corelib(
     cbindgen::Builder::new()
         .with_config(properties_config)
         .with_src(crate_dir.join("properties.rs"))
+        .with_src(crate_dir.join("properties/ffi.rs"))
         .with_src(crate_dir.join("callbacks.rs"))
         .with_after_include("namespace slint { class Color; class Brush; }")
         .generate()
         .context("Unable to generate bindings for slint_properties_internal.h")?
         .write_to_file(include_dir.join("slint_properties_internal.h"));
 
-    for (rust_types, extra_excluded_types, internal_header) in [
+    for (rust_types, extra_excluded_types, internal_header, prelude) in [
         (
             vec![
                 "ImageInner",
                 "Image",
+                "ImageCacheKey",
                 "Size",
                 "slint_image_size",
                 "slint_image_path",
+                "slint_image_load_from_path",
+                "slint_image_load_from_embedded_data",
                 "SharedPixelBuffer",
                 "SharedImageBuffer",
                 "StaticTextures",
             ],
             vec!["Color"],
             "slint_image_internal.h",
+            "namespace slint::cbindgen_private { struct ParsedSVG{}; struct HTMLImage{}; using namespace vtable; }",
         ),
         (
             vec!["Color", "slint_color_brighter", "slint_color_darker"],
             vec![],
             "slint_color_internal.h",
+            "",
         ),
         (
             vec!["PathData", "PathElement", "slint_new_path_elements", "slint_new_path_events"],
             vec![],
             "slint_pathdata_internal.h",
+            "",
         ),
-        (vec!["Brush", "LinearGradient", "GradientStop"], vec!["Color"], "slint_brush_internal.h"),
+        (
+            vec!["Brush", "LinearGradient", "GradientStop", "RadialGradient"],
+            vec!["Color"],
+            "slint_brush_internal.h",
+            "",
+        ),
     ]
     .iter()
     {
@@ -256,18 +311,27 @@ fn gen_corelib(
             "slint_windowrc_hide",
             "slint_windowrc_get_scale_factor",
             "slint_windowrc_set_scale_factor",
-            "slint_windowrc_free_graphics_resources",
             "slint_windowrc_set_focus_item",
             "slint_windowrc_set_component",
             "slint_windowrc_show_popup",
             "slint_windowrc_set_rendering_notifier",
             "slint_windowrc_request_redraw",
+            "slint_windowrc_on_close_requested",
+            "slint_windowrc_position",
+            "slint_windowrc_set_logical_position",
+            "slint_windowrc_set_physical_position",
+            "slint_windowrc_size",
+            "slint_windowrc_set_logical_size",
+            "slint_windowrc_set_physical_size",
+            "slint_windowrc_dark_color_scheme",
             "slint_new_path_elements",
             "slint_new_path_events",
             "slint_color_brighter",
             "slint_color_darker",
             "slint_image_size",
             "slint_image_path",
+            "slint_image_load_from_path",
+            "slint_image_load_from_embedded_data",
         ]
         .iter()
         .filter(|exclusion| !rust_types.iter().any(|inclusion| inclusion == *exclusion))
@@ -292,6 +356,8 @@ fn gen_corelib(
 
         private_exported_types.extend(special_config.export.include.iter().cloned());
 
+        special_config.after_includes = (!prelude.is_empty()).then(|| prelude.to_string());
+
         cbindgen::Builder::new()
             .with_config(special_config)
             .with_src(crate_dir.join("graphics.rs"))
@@ -299,10 +365,12 @@ fn gen_corelib(
             .with_src(crate_dir.join("graphics/path.rs"))
             .with_src(crate_dir.join("graphics/brush.rs"))
             .with_src(crate_dir.join("graphics/image.rs"))
+            .with_src(crate_dir.join("graphics/image/cache.rs"))
             .with_src(crate_dir.join("animations.rs"))
             //            .with_src(crate_dir.join("input.rs"))
             .with_src(crate_dir.join("item_rendering.rs"))
             .with_src(crate_dir.join("window.rs"))
+            .with_include("slint_enums_internal.h")
             .generate()
             .with_context(|| format!("Unable to generate bindings for {}", internal_header))?
             .write_to_file(include_dir.join(internal_header));
@@ -315,12 +383,7 @@ fn gen_corelib(
     // Previously included types are now excluded (to avoid duplicates)
     public_config.export.exclude = private_exported_types.into_iter().collect();
     public_config.export.exclude.push("Point".into());
-    public_config.export.include = vec![
-        "TimerMode".into(),
-        "RenderingState".into(),
-        "SetRenderingNotifierError".into(),
-        "GraphicsAPI".into(),
-    ];
+    public_config.export.include = public_exported_types.into_iter().map(str::to_string).collect();
 
     cbindgen::Builder::new()
         .with_config(public_config)
@@ -393,17 +456,23 @@ fn gen_corelib(
         .with_include("slint_pathdata.h")
         .with_include("slint_brush.h")
         .with_include("slint_generated_public.h")
+        .with_include("slint_enums_internal.h")
+        .with_include("slint_point.h")
         .with_after_include(
             r"
 namespace slint {
-    namespace private_api { class WindowRc; }
+    namespace private_api { class WindowAdapterRc; }
     namespace cbindgen_private {
-        using slint::private_api::WindowRc;
+        using slint::private_api::WindowAdapterRc;
         using namespace vtable;
         struct KeyEvent; struct PointerEvent;
         using private_api::Property;
         using private_api::PathData;
         using private_api::Point;
+        struct Rect;
+        using LogicalRect = Rect;
+        using LogicalPoint = Point2D<float>;
+        using LogicalLength = float;
     }
 }",
         )
@@ -439,6 +508,7 @@ fn gen_backend_qt(
     ];
 
     config.export.include = items.iter().map(|x| x.to_string()).collect();
+    config.export.exclude = vec!["FloatArg".into()];
 
     config.export.body.insert(
         "NativeStyleMetrics".to_owned(),
@@ -459,31 +529,6 @@ fn gen_backend_qt(
         .generate()
         .context("Unable to generate bindings for slint_qt_internal.h")?
         .write_to_file(include_dir.join("slint_qt_internal.h"));
-
-    Ok(())
-}
-
-fn gen_backend_selector(
-    root_dir: &Path,
-    include_dir: &Path,
-    dependencies: &mut Vec<PathBuf>,
-) -> anyhow::Result<()> {
-    let mut config = default_config();
-
-    config.export.include.clear();
-
-    let mut crate_dir = root_dir.to_owned();
-    crate_dir.extend(["internal", "backends", "selector"].iter());
-
-    ensure_cargo_rerun_for_crate(&crate_dir, dependencies)?;
-
-    cbindgen::Builder::new()
-        .with_config(config)
-        .with_crate(crate_dir)
-        .with_include("slint_qt_internal.h")
-        .generate()
-        .context("Unable to generate bindings for slint_selector_internal.h")?
-        .write_to_file(include_dir.join("slint_selector_internal.h"));
 
     Ok(())
 }
@@ -587,9 +632,9 @@ pub fn gen_all(root_dir: &Path, include_dir: &Path) -> anyhow::Result<Vec<PathBu
     proc_macro2::fallback::force(); // avoid a abort if panic=abort is set
     std::fs::create_dir_all(include_dir).context("Could not create the include directory")?;
     let mut deps = Vec::new();
+    enums(&include_dir.join("slint_enums_internal.h"))?;
     gen_corelib(root_dir, include_dir, &mut deps)?;
     gen_backend_qt(root_dir, include_dir, &mut deps)?;
-    gen_backend_selector(root_dir, include_dir, &mut deps)?;
     gen_backend(root_dir, include_dir, &mut deps)?;
     gen_interpreter(root_dir, include_dir, &mut deps)?;
     Ok(deps)

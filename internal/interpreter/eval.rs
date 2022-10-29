@@ -5,11 +5,11 @@ use crate::api::{SetPropertyError, Struct, Value};
 use crate::dynamic_component::InstanceRef;
 use core::convert::TryInto;
 use core::pin::Pin;
-use corelib::graphics::{GradientStop, LinearGradientBrush, PathElement};
+use corelib::graphics::{GradientStop, LinearGradientBrush, PathElement, RadialGradientBrush};
 use corelib::items::{ItemRef, PropertyAnimation};
 use corelib::model::{Model, ModelRc};
 use corelib::rtti::AnimatedBindingKind;
-use corelib::window::{WindowHandleAccess, WindowRc};
+use corelib::window::WindowInner;
 use corelib::{Brush, Color, PathData, SharedString, SharedVector};
 use i_slint_compiler::expression_tree::{
     BuiltinFunction, EasingCurve, Expression, Path as ExprPath, PathElement as ExprPathElement,
@@ -193,7 +193,7 @@ pub fn eval_expression(expression: &Expression, local_context: &mut EvalLocalCon
             match (v, to) {
                 (Value::Number(n), Type::Int32) => Value::Number(n.round()),
                 (Value::Number(n), Type::String) => {
-                    Value::String(SharedString::from(format!("{}", n).as_str()))
+                    Value::String(i_slint_core::format!("{}", n))
                 }
                 (Value::Number(n), Type::Color) => Color::from_argb_encoded(n as u32).into(),
                 (Value::Brush(brush), Type::Color) => brush.color().into(),
@@ -215,258 +215,7 @@ pub fn eval_expression(expression: &Expression, local_context: &mut EvalLocalCon
                 let args = arguments.iter().map(|e| eval_expression(e, local_context)).collect::<Vec<_>>();
                 invoke_callback(local_context.component_instance, &nr.element(), nr.name(), &args).unwrap()
             }
-            Expression::BuiltinFunctionReference(BuiltinFunction::GetWindowScaleFactor, _) => {
-                match local_context.component_instance {
-                    ComponentInstance::InstanceRef(component) => Value::Number(window_ref(component).unwrap().scale_factor() as _),
-                    ComponentInstance::GlobalComponent(_) => panic!("Cannot get the window from a global component"),
-                }
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::Debug, _) => {
-                let to_print: SharedString = eval_expression(&arguments[0], local_context).try_into().unwrap();
-                corelib::debug_log!("{}", to_print);
-                Value::Void
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::Mod, _) => {
-                let mut to_int = |e| -> i32 { eval_expression(e, local_context).try_into().unwrap() };
-                Value::Number((to_int(&arguments[0]) % to_int(&arguments[1])) as _)
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::Round, _) => {
-                let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
-                Value::Number(x.round())
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::Ceil, _) => {
-                let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
-                Value::Number(x.ceil())
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::Floor, _) => {
-                let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
-                Value::Number(x.floor())
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::Sqrt, _) => {
-                let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
-                Value::Number(x.sqrt())
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::Abs, _) => {
-                let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
-                Value::Number(x.abs())
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::Sin, _) => {
-                let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
-                Value::Number(x.to_radians().sin())
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::Cos, _) => {
-                let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
-                Value::Number(x.to_radians().cos())
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::Tan, _) => {
-                let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
-                Value::Number(x.to_radians().tan())
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::ASin, _) => {
-                let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
-                Value::Number(x.asin().to_degrees())
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::ACos, _) => {
-                let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
-                Value::Number(x.acos().to_degrees())
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::ATan, _) => {
-                let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
-                Value::Number(x.atan().to_degrees())
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::Log, _) => {
-                let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
-                let y: f64 = eval_expression(&arguments[1], local_context).try_into().unwrap();
-                Value::Number(x.log(y))
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::Pow, _) => {
-                let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
-                let y: f64 = eval_expression(&arguments[1], local_context).try_into().unwrap();
-                Value::Number(x.powf(y))
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::SetFocusItem, _) => {
-                if arguments.len() != 1 {
-                    panic!("internal error: incorrect argument count to SetFocusItem")
-                }
-                let component = match  local_context.component_instance  {
-                    ComponentInstance::InstanceRef(c) => c,
-                    ComponentInstance::GlobalComponent(_) => panic!("Cannot access the focus item from a global component")
-                };
-                if let Expression::ElementReference(focus_item) = &arguments[0] {
-                    generativity::make_guard!(guard);
-
-                    let focus_item = focus_item.upgrade().unwrap();
-                    let enclosing_component =
-                        enclosing_component_for_element(&focus_item, component, guard);
-                    let component_type = enclosing_component.component_type;
-
-                    let item_info = &component_type.items[focus_item.borrow().id.as_str()];
-
-                    let focus_item_comp = enclosing_component.self_weak().get().unwrap().upgrade().unwrap();
-
-                    window_ref(component).unwrap().clone().set_focus_item(&corelib::items::ItemRc::new(vtable::VRc::into_dyn(focus_item_comp), item_info.item_index()));
-                    Value::Void
-                } else {
-                    panic!("internal error: argument to SetFocusItem must be an element")
-                }
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::ShowPopupWindow, _) => {
-                if arguments.len() != 1 {
-                    panic!("internal error: incorrect argument count to ShowPopupWindow")
-                }
-                let component = match  local_context.component_instance  {
-                    ComponentInstance::InstanceRef(c) => c,
-                    ComponentInstance::GlobalComponent(_) => panic!("Cannot show popup from a global component")
-                };
-                if let Expression::ElementReference(popup_window) = &arguments[0] {
-                    let popup_window = popup_window.upgrade().unwrap();
-                    let pop_comp = popup_window.borrow().enclosing_component.upgrade().unwrap();
-                    let parent_component = pop_comp.parent_element.upgrade().unwrap().borrow().enclosing_component.upgrade().unwrap();
-                    let popup_list = parent_component.popup_windows.borrow();
-                    let popup = popup_list.iter().find(|p| Rc::ptr_eq(&p.component, &pop_comp)).unwrap();
-                    let x = load_property_helper(local_context.component_instance, &popup.x.element(), popup.x.name()).unwrap();
-                    let y = load_property_helper(local_context.component_instance, &popup.y.element(), popup.y.name()).unwrap();
-
-                    generativity::make_guard!(guard);
-                    let enclosing_component =
-                        enclosing_component_for_element(&popup.parent_element, component, guard);
-                    let parent_item_info = &enclosing_component.component_type.items[popup.parent_element.borrow().id.as_str()];
-                    let parent_item_comp = enclosing_component.self_weak().get().unwrap().upgrade().unwrap();
-                    let parent_item = corelib::items::ItemRc::new(vtable::VRc::into_dyn(parent_item_comp), parent_item_info.item_index());
-
-                    crate::dynamic_component::show_popup(
-                        popup,
-                        i_slint_core::graphics::Point::new(x.try_into().unwrap(), y.try_into().unwrap()),
-                        component.borrow(),
-                        window_ref(component).unwrap(),
-                        &parent_item);
-                    Value::Void
-                } else {
-                    panic!("internal error: argument to SetFocusItem must be an element")
-                }
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::StringIsFloat, _) => {
-                if arguments.len() != 1 {
-                    panic!("internal error: incorrect argument count to StringIsFloat")
-                }
-                if let Value::String(s) = eval_expression(&arguments[0], local_context) {
-                    Value::Bool(<f64 as core::str::FromStr>::from_str(s.as_str()).is_ok())
-                } else {
-                    panic!("Argument not a string");
-                }
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::StringToFloat, _) => {
-                if arguments.len() != 1 {
-                    panic!("internal error: incorrect argument count to StringToFloat")
-                }
-                if let Value::String(s) = eval_expression(&arguments[0], local_context) {
-                    Value::Number(core::str::FromStr::from_str(s.as_str()).unwrap_or(0.))
-                } else {
-                    panic!("Argument not a string");
-                }
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::ColorBrighter, _) => {
-                if arguments.len() != 2 {
-                    panic!("internal error: incorrect argument count to ColorBrighter")
-                }
-                if let Value::Brush(Brush::SolidColor(col)) = eval_expression(&arguments[0], local_context) {
-                    if let Value::Number(factor) = eval_expression(&arguments[1], local_context) {
-                        col.brighter(factor as _).into()
-                    } else {
-                        panic!("Second argument not a number");
-                    }
-                } else {
-                    panic!("First argument not a color");
-                }
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::ColorDarker, _) => {
-                if arguments.len() != 2 {
-                    panic!("internal error: incorrect argument count to ColorDarker")
-                }
-                if let Value::Brush(Brush::SolidColor(col)) = eval_expression(&arguments[0], local_context) {
-                    if let Value::Number(factor) = eval_expression(&arguments[1], local_context) {
-                        col.darker(factor as _).into()
-                    } else {
-                        panic!("Second argument not a number");
-                    }
-                } else {
-                    panic!("First argument not a color");
-                }
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::ImageSize, _) => {
-                if arguments.len() != 1 {
-                    panic!("internal error: incorrect argument count to ImageSize")
-                }
-                if let Value::Image(img) = eval_expression(&arguments[0], local_context) {
-                    let size = img.size();
-                    let values = IntoIterator::into_iter([
-                        ("width".to_string(), Value::Number(size.width as f64)),
-                        ("height".to_string(), Value::Number(size.height as f64)),
-                    ]).collect();
-                    Value::Struct(values)
-                } else {
-                    panic!("First argument not an image");
-                }
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::ArrayLength, _) => {
-                if arguments.len() != 1 {
-                    panic!("internal error: incorrect argument count to ArrayLength")
-                }
-                match eval_expression(&arguments[0], local_context) {
-                    Value::Model(model) => {
-                        model.model_tracker().track_row_count_changes();
-                        Value::Number(model.row_count() as f64)
-                    }
-                    _ => {
-                        panic!("First argument not an array");
-                    }
-                }
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::Rgb, _) => {
-                let r: i32 = eval_expression(&arguments[0], local_context).try_into().unwrap();
-                let g: i32 = eval_expression(&arguments[1], local_context).try_into().unwrap();
-                let b: i32 = eval_expression(&arguments[2], local_context).try_into().unwrap();
-                let a: f32 = eval_expression(&arguments[3], local_context).try_into().unwrap();
-                let r: u8 = r.max(0).min(255) as u8;
-                let g: u8 = g.max(0).min(255) as u8;
-                let b: u8 = b.max(0).min(255) as u8;
-                let a: u8 = (255. * a).max(0.).min(255.) as u8;
-                Value::Brush(Brush::SolidColor(Color::from_argb_u8(a, r, g, b)))
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::ImplicitLayoutInfo(orient), _) => {
-                let component = match  local_context.component_instance  {
-                    ComponentInstance::InstanceRef(c) => c,
-                    ComponentInstance::GlobalComponent(_) => panic!("Cannot access the implicit item size from a global component")
-                };
-                if let [Expression::ElementReference(item)] = arguments.as_slice() {
-                    generativity::make_guard!(guard);
-
-                    let item = item.upgrade().unwrap();
-                    let enclosing_component =
-                        enclosing_component_for_element(&item, component, guard);
-                    let component_type = enclosing_component.component_type;
-                    let item_info = &component_type.items[item.borrow().id.as_str()];
-                    let item_ref = unsafe { item_info.item_from_component(enclosing_component.as_ptr()) };
-
-                    let window = window_ref(component).unwrap();
-                    item_ref.as_ref().layout_info(crate::eval_layout::to_runtime(*orient), window).into()
-                } else {
-                    panic!("internal error: incorrect arguments to ImplicitLayoutInfo {:?}", arguments);
-                }
-            }
-            Expression::BuiltinFunctionReference(BuiltinFunction::RegisterCustomFontByPath, _) => {
-                if arguments.len() != 1 {
-                    panic!("internal error: incorrect argument count to RegisterCustomFontByPath")
-                }
-                if let Value::String(s) = eval_expression(&arguments[0], local_context) {
-                    if let Some(err) = crate::register_font_from_path(&std::path::PathBuf::from(s.as_str())).err() {
-                        corelib::debug_log!("Error loading custom font {}: {}", s.as_str(), err);
-                    }
-                    Value::Void
-                } else {
-                    panic!("Argument not a string");
-                }
-            }
+            Expression::BuiltinFunctionReference(f, _) => call_builtin_function(*f, arguments, local_context),
             _ => panic!("call of something not a callback"),
         }
         Expression::SelfAssignment { lhs, rhs, op } => {
@@ -538,11 +287,9 @@ pub fn eval_expression(expression: &Expression, local_context: &mut EvalLocalCon
                     if let (std::borrow::Cow::Borrowed(static_path), Some(static_data)) = (virtual_file.path, virtual_file.builtin_contents) {
                         let virtual_file_extension = std::path::Path::new(static_path).extension().unwrap().to_str().unwrap();
                         debug_assert_eq!(virtual_file_extension, extension);
-                        Ok(corelib::graphics::Image::from(
-                            corelib::graphics::ImageInner::EmbeddedData {
-                                data: corelib::slice::Slice::from_slice(static_data),
-                                format: corelib::slice::Slice::from_slice(virtual_file_extension.as_bytes())
-                            }
+                        Ok(corelib::graphics::load_image_from_embedded_data(
+                            corelib::slice::Slice::from_slice(static_data),
+                            corelib::slice::Slice::from_slice(virtual_file_extension.as_bytes())
                         ))
                     } else {
                         corelib::debug_log!("Cannot embed images from disk {}", path);
@@ -603,6 +350,13 @@ pub fn eval_expression(expression: &Expression, local_context: &mut EvalLocalCon
                 GradientStop{ color, position }
             }))))
         }
+        Expression::RadialGradient{stops} => {
+            Value::Brush(Brush::RadialGradient(RadialGradientBrush::new_circle(stops.iter().map(|(color, stop)| {
+                let color = eval_expression(color, local_context).try_into().unwrap();
+                let position = eval_expression(stop, local_context).try_into().unwrap();
+                GradientStop{ color, position }
+            }))))
+        }
         Expression::EnumerationValue(value) => {
             Value::EnumerationValue(value.enumeration.name.clone(), value.to_string())
         }
@@ -628,6 +382,336 @@ pub fn eval_expression(expression: &Expression, local_context: &mut EvalLocalCon
         }
         Expression::ComputeLayoutInfo(lay, o) => crate::eval_layout::compute_layout_info(lay, *o, local_context),
         Expression::SolveLayout(lay, o) => crate::eval_layout::solve_layout(lay, *o, local_context),
+    }
+}
+
+fn call_builtin_function(
+    f: BuiltinFunction,
+    arguments: &[Expression],
+    local_context: &mut EvalLocalContext,
+) -> Value {
+    match f {
+        BuiltinFunction::GetWindowScaleFactor => match local_context.component_instance {
+            ComponentInstance::InstanceRef(component) => {
+                Value::Number(window_ref(component).unwrap().scale_factor() as _)
+            }
+            ComponentInstance::GlobalComponent(_) => {
+                panic!("Cannot get the window from a global component")
+            }
+        },
+        BuiltinFunction::AnimationTick => {
+            Value::Number(i_slint_core::animations::animation_tick() as f64)
+        }
+        BuiltinFunction::Debug => {
+            let to_print: SharedString =
+                eval_expression(&arguments[0], local_context).try_into().unwrap();
+            corelib::debug_log!("{}", to_print);
+            Value::Void
+        }
+        BuiltinFunction::Mod => {
+            let mut to_num = |e| -> f64 { eval_expression(e, local_context).try_into().unwrap() };
+            Value::Number(to_num(&arguments[0]) % to_num(&arguments[1]))
+        }
+        BuiltinFunction::Round => {
+            let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            Value::Number(x.round())
+        }
+        BuiltinFunction::Ceil => {
+            let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            Value::Number(x.ceil())
+        }
+        BuiltinFunction::Floor => {
+            let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            Value::Number(x.floor())
+        }
+        BuiltinFunction::Sqrt => {
+            let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            Value::Number(x.sqrt())
+        }
+        BuiltinFunction::Abs => {
+            let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            Value::Number(x.abs())
+        }
+        BuiltinFunction::Sin => {
+            let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            Value::Number(x.to_radians().sin())
+        }
+        BuiltinFunction::Cos => {
+            let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            Value::Number(x.to_radians().cos())
+        }
+        BuiltinFunction::Tan => {
+            let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            Value::Number(x.to_radians().tan())
+        }
+        BuiltinFunction::ASin => {
+            let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            Value::Number(x.asin().to_degrees())
+        }
+        BuiltinFunction::ACos => {
+            let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            Value::Number(x.acos().to_degrees())
+        }
+        BuiltinFunction::ATan => {
+            let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            Value::Number(x.atan().to_degrees())
+        }
+        BuiltinFunction::Log => {
+            let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            let y: f64 = eval_expression(&arguments[1], local_context).try_into().unwrap();
+            Value::Number(x.log(y))
+        }
+        BuiltinFunction::Pow => {
+            let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            let y: f64 = eval_expression(&arguments[1], local_context).try_into().unwrap();
+            Value::Number(x.powf(y))
+        }
+        BuiltinFunction::SetFocusItem => {
+            if arguments.len() != 1 {
+                panic!("internal error: incorrect argument count to SetFocusItem")
+            }
+            let component = match local_context.component_instance {
+                ComponentInstance::InstanceRef(c) => c,
+                ComponentInstance::GlobalComponent(_) => {
+                    panic!("Cannot access the focus item from a global component")
+                }
+            };
+            if let Expression::ElementReference(focus_item) = &arguments[0] {
+                generativity::make_guard!(guard);
+
+                let focus_item = focus_item.upgrade().unwrap();
+                let enclosing_component =
+                    enclosing_component_for_element(&focus_item, component, guard);
+                let component_type = enclosing_component.component_type;
+
+                let item_info = &component_type.items[focus_item.borrow().id.as_str()];
+
+                let focus_item_comp =
+                    enclosing_component.self_weak().get().unwrap().upgrade().unwrap();
+
+                window_ref(component).unwrap().set_focus_item(&corelib::items::ItemRc::new(
+                    vtable::VRc::into_dyn(focus_item_comp),
+                    item_info.item_index(),
+                ));
+                Value::Void
+            } else {
+                panic!("internal error: argument to SetFocusItem must be an element")
+            }
+        }
+        BuiltinFunction::ShowPopupWindow => {
+            if arguments.len() != 1 {
+                panic!("internal error: incorrect argument count to ShowPopupWindow")
+            }
+            let component = match local_context.component_instance {
+                ComponentInstance::InstanceRef(c) => c,
+                ComponentInstance::GlobalComponent(_) => {
+                    panic!("Cannot show popup from a global component")
+                }
+            };
+            if let Expression::ElementReference(popup_window) = &arguments[0] {
+                let popup_window = popup_window.upgrade().unwrap();
+                let pop_comp = popup_window.borrow().enclosing_component.upgrade().unwrap();
+                let parent_component = pop_comp
+                    .parent_element
+                    .upgrade()
+                    .unwrap()
+                    .borrow()
+                    .enclosing_component
+                    .upgrade()
+                    .unwrap();
+                let popup_list = parent_component.popup_windows.borrow();
+                let popup =
+                    popup_list.iter().find(|p| Rc::ptr_eq(&p.component, &pop_comp)).unwrap();
+                let x = load_property_helper(
+                    local_context.component_instance,
+                    &popup.x.element(),
+                    popup.x.name(),
+                )
+                .unwrap();
+                let y = load_property_helper(
+                    local_context.component_instance,
+                    &popup.y.element(),
+                    popup.y.name(),
+                )
+                .unwrap();
+
+                generativity::make_guard!(guard);
+                let enclosing_component =
+                    enclosing_component_for_element(&popup.parent_element, component, guard);
+                let parent_item_info = &enclosing_component.component_type.items
+                    [popup.parent_element.borrow().id.as_str()];
+                let parent_item_comp =
+                    enclosing_component.self_weak().get().unwrap().upgrade().unwrap();
+                let parent_item = corelib::items::ItemRc::new(
+                    vtable::VRc::into_dyn(parent_item_comp),
+                    parent_item_info.item_index(),
+                );
+
+                crate::dynamic_component::show_popup(
+                    popup,
+                    i_slint_core::graphics::Point::new(
+                        x.try_into().unwrap(),
+                        y.try_into().unwrap(),
+                    ),
+                    component.borrow(),
+                    window_adapter_ref(component).unwrap(),
+                    &parent_item,
+                );
+                Value::Void
+            } else {
+                panic!("internal error: argument to SetFocusItem must be an element")
+            }
+        }
+        BuiltinFunction::StringIsFloat => {
+            if arguments.len() != 1 {
+                panic!("internal error: incorrect argument count to StringIsFloat")
+            }
+            if let Value::String(s) = eval_expression(&arguments[0], local_context) {
+                Value::Bool(<f64 as core::str::FromStr>::from_str(s.as_str()).is_ok())
+            } else {
+                panic!("Argument not a string");
+            }
+        }
+        BuiltinFunction::StringToFloat => {
+            if arguments.len() != 1 {
+                panic!("internal error: incorrect argument count to StringToFloat")
+            }
+            if let Value::String(s) = eval_expression(&arguments[0], local_context) {
+                Value::Number(core::str::FromStr::from_str(s.as_str()).unwrap_or(0.))
+            } else {
+                panic!("Argument not a string");
+            }
+        }
+        BuiltinFunction::ColorBrighter => {
+            if arguments.len() != 2 {
+                panic!("internal error: incorrect argument count to ColorBrighter")
+            }
+            if let Value::Brush(brush) = eval_expression(&arguments[0], local_context) {
+                if let Value::Number(factor) = eval_expression(&arguments[1], local_context) {
+                    brush.brighter(factor as _).into()
+                } else {
+                    panic!("Second argument not a number");
+                }
+            } else {
+                panic!("First argument not a color");
+            }
+        }
+        BuiltinFunction::ColorDarker => {
+            if arguments.len() != 2 {
+                panic!("internal error: incorrect argument count to ColorDarker")
+            }
+            if let Value::Brush(brush) = eval_expression(&arguments[0], local_context) {
+                if let Value::Number(factor) = eval_expression(&arguments[1], local_context) {
+                    brush.darker(factor as _).into()
+                } else {
+                    panic!("Second argument not a number");
+                }
+            } else {
+                panic!("First argument not a color");
+            }
+        }
+        BuiltinFunction::ImageSize => {
+            if arguments.len() != 1 {
+                panic!("internal error: incorrect argument count to ImageSize")
+            }
+            if let Value::Image(img) = eval_expression(&arguments[0], local_context) {
+                let size = img.size();
+                let values = IntoIterator::into_iter([
+                    ("width".to_string(), Value::Number(size.width as f64)),
+                    ("height".to_string(), Value::Number(size.height as f64)),
+                ])
+                .collect();
+                Value::Struct(values)
+            } else {
+                panic!("First argument not an image");
+            }
+        }
+        BuiltinFunction::ArrayLength => {
+            if arguments.len() != 1 {
+                panic!("internal error: incorrect argument count to ArrayLength")
+            }
+            match eval_expression(&arguments[0], local_context) {
+                Value::Model(model) => {
+                    model.model_tracker().track_row_count_changes();
+                    Value::Number(model.row_count() as f64)
+                }
+                _ => {
+                    panic!("First argument not an array");
+                }
+            }
+        }
+        BuiltinFunction::Rgb => {
+            let r: i32 = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            let g: i32 = eval_expression(&arguments[1], local_context).try_into().unwrap();
+            let b: i32 = eval_expression(&arguments[2], local_context).try_into().unwrap();
+            let a: f32 = eval_expression(&arguments[3], local_context).try_into().unwrap();
+            let r: u8 = r.max(0).min(255) as u8;
+            let g: u8 = g.max(0).min(255) as u8;
+            let b: u8 = b.max(0).min(255) as u8;
+            let a: u8 = (255. * a).max(0.).min(255.) as u8;
+            Value::Brush(Brush::SolidColor(Color::from_argb_u8(a, r, g, b)))
+        }
+        BuiltinFunction::DarkColorScheme => match local_context.component_instance {
+            ComponentInstance::InstanceRef(component) => {
+                Value::Bool(window_adapter_ref(component).unwrap().dark_color_scheme())
+            }
+            ComponentInstance::GlobalComponent(_) => {
+                panic!("Cannot get the window from a global component")
+            }
+        },
+        BuiltinFunction::ImplicitLayoutInfo(orient) => {
+            let component = match local_context.component_instance {
+                ComponentInstance::InstanceRef(c) => c,
+                ComponentInstance::GlobalComponent(_) => {
+                    panic!("Cannot access the implicit item size from a global component")
+                }
+            };
+            if let [Expression::ElementReference(item)] = arguments {
+                generativity::make_guard!(guard);
+
+                let item = item.upgrade().unwrap();
+                let enclosing_component = enclosing_component_for_element(&item, component, guard);
+                let component_type = enclosing_component.component_type;
+                let item_info = &component_type.items[item.borrow().id.as_str()];
+                let item_ref =
+                    unsafe { item_info.item_from_component(enclosing_component.as_ptr()) };
+
+                let window_adapter = window_adapter_ref(component).unwrap();
+                item_ref
+                    .as_ref()
+                    .layout_info(crate::eval_layout::to_runtime(orient), window_adapter)
+                    .into()
+            } else {
+                panic!("internal error: incorrect arguments to ImplicitLayoutInfo {:?}", arguments);
+            }
+        }
+        BuiltinFunction::RegisterCustomFontByPath => {
+            if arguments.len() != 1 {
+                panic!("internal error: incorrect argument count to RegisterCustomFontByPath")
+            }
+            let component = match local_context.component_instance {
+                ComponentInstance::InstanceRef(c) => c,
+                ComponentInstance::GlobalComponent(_) => {
+                    panic!("Cannot access the implicit item size from a global component")
+                }
+            };
+            if let Value::String(s) = eval_expression(&arguments[0], local_context) {
+                if let Some(err) = window_adapter_ref(component)
+                    .unwrap()
+                    .renderer()
+                    .register_font_from_path(&std::path::PathBuf::from(s.as_str()))
+                    .err()
+                {
+                    corelib::debug_log!("Error loading custom font {}: {}", s.as_str(), err);
+                }
+                Value::Void
+            } else {
+                panic!("Argument not a string");
+            }
+        }
+        BuiltinFunction::RegisterCustomFontByMemory | BuiltinFunction::RegisterBitmapFont => {
+            unimplemented!()
+        }
     }
 }
 
@@ -870,9 +954,6 @@ fn check_value_type(value: &Value, ty: &Type) -> bool {
         Type::Invalid
         | Type::InferredProperty
         | Type::InferredCallback
-        | Type::Component(_)
-        | Type::Builtin(_)
-        | Type::Native(_)
         | Type::Callback { .. }
         | Type::Function { .. }
         | Type::ElementReference => panic!("not valid property type"),
@@ -981,13 +1062,17 @@ fn root_component_instance<'a, 'old_id, 'new_id>(
     }
 }
 
-pub fn window_ref<'a>(component: InstanceRef<'a, '_>) -> Option<&'a WindowRc> {
-    component
-        .component_type
-        .window_offset
-        .apply(component.instance.get_ref())
-        .as_ref()
-        .map(|window| window.window_handle())
+pub fn window_adapter_ref<'a>(
+    component: InstanceRef<'a, '_>,
+) -> Option<&'a Rc<dyn i_slint_core::window::WindowAdapter>> {
+    component.component_type.window_adapter_offset.apply(component.instance.get_ref()).as_ref()
+}
+
+pub fn window_ref<'a>(
+    component: InstanceRef<'a, '_>,
+) -> Option<&'a i_slint_core::window::WindowInner> {
+    window_adapter_ref(component)
+        .map(|window_adapter| WindowInner::from_pub(window_adapter.window()))
 }
 
 /// Return the component instance which hold the given element.
@@ -1109,7 +1194,7 @@ pub fn convert_path(path: &ExprPath, local_context: &mut EvalLocalContext) -> Pa
             if let Value::String(commands) = eval_expression(commands, local_context) {
                 PathData::Commands(commands)
             } else {
-                panic!("binding to path commands does not evalutate to string");
+                panic!("binding to path commands does not evaluate to string");
             }
         }
     }
@@ -1159,7 +1244,7 @@ pub fn default_value_for_type(ty: &Type) -> Value {
         Type::Struct { fields, .. } => Value::Struct(
             fields.iter().map(|(n, t)| (n.clone(), default_value_for_type(t))).collect::<Struct>(),
         ),
-        Type::Array(_) | Type::Model => Value::Void,
+        Type::Array(_) | Type::Model => Value::Model(Default::default()),
         Type::Percent => Value::Number(0.),
         Type::Enumeration(e) => {
             Value::EnumerationValue(e.name.clone(), e.values.get(e.default_value).unwrap().clone())
@@ -1172,9 +1257,6 @@ pub fn default_value_for_type(ty: &Type) -> Value {
         Type::InferredProperty
         | Type::InferredCallback
         | Type::ElementReference
-        | Type::Builtin(_)
-        | Type::Component(_)
-        | Type::Native(_)
         | Type::Function { .. } => {
             panic!("There can't be such property")
         }

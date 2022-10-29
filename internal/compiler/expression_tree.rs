@@ -18,6 +18,7 @@ pub use crate::namedreference::NamedReference;
 /// A function built into the run-time
 pub enum BuiltinFunction {
     GetWindowScaleFactor,
+    AnimationTick,
     Debug,
     Mod,
     Round,
@@ -44,6 +45,7 @@ pub enum BuiltinFunction {
     ImageSize,
     ArrayLength,
     Rgb,
+    DarkColorScheme,
     ImplicitLayoutInfo(Orientation),
     RegisterCustomFontByPath,
     RegisterCustomFontByMemory,
@@ -52,11 +54,22 @@ pub enum BuiltinFunction {
 
 #[derive(Debug, Clone)]
 /// A builtin function which is handled by the compiler pass
+///
+/// Builtin function expect their arguments in one and a specific type, so that's easier
+/// for the generator. Macro however can do some transformation on their argument.
+///
 pub enum BuiltinMacroFunction {
+    /// Transform `min(a, b, c, ..., z)` into a series of conditional expression and comparisons
     Min,
+    /// Transform `max(a, b, c, ..., z)` into  a series of conditional expression and comparisons
     Max,
+    /// Add the right conversion operations so that the return type is the same as the argument type
+    Mod,
     CubicBezier,
+    /// The argument can be r,g,b,a or r,g,b and they can be percentages or integer.
+    /// transform the argument so it is always rgb(r, g, b, a) with r, g, b between 0 and 255.
     Rgb,
+    /// transform `debug(a, b, c)` into debug `a + " " + b + " " + c`
     Debug,
 }
 
@@ -67,6 +80,9 @@ impl BuiltinFunction {
                 return_type: Box::new(Type::UnitProduct(vec![(Unit::Phx, 1), (Unit::Px, -1)])),
                 args: vec![],
             },
+            BuiltinFunction::AnimationTick => {
+                Type::Function { return_type: Type::Duration.into(), args: vec![] }
+            }
             BuiltinFunction::Debug => {
                 Type::Function { return_type: Box::new(Type::Void), args: vec![Type::String] }
             }
@@ -109,12 +125,12 @@ impl BuiltinFunction {
                 args: vec![Type::ElementReference],
             },
             BuiltinFunction::ColorBrighter => Type::Function {
-                return_type: Box::new(Type::Color),
-                args: vec![Type::Color, Type::Float32],
+                return_type: Box::new(Type::Brush),
+                args: vec![Type::Brush, Type::Float32],
             },
             BuiltinFunction::ColorDarker => Type::Function {
-                return_type: Box::new(Type::Color),
-                args: vec![Type::Color, Type::Float32],
+                return_type: Box::new(Type::Brush),
+                args: vec![Type::Brush, Type::Float32],
             },
             BuiltinFunction::ImageSize => Type::Function {
                 return_type: Box::new(Type::Struct {
@@ -135,6 +151,9 @@ impl BuiltinFunction {
                 return_type: Box::new(Type::Color),
                 args: vec![Type::Int32, Type::Int32, Type::Int32, Type::Float32],
             },
+            BuiltinFunction::DarkColorScheme => {
+                Type::Function { return_type: Box::new(Type::Bool), args: vec![] }
+            }
             BuiltinFunction::RegisterCustomFontByPath => {
                 Type::Function { return_type: Box::new(Type::Void), args: vec![Type::String] }
             }
@@ -151,6 +170,8 @@ impl BuiltinFunction {
     fn is_pure(&self) -> bool {
         match self {
             BuiltinFunction::GetWindowScaleFactor => false,
+            BuiltinFunction::AnimationTick => false,
+            BuiltinFunction::DarkColorScheme => false,
             // Even if it is not pure, we optimize it away anyway
             BuiltinFunction::Debug => true,
             BuiltinFunction::Mod
@@ -310,12 +331,12 @@ pub enum Expression {
     ///
     BoolLiteral(bool),
 
-    /// Reference to the callback <name> in the <element>
+    /// Reference to the callback `<name>` in the `<element>`
     ///
     /// Note: if we are to separate expression and statement, we probably do not need to have callback reference within expressions
     CallbackReference(NamedReference),
 
-    /// Reference to the callback <name> in the <element>
+    /// Reference to the callback `<name>` in the `<element>`
     PropertyReference(NamedReference),
 
     /// Reference to a function built into the run-time, implemented natively
@@ -453,6 +474,11 @@ pub enum Expression {
         stops: Vec<(Expression, Expression)>,
     },
 
+    RadialGradient {
+        /// First expression in the tuple is a color, second expression is the stop position
+        stops: Vec<(Expression, Expression)>,
+    },
+
     EnumerationValue(EnumerationValue),
 
     ReturnStatement(Option<Box<Expression>>),
@@ -515,7 +541,6 @@ impl Expression {
                 Type::Struct { fields, .. } => {
                     fields.get(name.as_str()).unwrap_or(&Type::Invalid).clone()
                 }
-                Type::Component(c) => c.root_element.borrow().lookup_property(name).property_type,
                 _ => Type::Invalid,
             },
             Expression::ArrayIndex { array, .. } => match array.ty() {
@@ -604,6 +629,7 @@ impl Expression {
             Expression::ReadLocalVariable { ty, .. } => ty.clone(),
             Expression::EasingCurve(_) => Type::Easing,
             Expression::LinearGradient { .. } => Type::Brush,
+            Expression::RadialGradient { .. } => Type::Brush,
             Expression::EnumerationValue(value) => Type::Enumeration(value.enumeration.clone()),
             // invalid because the expression is unreachable
             Expression::ReturnStatement(_) => Type::Invalid,
@@ -687,6 +713,12 @@ impl Expression {
             Expression::EasingCurve(_) => {}
             Expression::LinearGradient { angle, stops } => {
                 visitor(angle);
+                for (c, s) in stops {
+                    visitor(c);
+                    visitor(s);
+                }
+            }
+            Expression::RadialGradient { stops } => {
                 for (c, s) in stops {
                     visitor(c);
                     visitor(s);
@@ -785,6 +817,12 @@ impl Expression {
                     visitor(s);
                 }
             }
+            Expression::RadialGradient { stops } => {
+                for (c, s) in stops {
+                    visitor(c);
+                    visitor(s);
+                }
+            }
             Expression::EnumerationValue(_) => {}
             Expression::ReturnStatement(expr) => {
                 expr.as_deref_mut().map(visitor);
@@ -855,6 +893,9 @@ impl Expression {
             Expression::EasingCurve(_) => true,
             Expression::LinearGradient { angle, stops } => {
                 angle.is_constant() && stops.iter().all(|(c, s)| c.is_constant() && s.is_constant())
+            }
+            Expression::RadialGradient { stops } => {
+                stops.iter().all(|(c, s)| c.is_constant() && s.is_constant())
             }
             Expression::EnumerationValue(_) => true,
             Expression::ReturnStatement(expr) => {
@@ -933,22 +974,6 @@ impl Expression {
                         Expression::Struct { values: new_values, ty: target_type },
                     ]);
                 }
-                (Type::Struct { .. }, Type::Component(component)) => {
-                    let struct_type_for_component = Type::Struct {
-                        fields: component
-                            .root_element
-                            .borrow()
-                            .property_declarations
-                            .iter()
-                            .map(|(name, prop_decl)| {
-                                (name.clone(), prop_decl.property_type.clone())
-                            })
-                            .collect(),
-                        name: None,
-                        node: None,
-                    };
-                    self.maybe_convert_to(struct_type_for_component, node, diag)
-                }
                 (left, right) => match (left.as_unit_product(), right.as_unit_product()) {
                     (Some(left), Some(right)) => {
                         if let Some(power) =
@@ -993,6 +1018,24 @@ impl Expression {
                 },
                 _ => unreachable!(),
             }
+        } else if let (Type::Struct { fields, .. }, Expression::Struct { values, .. }) =
+            (&target_type, &self)
+        {
+            // Also special case struct literal in case they contain array literal
+            let mut fields = fields.clone();
+            let mut new_values = HashMap::new();
+            for (f, v) in values {
+                if let Some(t) = fields.remove(f) {
+                    new_values.insert(f.clone(), v.clone().maybe_convert_to(t, node, diag));
+                } else {
+                    diag.push_error(format!("Cannot convert {} to {}", ty, target_type), node);
+                    return self;
+                }
+            }
+            for (f, t) in fields {
+                new_values.insert(f, Expression::default_value_for_type(&t));
+            }
+            Expression::Struct { ty: target_type, values: new_values }
         } else {
             let mut message = format!("Cannot convert {} to {}", ty, target_type);
             // Explicit error message for unit conversion
@@ -1026,9 +1069,6 @@ impl Expression {
     pub fn default_value_for_type(ty: &Type) -> Expression {
         match ty {
             Type::Invalid
-            | Type::Component(_)
-            | Type::Builtin(_)
-            | Type::Native(_)
             | Type::Callback { .. }
             | Type::Function { .. }
             | Type::Void
@@ -1078,16 +1118,21 @@ impl Expression {
     /// Try to mark this expression to a lvalue that can be assigned to.
     ///
     /// Return true if the expression is a "lvalue" that can be used as the left hand side of a `=` or `+=` or similar
-    pub fn try_set_rw(&mut self) -> bool {
+    pub fn try_set_rw(&mut self) -> Result<(), String> {
         match self {
             Expression::PropertyReference(nr) => {
                 nr.mark_as_set();
-                true
+                let lookup = nr.element().borrow().lookup_property(nr.name());
+                if lookup.is_valid_for_assignment() {
+                    Ok(())
+                } else {
+                    Err(format!("on a {} property", lookup.property_visibility))
+                }
             }
             Expression::StructFieldAccess { base, .. } => base.try_set_rw(),
-            Expression::RepeaterModelReference { .. } => true,
-            Expression::ArrayIndex { .. } => true,
-            _ => false,
+            Expression::RepeaterModelReference { .. } => Ok(()),
+            Expression::ArrayIndex { array, .. } => array.try_set_rw(),
+            _ => Err("needs to be done on a property".into()),
         }
     }
 }
@@ -1362,6 +1407,16 @@ pub fn pretty_print(f: &mut dyn std::fmt::Write, expression: &Expression) -> std
         Expression::LinearGradient { angle, stops } => {
             write!(f, "@linear-gradient(")?;
             pretty_print(f, angle)?;
+            for (c, s) in stops {
+                write!(f, ", ")?;
+                pretty_print(f, c)?;
+                write!(f, "  ")?;
+                pretty_print(f, s)?;
+            }
+            write!(f, ")")
+        }
+        Expression::RadialGradient { stops } => {
+            write!(f, "@radial-gradient(circle")?;
             for (c, s) in stops {
                 write!(f, ", ")?;
                 pretty_print(f, c)?;

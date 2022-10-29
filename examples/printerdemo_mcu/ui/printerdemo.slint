@@ -1,6 +1,8 @@
 // Copyright © SixtyFPS GmbH <info@slint-ui.com>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
 
+// cSpell: ignore noto subpage
+
 import { DemoPalette, Page } from "common.slint";
 import { HomePage } from "./home_page.slint";
 import { InkLevel, InkPage } from "./ink_page.slint";
@@ -16,28 +18,26 @@ import "./fonts/NotoSans-Bold.ttf";
 SideBarIcon := Rectangle {
     property <bool> active;
     callback activate;
-
-    GridLayout {
-        padding: 0px;
-        @children
-    }
-
     TouchArea {
-        clicked => { root.activate(); }
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                root.activate();
+            }
+        }
     }
 }
 
 MainWindow := Window {
     callback quit();
 
-    width: 772px;
-    height: 504px;
+    width: 320px;
+    height: 240px;
     title: "Slint printer demo";
     background: DemoPalette.main-background;
     default-font-family: "Noto Sans";
     default-font-size: DemoPalette.base-font-size;
 
-    /// Note that this property is overwriten in the .cpp and .rs code.
+    /// Note that this property is overwritten in the .cpp and .rs code.
     /// The data is only in this file so it looks good in the viewer
     property <[InkLevel]> ink-levels: [
                 {color: #0ff, level: 60%},
@@ -48,58 +48,58 @@ MainWindow := Window {
 
     property<int> active-page: 0;
 
-    HorizontalLayout {
-        padding: 10px;
-        padding-left: 67px;
+    main-view := Rectangle {
+        property <length> margin: 5px;
+        x: sidebar.x + sidebar.width;
+        y: margin;
+        height: parent.height - margin * 2;
+        width: parent.width - x - margin;
+        border-radius: 15px;
+        background: DemoPalette.page-background-color;
 
-        main-view := Rectangle {
-            height: 100%;
-            border-radius: 30px;
-            background: DemoPalette.page-background-color;
+        Rectangle {
+            clip: true;
+            x: main-view.border-radius / 2;
+            y: main-view.border-radius / 2;
+            width: main-view.width - main-view.border-radius;
+            height: main-view.height - main-view.border-radius;
 
-            Rectangle {
-                clip: true;
-                x: main-view.border-radius / 2;
-                y: main-view.border-radius / 2;
-                width: main-view.width - main-view.border-radius;
-                height: main-view.height - main-view.border-radius;
-
-                home-page := HomePage {
-                    y: active-page == 0 ? 0 : active-page < 0 ? - height - 1px : parent.height + 1px;
-                    animate y { duration: 125ms; easing: ease; }
-                }
-                SettingsPage {
-                    y: active-page == 1 ? 0 : active-page < 1 ? - height - 1px : parent.height + 1px;
-                    animate y { duration: 125ms; easing: ease; }
-                }
-                InkPage {
-                    y: active-page == 2 ? 0 : active-page < 2 ? - height - 1px : parent.height + 1px;
-                    animate y { duration: 125ms; easing: ease; }
-                    ink-levels <=> root.ink-levels;
-                    page-visible: active-page == 2;
-                }
+            home-page := HomePage {
+                y: active-page == 0 ? 0 : active-page > 0 ? - height - 1px : parent.height + 1px;
+                //animate y { duration: 125ms; easing: ease; }
+            }
+            SettingsPage {
+                y: active-page == 1 ? 0 : active-page > 1 ? - height - 1px : parent.height + 1px;
+                //animate y { duration: 125ms; easing: ease; }
+            }
+            InkPage {
+                y: active-page == 2 ? 0 : active-page > 2 ? - height - 1px : parent.height + 1px;
+                //animate y { duration: 125ms; easing: ease; }
+                ink-levels <=> root.ink-levels;
+                page-visible: active-page == 2;
             }
         }
     }
 
+
     sidebar := Rectangle {
-        width: 57px;
-        x: 10px;
+        width: 48px;
+        x: 5px;
 
         callback icon-y(int) -> length;
         icon-y(index) => {
-            return 100px // top padding
-                + index * 72px;
+            return 34px // top padding
+                + index * 50px;
         }
 
         Image {
             source: @image-url("images/page_selection.svg");
-            y: sidebar.icon-y(root.active-page) - self.width / 2;
+            y: sidebar.icon-y(root.active-page) - 23px;
             animate y {
                 duration: 125ms;
             }
-            width: main-view.x - sidebar.x + 1px;
-            height: 1.77 * self.width;
+            width: 49px;
+            height: 86px;
             colorize: DemoPalette.page-background-color;
         }
 
@@ -108,9 +108,9 @@ MainWindow := Window {
             @image-url("images/settings.svg"),
             @image-url("images/ink.svg"),
         ] : SideBarIcon {
-            y: sidebar.icon-y(idx);
-            x: 16px;
-            height: 35px;
+            y: sidebar.icon-y(idx)+3px;
+            x: (parent.width - width) / 2;
+            height: 30px;
             width: 30px;
 
             icon := Image {
@@ -125,23 +125,25 @@ MainWindow := Window {
             }
 
             activate => {
+                home-page.current-subpage = 0;
                 root.active-page = idx;
             }
         }
 
         Rectangle {
-            y: sidebar.icon-y(3) + 17px;
-            x: 12px;
+            y: sidebar.icon-y(3) ;
+            x: (parent.width - width) / 2;
             background: #6284FF;
             height: 2px;
             width: 37px;
         }
 
         SideBarIcon {
-            y: sidebar.icon-y(4);
-            x: 16px;
-            height: 35px;
-            width: 30px;
+            //y: sidebar.icon-y(3) + 10px;
+            y: parent.height - height - main-view.margin * 2;
+            x: (parent.width - width) / 2;
+            height: 27px;
+            width: 27px;
 
             Image {
                 colorize: DemoPalette.night-mode ? #F1FF98 : DemoPalette.inactive-page-icon-color;

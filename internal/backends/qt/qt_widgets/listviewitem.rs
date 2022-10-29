@@ -9,10 +9,10 @@ use super::*;
 #[derive(FieldOffsets, Default, SlintElement)]
 #[pin]
 pub struct NativeStandardListViewItem {
-    pub x: Property<f32>,
-    pub y: Property<f32>,
-    pub width: Property<f32>,
-    pub height: Property<f32>,
+    pub x: Property<LogicalLength>,
+    pub y: Property<LogicalLength>,
+    pub width: Property<LogicalLength>,
+    pub height: Property<LogicalLength>,
     pub item: Property<i_slint_core::model::StandardListViewItem>,
     pub index: Property<i32>,
     pub is_selected: Property<bool>,
@@ -21,13 +21,20 @@ pub struct NativeStandardListViewItem {
 }
 
 impl Item for NativeStandardListViewItem {
-    fn init(self: Pin<&Self>, _window: &WindowRc) {}
+    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
 
-    fn geometry(self: Pin<&Self>) -> Rect {
-        euclid::rect(self.x(), self.y(), self.width(), self.height())
+    fn geometry(self: Pin<&Self>) -> LogicalRect {
+        LogicalRect::new(
+            LogicalPoint::from_lengths(self.x(), self.y()),
+            LogicalSize::from_lengths(self.width(), self.height()),
+        )
     }
 
-    fn layout_info(self: Pin<&Self>, orientation: Orientation, _window: &WindowRc) -> LayoutInfo {
+    fn layout_info(
+        self: Pin<&Self>,
+        orientation: Orientation,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+    ) -> LayoutInfo {
         let index: i32 = self.index();
         let item = self.item();
         let text: qttypes::QString = item.text.as_str().into();
@@ -60,7 +67,7 @@ impl Item for NativeStandardListViewItem {
     fn input_event_filter_before_children(
         self: Pin<&Self>,
         _: MouseEvent,
-        _window: &WindowRc,
+        _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
         InputEventFilterResult::ForwardAndIgnore
@@ -69,17 +76,27 @@ impl Item for NativeStandardListViewItem {
     fn input_event(
         self: Pin<&Self>,
         _event: MouseEvent,
-        _window: &WindowRc,
+        _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &i_slint_core::items::ItemRc,
     ) -> InputEventResult {
         InputEventResult::EventIgnored
     }
 
-    fn key_event(self: Pin<&Self>, _: &KeyEvent, _window: &WindowRc) -> KeyEventResult {
+    fn key_event(
+        self: Pin<&Self>,
+        _: &KeyEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> KeyEventResult {
         KeyEventResult::EventIgnored
     }
 
-    fn focus_event(self: Pin<&Self>, _: &FocusEvent, _window: &WindowRc) -> FocusEventResult {
+    fn focus_event(
+        self: Pin<&Self>,
+        _: &FocusEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> FocusEventResult {
         FocusEventResult::FocusIgnored
     }
 
@@ -90,7 +107,7 @@ impl Item for NativeStandardListViewItem {
         let item = this.item();
         let text: qttypes::QString = item.text.as_str().into();
         cpp!(unsafe [
-            painter as "QPainter*",
+            painter as "QPainterPtr*",
             widget as "QWidget*",
             size as "QSize",
             dpr as "float",
@@ -120,14 +137,14 @@ impl Item for NativeStandardListViewItem {
             option.features |= QStyleOptionViewItem::HasDisplay;
             option.text = text;
             // CE_ItemViewItem in QCommonStyle calls setClipRect on the painter and replace the clips. So we need to cheat.
-            auto engine = painter->paintEngine();
+            auto engine = (*painter)->paintEngine();
             auto old_clip = engine->systemClip();
-            auto new_clip = old_clip & (painter->clipRegion() * painter->transform());
+            auto new_clip = old_clip & ((*painter)->clipRegion() * (*painter)->transform());
             if (new_clip.isEmpty()) return;
             engine->setSystemClip(new_clip);
 
-            qApp->style()->drawPrimitive(QStyle::PE_PanelItemViewRow, &option, painter, widget);
-            qApp->style()->drawControl(QStyle::CE_ItemViewItem, &option, painter, widget);
+            qApp->style()->drawPrimitive(QStyle::PE_PanelItemViewRow, &option, painter->get(), widget);
+            qApp->style()->drawControl(QStyle::CE_ItemViewItem, &option, painter->get(), widget);
             engine->setSystemClip(old_clip);
         });
     }

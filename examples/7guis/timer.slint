@@ -1,0 +1,56 @@
+// Copyright © SixtyFPS GmbH <info@slint-ui.com>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+
+import { LineEdit, Button, Slider, HorizontalBox, VerticalBox } from "std-widgets.slint";
+
+MainWindow := Window {
+    property <duration> total-time: slider.value * 1s;
+    property <duration> elapsed-time;
+    
+    callback tick(duration);
+    tick(passed-time) => {
+        elapsed-time += passed-time;
+        elapsed-time = min(elapsed-time, total-time);
+    }
+
+    VerticalBox {
+        HorizontalBox {
+            padding-left: 0;
+            Text { text: "Elapsed Time:"; }
+            Rectangle {
+                min-width: 200px;
+                max-height: 30px;
+                background: gray;
+                Rectangle {
+                    height: 100%;
+                    width: parent.width * (elapsed-time/total-time);
+                    background: lightblue;
+                }
+            }
+        }
+        Text{
+            text: (total-time / 1s) + "s";
+        }
+        HorizontalBox {
+            padding-left: 0;
+            Text {
+                text: "Duration:";
+                vertical-alignment: center;
+            }
+            slider := Slider {
+                maximum: 30s / 1s;
+                value: 10s / 1s;
+                changed(new-duration) => {
+                    root.total-time = new-duration * 1s;
+                    root.elapsed-time = min(root.elapsed-time, root.total-time);
+                }
+            }
+        }
+        Button {
+            text: "Reset";
+            clicked => {
+                elapsed-time = 0
+            }
+        }
+    }
+}

@@ -31,8 +31,8 @@ MyButton := Text {
 }
 
 export MyApp := Window {
-    width: 200px;
-    height: 100px;
+    preferred-width: 200px;
+    preferred-height: 100px;
     Rectangle {
         width: 200px;
         height: 100px;
@@ -60,6 +60,9 @@ MyButton := Text {
 }
 
 MyApp := Window {
+    preferred-width: 200px;
+    preferred-height: 100px;
+
     hello := MyButton {
         text: "hello";
     }
@@ -110,6 +113,7 @@ BoxWithLabel := GridLayout {
 }
 
 MyApp := Window {
+    preferred-height: 100px;
     BoxWithLabel {
         Rectangle { background: blue; }
         Rectangle { background: yellow; }
@@ -135,7 +139,7 @@ The underscores are normalized to dashes. Which means that these two identifiers
 The elements can have properties. Built-in elements come with common properties such
 as color or dimensional properties. You can assign values or entire [expressions](#expressions) to them:
 
-```slint
+```slint,no-preview
 Example := Window {
     // Simple expression: ends with a semi colon
     width: 42px;
@@ -148,7 +152,7 @@ You can also declare your own properties. The properties declared at the top lev
 component are public and can be accessed by the component using it as an element, or using the
 language bindings:
 
-```slint
+```slint,no-preview
 Example := Rectangle {
     // declare a property of type int with the name `my-property`
     property<int> my-property;
@@ -167,10 +171,14 @@ changing the `counter`  property automatically changes the text.
 
 ```slint
 import { Button } from "std-widgets.slint";
-Example := Button {
-    property <int> counter: 3;
-    clicked => { counter += 3 }
-    text: counter * 2;
+Example := Window {
+    preferred-width: 50px;
+    preferred-height: 50px;
+    Button {
+        property <int> counter: 3;
+        clicked => { counter += 3 }
+        text: counter * 2;
+    }
 }
 ```
 
@@ -186,7 +194,7 @@ together.
 The right hand side of the `<=>` must be a reference to a property of the same type.
 The type can be omitted in a property declaration to have the type automatically inferred.
 
-```slint
+```slint,no-preview
 Example := Window {
     property<brush> rect-color <=> r.background;
     // it is allowed to omit the type to have it automatically inferred
@@ -227,7 +235,7 @@ Anonymous structs type can be declared with curly braces: `{ identifier1: type2,
 The trailing semicolon is optional.
 They can be initialized with a struct literal: `{ identifier1: expression1, identifier2: expression2  }`
 
-```slint
+```slint,no-preview
 Example := Window {
     property<{name: string, score: int}> player: { name: "Foo", score: 100 };
     property<{a: int, }> foo: { a: 3 };
@@ -238,7 +246,7 @@ Example := Window {
 
 It is possible to define a named struct using the `struct` keyword,
 
-```slint
+```slint,no-preview
 export struct Player := {
     name: string,
     score: int,
@@ -254,7 +262,7 @@ Example := Window {
 The type array is using square brackets for example  `[int]` is an array of `int`. In the runtime, they are
 basically used as models for the `for` expression.
 
-```slint
+```slint,no-preview
 Example := Window {
     property<[int]> list-of-int: [1,2,3];
     property<[{a: int, b: string}]> list-of-structs: [{ a: 1, b: "hello" }, {a: 2, b: "world"}];
@@ -280,7 +288,7 @@ Example := Window {
 * String can be converted to float by using the `to-float` function. That function returns 0 if the string is not
    a valid number. you can check with `is-float` if the string contains a valid number
 
-```slint
+```slint,no-preview
 Example := Window {
     // ok: int converts to string
     property<{a: string, b: int}> prop1: {a: 12, b: 12 };
@@ -300,10 +308,13 @@ Example := Window {
 ### Relative Lengths
 
 Sometimes it is convenient to express the relationships of length properties in terms of relative percentages.
-For example the following inner blue rectangle has half the size of the outer green one:
+For example the following inner blue rectangle has half the size of the outer green window:
 
 ```slint
-Example := Rectangle {
+Example := Window {
+    preferred-width: 100px;
+    preferred-height: 100px;
+
     background: green;
     Rectangle {
         background: blue;
@@ -323,7 +334,10 @@ If these conditions are met, then it is not necessary to specify the parent prop
 use the percentage. The earlier example then looks like this:
 
 ```slint
-Example := Rectangle {
+Example := Window {
+    preferred-width: 100px;
+    preferred-height: 100px;
+
     background: green;
     Rectangle {
         background: blue;
@@ -341,7 +355,7 @@ element comes with a `clicked` callback, that's emitted when the user touches th
 it with the mouse. In the example below, the emission of that callback is forwarded to another custom callback (`hello`) by declaring a
 handler and emitting our custom callback:
 
-```slint
+```slint,no-preview
 Example := Rectangle {
     // declare a callback
     callback hello;
@@ -358,7 +372,7 @@ Example := Rectangle {
 
 It is also possible to add parameters to the callback.
 
-```slint
+```slint,no-preview
 Example := Rectangle {
     // declares a callback
     callback hello(int, string);
@@ -368,7 +382,7 @@ Example := Rectangle {
 
 And return value.
 
-```slint
+```slint,no-preview
 Example := Rectangle {
     // declares a callback with a return value
     callback hello(int, int) -> int;
@@ -380,7 +394,7 @@ Example := Rectangle {
 
 It is possible to declare callback aliases in a similar way to two-way bindings:
 
-```slint
+```slint,no-preview
 Example := Rectangle {
     callback clicked <=> area.clicked;
     area := TouchArea {}
@@ -394,7 +408,7 @@ are typically used to combine basic arithmetic with access to properties of othe
 these properties change, the expression is automatically re-evaluated and a new value is assigned
 to the property the expression is associated with:
 
-```slint
+```slint,no-preview
 Example := Rectangle {
     // declare a property of type int
     property<int> my-property;
@@ -409,7 +423,7 @@ If something changes `my-property`, the width will be updated automatically.
 
 Arithmetic in expression with numbers works like in most programming language with the operators `*`, `+`, `-`, `/`:
 
-```slint
+```slint,no-preview
 Example := Rectangle {
     property <int> p: 1 * 2 + 3 * 4; // same as (1 * 2) + (3 * 4)
 }
@@ -422,7 +436,7 @@ There are also the operators `&&` and `||` for logical *and* and *or* between bo
 
 You can access properties by addressing the associated element, followed by a `.` and the property name:
 
-```slint
+```slint,no-preview
 Example := Rectangle {
     foo := Rectangle {
         x: 42px;
@@ -434,13 +448,18 @@ Example := Rectangle {
 The ternary operator `... ? ... : ...`  is also supported, like in C or JavaScript:
 
 ```slint
-Example := Rectangle {
-    touch := TouchArea {}
-    background: touch.pressed ? #111 : #eee;
-    border-width: 1px;
-    border-color: !touch.enabled ? #888
-        : touch.pressed ? #aaa
-        : #555;
+Example := Window {
+    preferred-width: 100px;
+    preferred-height: 100px;
+
+    Rectangle {
+        touch := TouchArea {}
+        background: touch.pressed ? #111 : #eee;
+        border-width: 5px;
+        border-color: !touch.enabled ? #888
+            : touch.pressed ? #aaa
+            : #555;
+    }
 }
 ```
 
@@ -463,18 +482,18 @@ Anything else after a `\` is an error.
 
 (TODO: translations: `tr!"Hello"`)
 
-```slint
+```slint,no-preview
 Example := Text {
     text: "hello";
 }
 ```
 
-### Colors
+### Colors and Brushes
 
 Color literals follow the syntax of CSS:
 
-```slint
-Example := Rectangle {
+```slint,no-preview
+Example := Window {
     background: blue;
     property<color> c1: #ffaaff;
     property<brush> b2: Colors.red;
@@ -490,21 +509,21 @@ colors from the `Colors` namespace.
 
 #### Methods
 
-All colors have methods that can be called on them:
+All colors and brushes have methods that can be called on them:
 
-* **`brighter(factor: float) -> Color`**
+* **`brighter(factor: float) -> Brush`**
 
     Returns a new color that is derived from this color but has its brightness increased by the specified factor.
     For example if the factor is 0.5 (or for example 50%) the returned color is 50% brighter. Negative factors
     decrease the brightness.
 
-* **`darker(factor: float) -> Color`**
+* **`darker(factor: float) -> Brush`**
 
     Returns a new color that is derived from this color but has its brightness decreased by the specified factor.
     For example if the factor is .5 (or for example 50%) the returned color is 50% darker. Negative factors
     increase the brightness.
 
-#### Gradients
+#### Linear Gradients
 
 Gradients allow creating smooth colorful surfaces. They are specified using an angle and a series of
 color stops. The colors will be linearly interpolated between the stops, aligned to an imaginary line
@@ -524,10 +543,35 @@ The following example shows a rectangle that's filled with a linear gradient tha
 color, interpolates to a very light shade in the center and finishes with an orange tone:
 
 ```slint
-Example := Rectangle {
-    width: 100px;
-    height: 100px;
-    background: @linear-gradient(90deg, #3f87a6 0%, #ebf8e1 50%, #f69d3c 100%);
+Example := Window {
+    preferred-width: 100px;
+    preferred-height: 100px;
+
+    Rectangle {
+        background: @linear-gradient(90deg, #3f87a6 0%, #ebf8e1 50%, #f69d3c 100%);
+    }
+}
+```
+
+#### Radial Gradients
+
+Linear gradiants are like real gradiant but the colors is interpolated in a circle instead of
+along a line. To describe a readial gradiant, use the `@radial-gradient` macro with the following signature:
+
+**`@radial-gradient(circle, color percentage, color percentage, ...)`**
+
+The first parameter to the macro is always `circle` because only circular radients are supported.
+The syntax is otherwise based on the CSS `radial-gradient` function.
+
+Example:
+
+```slint
+Example := Window {
+    preferred-width: 100px;
+    preferred-height: 100px;
+    Rectangle {
+        background: @radial-gradient(circle, #f00 0%, #0f0 50%, #00f 100%);
+    }
 }
 ```
 
@@ -541,9 +585,15 @@ relative to the file. In addition, it will also be looked in the include path sp
 It is possible to access the `width` and `height` of an image.
 
 ```slint
-Example := Text {
+Example := Window {
+    preferred-width: 150px;
+    preferred-height: 50px;
+
     property <image> some_image: @image-url("https://slint-ui.com/logo/slint-logo-full-light.svg");
-    text: "The image is " + some_image.width + "x" + some_image.height;
+
+    Text {
+        text: "The image is " + some_image.width + "x" + some_image.height;
+    }
 }
 ```
 
@@ -559,25 +609,25 @@ Inside callback handlers, more complicated statements are allowed:
 
 Assignment:
 
-```ignore
+```slint,ignore
 clicked => { some-property = 42; }
 ```
 
 Self-assignment with `+=` `-=` `*=` `/=`
 
-```ignore
+```slint,ignore
 clicked => { some-property += 42; }
 ```
 
 Calling a callback
 
-```ignore
+```slint,ignore
 clicked => { root.some-callback(); }
 ```
 
 Conditional statements
 
-```ignore
+```slint,ignore
 clicked => {
     if (condition) {
         foo = 42;
@@ -591,7 +641,7 @@ clicked => {
 
 Empty expression
 
-```ignore
+```slint,ignore
 clicked => { }
 // or
 clicked => { ; }
@@ -616,8 +666,8 @@ The *id* is also optional.
 
 ```slint
 Example := Window {
-    height: 100px;
-    width: 300px;
+    preferred-width: 300px;
+    preferred-height: 100px;
     for my-color[index] in [ #e11, #1a2, #23d ]: Rectangle {
         height: 100px;
         width: 60px;
@@ -629,8 +679,8 @@ Example := Window {
 
 ```slint
 Example := Window {
-    height: 50px;
-    width: 50px;
+    preferred-width: 50px;
+    preferred-height: 50px;
     property <[{foo: string, col: color}]> model: [
         {foo: "abc", col: #f00 },
         {foo: "def", col: #00f },
@@ -651,10 +701,11 @@ The syntax is `if condition : id := Element { ... }`
 
 ```slint
 Example := Window {
-    height: 50px;
-    width: 50px;
-    if true : foo := Rectangle { background: blue; }
-    if false : Rectangle { background: red; }
+    preferred-width: 50px;
+    preferred-height: 50px;
+    if area.pressed : foo := Rectangle { background: blue; }
+    if !area.pressed : Rectangle { background: red; }
+    area := TouchArea {}
 }
 ```
 
@@ -663,12 +714,16 @@ Example := Window {
 Simple animation that animates a property can be declared with `animate` like this:
 
 ```slint
-Example := Rectangle {
-    property<bool> pressed;
-    background: pressed ? blue : red;
+Example := Window {
+    preferred-width: 100px;
+    preferred-height: 100px;
+
+    background: area.pressed ? blue : red;
     animate background {
-        duration: 100ms;
+        duration: 250ms;
     }
+
+    area := TouchArea {}
 }
 ```
 
@@ -684,11 +739,13 @@ Animation can be configured with the following parameter:
 
 It is also possible to animate several properties with the same animation:
 
-```ignore
+```slint,ignore
 animate x, y { duration: 100ms; }
 ```
+
 is the same as
-```ignore
+
+```slint,ignore
 animate x { duration: 100ms; }
 animate y { duration: 100ms; }
 ```
@@ -698,14 +755,17 @@ animate y { duration: 100ms; }
 The `states` statement allow to declare states like this:
 
 ```slint
-Example := Rectangle {
+Example := Window {
+    preferred-width: 100px;
+    preferred-height: 100px;
+
     text := Text { text: "hello"; }
     property<bool> pressed;
     property<bool> is-enabled;
 
     states [
         disabled when !is-enabled : {
-            color: gray; // same as root.color: gray;
+            background: gray; // same as root.background: gray;
             text.color: white;
         }
         down when pressed : {
@@ -723,14 +783,17 @@ This will change the color of the Rectangle and of the Text.
 Complex animations can be declared on state transitions:
 
 ```slint
-Example := Rectangle {
+Example := Window {
+    preferred-width: 100px;
+    preferred-height: 100px;
+
     text := Text { text: "hello"; }
     property<bool> pressed;
     property<bool> is-enabled;
 
     states [
         disabled when !is-enabled : {
-            color: gray; // same as root.color: gray;
+            background: gray; // same as root.background: gray;
             text.color: white;
         }
         down when pressed : {
@@ -751,11 +814,12 @@ Example := Rectangle {
 
 ## Global Singletons
 
-You can declare global singleton for properties that are available in the entire project.
-The syntax is `global Name := { /* .. properties or callbacks .. */ }`.
-Then can be then used using the `Name.property` syntax.
+Declare a global singleton with `global Name := { /* .. properties or callbacks .. */ }` when you want to
+make properties and callbacks available throughout the entire project. Access them using `Name.property`.
 
-```slint
+For example, this can be useful for a common color palette:
+
+```slint,no-preview
 global Palette := {
     property<color> primary: blue;
     property<color> secondary: green;
@@ -768,9 +832,74 @@ Example := Rectangle {
 }
 ```
 
+A global can be declared in another module file, and imported from many files.
+
+Access properties and callbacks from globals in native code by marking them as exported
+in the file that exports your main application component. In the above example it is
+sufficient to directly export the `Logic` global:
+
+```slint,ignore
+export global Logic := {
+    property <int> the-value;
+    callback magic-operation(int) -> int;
+}
+// ...
+```
+
+It's also possible to export globals from other files:
+
+```slint,ignore
+import { Logic as MathLogic } from "math.slint";
+export { MathLogic } // known as "MathLogic" when using native APIs to access globals
+```
+
+<details data-snippet-language="rust">
+<summary>Usage from Rust</summary>
+
+```rust
+slint::slint!{
+export global Logic := {
+    property <int> the-value;
+    callback magic-operation(int) -> int;
+}
+
+export App := Window {
+    // ...
+}
+}
+
+fn main() {
+    let app = App::new();
+    app.global::<Logic>().on_magic_operation(|value| {
+        eprintln!("magic operation input: {}", value);
+        value * 2
+    });
+    app.global::<Logic>().set_the_value(42);
+    // ...
+}
+```
+</details>
+
+<details data-snippet-language="cpp">
+<summary>Usage from C++</summary>
+
+```cpp
+#include "app.h"
+
+fn main() {
+    auto app = App::create();
+    app->global<Logic>().on_magic_operation([](int value) -> int {
+        return value * 2;
+    });
+    app->global<Logic>().set_the_value(42);
+    // ...
+}
+```
+</details>
+
 It is possible to re-expose a callback or properties from a global using the two way binding syntax.
 
-```slint
+```slint,no-preview
 global Logic := {
     property <int> the-value;
     callback magic-operation(int) -> int;
@@ -791,27 +920,6 @@ export MainWindow := Window {
 }
 ```
 
-A global can be declared in another module file, and imported from many files.
-
-It is also possible to access the properties and callbacks from globals in native code,
-such as Rust or C++. In order to access them, it is necessary to mark them as exported
-in the file that exports your main application component. In the above example it is
-sufficient to directly export the `Logic` global:
-
-```slint,ignore
-export global Logic := {
-    property <int> the-value;
-    callback magic-operation(int) -> int;
-}
-// ...
-```
-
-It's also possible to export globals from other files:
-
-```slint,ignore
-import { Logic as MathLogic } from "math.slint";
-export { MathLogic } // known as "MathLogic" when using native APIs to access globals
-```
 
 ## Modules
 
@@ -819,7 +927,7 @@ Components declared in a .slint file can be shared with components in other .sli
 By default, everything declared in a .slint file is private, but it can be made accessible from the outside using the export
 keyword:
 
-```slint
+```slint,no-preview
 ButtonHelper := Rectangle {
     // ...
 }
@@ -838,7 +946,7 @@ In the above example, `Button` is usable from other .slint files, but `ButtonHel
 
 It's also possible to change the name just for the purpose of exporting, without affecting its internal use:
 
-```slint
+```slint,no-preview
 Button := Rectangle {
     // ...
 }
@@ -850,7 +958,7 @@ In the above example, ```Button``` is not accessible from the outside, but inste
 
 For convenience, a third way of exporting a component is to declare it exported right away:
 
-```slint
+```slint,no-preview
 export Button := Rectangle {
     // ...
 }
@@ -947,6 +1055,30 @@ the focus the very first time the window receives the focus - it becomes the ini
 
 The debug function take a string as an argument and prints it
 
+* **`animation-tick() -> duration`**:  This function returns a monotonically increasing time, which can be used for animations.
+    Calling this function from a binding will constantly re-evaluate the binding.
+    It can be used like so: `x: 1000px + sin(animation-tick() / 1s * 360deg) * 100px;` or `y: 20px * mod(animation-tick(), 2s) / 2s `
+
+```slint
+Example := Window {
+    preferred-width: 100px;
+    preferred-height: 100px;
+
+    Rectangle {
+        background: red;
+        height: 50px;
+        width: parent.width * mod(animation-tick(), 2s) / 2s;
+    }
+
+    Rectangle {
+        background: blue;
+        height: 50px;
+        y: 50px;
+        width: parent.width * abs(sin(360deg * animation-tick() / 3s));
+    }
+}
+```
+
 ### `Math` namespace
 
 These functions are available both in the global scope and in the `Math` namespace.
@@ -955,9 +1087,9 @@ These functions are available both in the global scope and in the `Math` namespa
 
 Return the arguments with the minimum (or maximum) value. All arguments must be of the same numeric type
 
-* **`mod(int, int) -> int`**
+* **`mod(T, T) -> T`**
 
-Perform a modulo operation.
+Perform a modulo operation, where T is some numeric type.
 
 * **`abs(float) -> float`**
 
@@ -1017,7 +1149,7 @@ instructions the Slint compiler to include the font and makes the font families 
 
 For example:
 
-```slint,notest
+```slint,ignore
 import "./NotoSans-Regular.ttf";
 
 Example := Window {
