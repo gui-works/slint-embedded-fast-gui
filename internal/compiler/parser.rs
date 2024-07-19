@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 /*! The Slint Language Parser
 
@@ -12,9 +12,9 @@ This module has different sub modules with the actual parser functions
 
 */
 
-use crate::diagnostics::{BuildDiagnostics, SourceFile, Spanned};
+use crate::diagnostics::{BuildDiagnostics, SourceFile, SourceFileVersion, Spanned};
 pub use smol_str::SmolStr;
-use std::{convert::TryFrom, fmt::Display};
+use std::fmt::Display;
 
 mod document;
 mod element;
@@ -25,8 +25,10 @@ mod r#type;
 /// Each parser submodule would simply do `use super::prelude::*` to import typically used items
 mod prelude {
     #[cfg(test)]
+    pub use super::DefaultParser;
+    #[cfg(test)]
     pub use super::{syntax_nodes, SyntaxNode, SyntaxNodeVerify};
-    pub use super::{DefaultParser, Parser, SyntaxKind};
+    pub use super::{Parser, SyntaxKind};
     #[cfg(test)]
     pub use i_slint_parser_test_macro::parser_test;
 }
@@ -41,6 +43,8 @@ pub trait SyntaxNodeVerify {
         assert_eq!(node.kind(), Self::KIND)
     }
 }
+
+pub use rowan::{TextRange, TextSize};
 
 /// Check that a node has the assumed children
 #[cfg(test)]
@@ -317,21 +321,26 @@ declare_syntax! {
         Question -> "?",
         Dollar -> "$",
         At -> "@",
+        Pipe -> "|",
+        Percent -> "%",
     }
     // syntax kind
     {
-        Document -> [ *Component, *ExportsList, *ImportSpecifier, *StructDeclaration ],
+        Document -> [ *Component, *ExportsList, *ImportSpecifier, *StructDeclaration, *EnumDeclaration ],
         /// `DeclaredIdentifier := Element { ... }`
         Component -> [ DeclaredIdentifier, Element ],
         /// `id := Element { ... }`
         SubElement -> [ Element ],
         Element -> [ ?QualifiedName, *PropertyDeclaration, *Binding, *CallbackConnection,
-                     *CallbackDeclaration, *SubElement, *RepeatedElement, *PropertyAnimation,
+                     *CallbackDeclaration, *ConditionalElement, *Function, *SubElement,
+                     *RepeatedElement, *PropertyAnimation, *PropertyChangedCallback,
                      *TwoWayBinding, *States, *Transitions, ?ChildrenPlaceholder ],
         RepeatedElement -> [ ?DeclaredIdentifier, ?RepeatedIndex, Expression , SubElement],
         RepeatedIndex -> [],
         ConditionalElement -> [ Expression , SubElement],
         CallbackDeclaration -> [ DeclaredIdentifier, *Type, ?ReturnType, ?TwoWayBinding ],
+        Function -> [DeclaredIdentifier, *ArgumentDeclaration, ?ReturnType, CodeBlock ],
+        ArgumentDeclaration -> [DeclaredIdentifier, Type],
         /// `-> type`  (but without the ->)
         ReturnType -> [Type],
         CallbackConnection -> [ *DeclaredIdentifier,  CodeBlock ],
@@ -339,6 +348,8 @@ declare_syntax! {
         PropertyDeclaration-> [ ?Type , DeclaredIdentifier, ?BindingExpression, ?TwoWayBinding ],
         /// QualifiedName are the properties name
         PropertyAnimation-> [ *QualifiedName, *Binding ],
+        /// `changed xxx => {...}`  where `xxx` is the DeclaredIdentifier
+        PropertyChangedCallback-> [ DeclaredIdentifier, CodeBlock ],
         /// wraps Identifiers, like `Rectangle` or `SomeModule.SomeType`
         QualifiedName-> [],
         /// Wraps single identifier (to disambiguate when there are other identifier in the production)
@@ -355,7 +366,7 @@ declare_syntax! {
         // FIXME: the test should test that as alternative rather than several of them (but it can also be a literal)
         Expression-> [ ?Expression, ?FunctionCallExpression, ?IndexExpression, ?SelfAssignment,
                        ?ConditionalExpression, ?QualifiedName, ?BinaryExpression, ?Array, ?ObjectLiteral,
-                       ?UnaryOpExpression, ?CodeBlock, ?StringTemplate, ?AtImageUrl, ?AtGradient,
+                       ?UnaryOpExpression, ?CodeBlock, ?StringTemplate, ?AtImageUrl, ?AtGradient, ?AtTr,
                        ?MemberAccess ],
         /// Concatenate the Expressions to make a string (usually expended from a template string)
         StringTemplate -> [*Expression],
@@ -363,6 +374,12 @@ declare_syntax! {
         AtImageUrl -> [],
         /// `@linear-gradient(...)` or `@radial-gradient(...)`
         AtGradient -> [*Expression],
+        /// `@tr("foo", ...)`  // the string is a StringLiteral
+        AtTr -> [?TrContext, ?TrPlural, *Expression],
+        /// `"foo" =>`  in a `AtTr` node
+        TrContext -> [],
+        /// `| "foo" % n`  in a `AtTr` node
+        TrPlural -> [Expression],
         /// expression()
         FunctionCallExpression -> [*Expression],
         /// `expression[index]`
@@ -386,20 +403,22 @@ declare_syntax! {
         /// `states: [...]`
         States -> [*State],
         /// The DeclaredIdentifier is the state name. The Expression, if any, is the condition.
-        State -> [DeclaredIdentifier, ?Expression, *StatePropertyChange],
+        State -> [DeclaredIdentifier, ?Expression, *StatePropertyChange, *Transition],
         /// binding within a state
         StatePropertyChange -> [ QualifiedName, BindingExpression ],
         /// `transitions: [...]`
         Transitions -> [*Transition],
         /// There is an identifier "in" or "out", the DeclaredIdentifier is the state name
-        Transition -> [DeclaredIdentifier, *PropertyAnimation],
+        Transition -> [?DeclaredIdentifier, *PropertyAnimation],
         /// Export a set of declared components by name
-        ExportsList -> [ *ExportSpecifier, ?Component, *StructDeclaration ],
+        ExportsList -> [ *ExportSpecifier, ?Component, *StructDeclaration, ?ExportModule, *EnumDeclaration ],
         /// Declare the first identifier to be exported, either under its name or instead
         /// under the name of the second identifier.
         ExportSpecifier -> [ ExportIdentifier, ?ExportName ],
         ExportIdentifier -> [],
         ExportName -> [],
+        /// `export ... from "foo"`. The import uri is stored as string literal.
+        ExportModule -> [],
         /// import { foo, bar, baz } from "blah"; The import uri is stored as string literal.
         ImportSpecifier -> [ ?ImportIdentifierList ],
         ImportIdentifierList -> [ *ImportIdentifier ],
@@ -415,9 +434,14 @@ declare_syntax! {
         ObjectTypeMember -> [ Type ],
         /// `[ type ]`
         ArrayType -> [ Type ],
-        /// `struct Foo := { ... }
-        StructDeclaration -> [DeclaredIdentifier, ObjectType],
-
+        /// `struct Foo { ... }`
+        StructDeclaration -> [DeclaredIdentifier, ObjectType, ?AtRustAttr],
+        /// `enum Foo { bli, bla, blu }`
+        EnumDeclaration -> [DeclaredIdentifier, *EnumValue, ?AtRustAttr],
+        /// The value is a Identifier
+        EnumValue -> [],
+        /// `@rust-attr(...)`
+        AtRustAttr -> [],
     }
 }
 
@@ -478,8 +502,12 @@ mod parser_trait {
         #[must_use = "use start_node_at to use this checkpoint"]
         fn checkpoint(&mut self) -> Self::Checkpoint;
         #[must_use = "The node will be finished when it is dropped"]
-        fn start_node_at(&mut self, checkpoint: Self::Checkpoint, kind: SyntaxKind) -> Node<Self> {
-            self.start_node_impl(kind, Some(checkpoint), NodeToken(()));
+        fn start_node_at(
+            &mut self,
+            checkpoint: impl Into<Option<Self::Checkpoint>>,
+            kind: SyntaxKind,
+        ) -> Node<Self> {
+            self.start_node_impl(kind, checkpoint.into(), NodeToken(()));
             Node(self)
         }
 
@@ -501,6 +529,7 @@ mod parser_trait {
         fn nth(&mut self, n: usize) -> Token;
         fn consume(&mut self);
         fn error(&mut self, e: impl Into<String>);
+        fn warning(&mut self, e: impl Into<String>);
 
         /// Consume the token if it has the right kind, otherwise report a syntax error.
         /// Returns true if the token was consumed.
@@ -523,11 +552,24 @@ mod parser_trait {
 
         /// consume everything until reaching a token of this kind
         fn until(&mut self, kind: SyntaxKind) {
-            // FIXME! match {} () []
-            while {
-                let k = self.nth(0).kind();
-                k != kind && k != SyntaxKind::Eof
-            } {
+            let mut parens = 0;
+            let mut braces = 0;
+            let mut brackets = 0;
+            loop {
+                match self.nth(0).kind() {
+                    k if k == kind && parens == 0 && braces == 0 && brackets == 0 => break,
+                    SyntaxKind::Eof => break,
+                    SyntaxKind::LParent => parens += 1,
+                    SyntaxKind::LBrace => braces += 1,
+                    SyntaxKind::LBracket => brackets += 1,
+                    SyntaxKind::RParent if parens == 0 => break,
+                    SyntaxKind::RParent => parens -= 1,
+                    SyntaxKind::RBrace if braces == 0 => break,
+                    SyntaxKind::RBrace => braces -= 1,
+                    SyntaxKind::RBracket if brackets == 0 => break,
+                    SyntaxKind::RBracket => brackets -= 1,
+                    _ => {}
+                };
                 self.consume();
             }
             self.expect(kind);
@@ -601,6 +643,9 @@ impl Parser for DefaultParser<'_> {
         checkpoint: Option<Self::Checkpoint>,
         _: NodeToken,
     ) {
+        if kind != SyntaxKind::Document {
+            self.consume_ws();
+        }
         match checkpoint {
             None => self.builder.start_node(kind.into()),
             Some(cp) => self.builder.start_node_at(cp, kind.into()),
@@ -631,7 +676,9 @@ impl Parser for DefaultParser<'_> {
     fn consume(&mut self) {
         let t = self.current_token();
         self.builder.token(t.kind.into(), t.text.as_str());
-        self.cursor += 1;
+        if t.kind != SyntaxKind::Eof {
+            self.cursor += 1;
+        }
     }
 
     /// Reports an error at the current token location
@@ -645,6 +692,25 @@ impl Parser for DefaultParser<'_> {
         }
 
         self.diags.push_error_with_span(
+            e.into(),
+            crate::diagnostics::SourceLocation {
+                source_file: Some(self.source_file.clone()),
+                span,
+            },
+        );
+    }
+
+    /// Reports an error at the current token location
+    fn warning(&mut self, e: impl Into<String>) {
+        let current_token = self.current_token();
+        #[allow(unused_mut)]
+        let mut span = crate::diagnostics::Span::new(current_token.offset);
+        #[cfg(feature = "proc_macro_span")]
+        {
+            span.span = current_token.span;
+        }
+
+        self.diags.push_warning_with_span(
             e.into(),
             crate::diagnostics::SourceLocation {
                 source_file: Some(self.source_file.clone()),
@@ -713,6 +779,9 @@ impl SyntaxToken {
                 )
             })?;
         Some(SyntaxToken { token, source_file: self.source_file.clone() })
+    }
+    pub fn text(&self) -> &str {
+        self.token.text()
     }
 }
 
@@ -814,6 +883,13 @@ impl NodeOrToken {
             _ => None,
         }
     }
+
+    pub fn text_range(&self) -> TextRange {
+        match self {
+            NodeOrToken::Node(n) => n.text_range(),
+            NodeOrToken::Token(t) => t.text_range(),
+        }
+    }
 }
 
 impl Spanned for SyntaxNode {
@@ -880,11 +956,6 @@ impl Spanned for Option<SyntaxToken> {
     }
 }
 
-/// return true if experimental parser feature should be activated
-pub fn enable_experimental() -> bool {
-    std::env::var_os("SLINT_EXPERIMENTAL_SYNTAX").map_or(false, |x| !x.is_empty())
-}
-
 /// return the normalized identifier string of the first SyntaxKind::Identifier in this node
 pub fn identifier_text(node: &SyntaxNode) -> Option<String> {
     node.child_text(SyntaxKind::Identifier).map(|x| normalize_identifier(&x))
@@ -894,32 +965,69 @@ pub fn normalize_identifier(ident: &str) -> String {
     ident.replace('_', "-")
 }
 
+// Parse an expression into a BindingExpression. This is used by the LSP to syntax
+// check the values of properties.
+pub fn parse_expression_as_bindingexpression(
+    source: &str,
+    build_diagnostics: &mut BuildDiagnostics,
+) -> SyntaxNode {
+    let node = {
+        let mut p = DefaultParser::new(source, build_diagnostics);
+        let token = {
+            let mut p = p.start_node(SyntaxKind::BindingExpression);
+            expressions::parse_expression(&mut *p);
+            p.peek()
+        };
+        let node = rowan::SyntaxNode::new_root(p.builder.finish());
+
+        if !build_diagnostics.has_errors() && token.kind() != SyntaxKind::Eof {
+            build_diagnostics.push_error_with_span(
+                format!("Expected end of string, found \"{}\"", &token.kind()),
+                crate::diagnostics::SourceLocation {
+                    source_file: Default::default(),
+                    span: crate::diagnostics::Span {
+                        offset: token.offset,
+                        #[cfg(feature = "proc_macro_span")]
+                        span: token.span,
+                    },
+                },
+            )
+        }
+        node
+    };
+
+    SyntaxNode { node, source_file: Default::default() }
+}
+
 // Actual parser
 pub fn parse(
     source: String,
     path: Option<&std::path::Path>,
+    version: SourceFileVersion,
     build_diagnostics: &mut BuildDiagnostics,
 ) -> SyntaxNode {
     let mut p = DefaultParser::new(&source, build_diagnostics);
-    let source_file = if let Some(path) = path {
-        p.source_file =
-            std::rc::Rc::new(crate::diagnostics::SourceFileInner::new(path.to_path_buf(), source));
-        p.source_file.clone()
-    } else {
-        Default::default()
-    };
+    p.source_file = std::rc::Rc::new(crate::diagnostics::SourceFileInner::new(
+        path.map(crate::pathutils::clean_path).unwrap_or_default(),
+        source,
+        version,
+    ));
     document::parse_document(&mut p);
-    SyntaxNode { node: rowan::SyntaxNode::new_root(p.builder.finish()), source_file }
+    SyntaxNode {
+        node: rowan::SyntaxNode::new_root(p.builder.finish()),
+        source_file: p.source_file.clone(),
+    }
 }
 
 pub fn parse_file<P: AsRef<std::path::Path>>(
     path: P,
     build_diagnostics: &mut BuildDiagnostics,
 ) -> Option<SyntaxNode> {
-    let source = crate::diagnostics::load_from_path(path.as_ref())
+    let path = crate::pathutils::clean_path(path.as_ref());
+    let source = crate::diagnostics::load_from_path(&path)
         .map_err(|d| build_diagnostics.push_internal_error(d))
         .ok()?;
-    Some(parse(source, Some(path.as_ref()), build_diagnostics))
+    Some(parse(source, Some(path.as_ref()), None, build_diagnostics))
 }
 
 pub fn parse_tokens(

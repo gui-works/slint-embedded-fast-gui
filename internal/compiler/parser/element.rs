@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! The parser functions for elements and things inside them
 
@@ -13,6 +13,7 @@ use super::statements::parse_statement;
 /// ```test,Element
 /// Item { }
 /// Item { property: value; SubElement { } }
+/// Item { if true: Rectangle {} }
 /// ```
 pub fn parse_element(p: &mut impl Parser) -> bool {
     let mut p = p.start_node(SyntaxKind::Element);
@@ -38,6 +39,8 @@ pub fn parse_element(p: &mut impl Parser) -> bool {
 /// animate * { }
 /// @children
 /// double_binding <=> element.property;
+/// public pure function foo() {}
+/// changed foo => {}
 /// ```
 pub fn parse_element_content(p: &mut impl Parser) {
     let mut had_parse_error = false;
@@ -55,34 +58,41 @@ pub fn parse_element_content(p: &mut impl Parser) {
                 SyntaxKind::Identifier if p.peek().as_str() == "for" => {
                     parse_repeated_element(&mut *p);
                 }
-                SyntaxKind::Identifier if p.peek().as_str() == "callback" => {
+                SyntaxKind::Identifier
+                    if p.peek().as_str() == "callback"
+                        || (p.peek().as_str() == "pure" && p.nth(1).as_str() == "callback") =>
+                {
                     parse_callback_declaration(&mut *p);
+                }
+                SyntaxKind::Identifier
+                    if p.peek().as_str() == "function"
+                        || (matches!(p.peek().as_str(), "public" | "pure" | "protected")
+                            && p.nth(1).as_str() == "function")
+                        || (matches!(p.nth(1).as_str(), "public" | "pure" | "protected")
+                            && p.nth(2).as_str() == "function") =>
+                {
+                    parse_function(&mut *p);
                 }
                 SyntaxKind::Identifier | SyntaxKind::Star if p.peek().as_str() == "animate" => {
                     parse_property_animation(&mut *p);
                 }
-                SyntaxKind::LAngle if p.peek().as_str() == "property" => {
+                SyntaxKind::Identifier if p.peek().as_str() == "changed" => {
+                    parse_changed_callback(&mut *p);
+                }
+                SyntaxKind::LAngle | SyntaxKind::Identifier if p.peek().as_str() == "property" => {
                     parse_property_declaration(&mut *p);
                 }
-                SyntaxKind::Identifier if p.peek().as_str() == "property" => {
+                SyntaxKind::Identifier
+                    if p.nth(1).as_str() == "property"
+                        && matches!(
+                            p.peek().as_str(),
+                            "in" | "out" | "in_out" | "in-out" | "private"
+                        ) =>
+                {
                     parse_property_declaration(&mut *p);
                 }
                 _ if p.peek().as_str() == "if" => {
                     parse_if_element(&mut *p);
-                }
-                SyntaxKind::Identifier if p.nth(1).as_str() == "property" => {
-                    if matches!(p.peek().as_str(), "input" | "output" | "inout" | "private") {
-                        if !super::enable_experimental() {
-                            p.error("the input/output keywords are experimental, set `SLINT_EXPERIMENTAL_SYNTAX` env variable to enable experimental syntax. See https://github.com/slint-ui/slint/issues/1750");
-                        }
-                        parse_property_declaration(&mut *p);
-                    } else {
-                        p.consume();
-                        if !had_parse_error {
-                            p.error("Parse error");
-                            had_parse_error = true;
-                        }
-                    }
                 }
                 SyntaxKind::LBracket if p.peek().as_str() == "states" => {
                     parse_states(&mut *p);
@@ -148,7 +158,7 @@ fn parse_sub_element(p: &mut impl Parser) {
 fn parse_repeated_element(p: &mut impl Parser) {
     debug_assert_eq!(p.peek().as_str(), "for");
     let mut p = p.start_node(SyntaxKind::RepeatedElement);
-    p.consume(); // "for"
+    p.expect(SyntaxKind::Identifier); // "for"
     if p.nth(0).kind() == SyntaxKind::Identifier {
         let mut p = p.start_node(SyntaxKind::DeclaredIdentifier);
         p.expect(SyntaxKind::Identifier);
@@ -182,7 +192,7 @@ fn parse_repeated_element(p: &mut impl Parser) {
 fn parse_if_element(p: &mut impl Parser) {
     debug_assert_eq!(p.peek().as_str(), "if");
     let mut p = p.start_node(SyntaxKind::ConditionalElement);
-    p.consume(); // "if"
+    p.expect(SyntaxKind::Identifier); // "if"
     parse_expression(&mut *p);
     if !p.expect(SyntaxKind::Colon) {
         drop(p.start_node(SyntaxKind::SubElement).start_node(SyntaxKind::Element));
@@ -288,7 +298,7 @@ fn parse_two_way_binding(p: &mut impl Parser) {
 /// callback foobar;
 /// callback my_callback();
 /// callback foo(int, string);
-/// callback one_arg({ a: string, b: string});
+/// pure callback one_arg({ a: string, b: string});
 /// callback end_coma(a, b, c,);
 /// callback with_return(a, b) -> int;
 /// callback with_return2({a: string}) -> { a: string };
@@ -296,9 +306,12 @@ fn parse_two_way_binding(p: &mut impl Parser) {
 /// ```
 /// Must consume at least one token
 fn parse_callback_declaration(p: &mut impl Parser) {
-    debug_assert_eq!(p.peek().as_str(), "callback");
     let mut p = p.start_node(SyntaxKind::CallbackDeclaration);
-    p.consume(); // "callback"
+    if p.peek().as_str() == "pure" {
+        p.consume();
+    }
+    debug_assert_eq!(p.peek().as_str(), "callback");
+    p.expect(SyntaxKind::Identifier); // "callback"
     {
         let mut p = p.start_node(SyntaxKind::DeclaredIdentifier);
         p.expect(SyntaxKind::Identifier);
@@ -326,8 +339,9 @@ fn parse_callback_declaration(p: &mut impl Parser) {
         parse_type(&mut *p);
     }
 
-    if p.test(SyntaxKind::DoubleArrow) {
+    if p.peek().kind() == SyntaxKind::DoubleArrow {
         let mut p = p.start_node(SyntaxKind::TwoWayBinding);
+        p.expect(SyntaxKind::DoubleArrow);
         parse_expression(&mut *p);
     }
 
@@ -336,18 +350,22 @@ fn parse_callback_declaration(p: &mut impl Parser) {
 
 #[cfg_attr(test, parser_test)]
 /// ```test,PropertyDeclaration
-/// input property <int> xxx;
+/// in property <int> xxx;
 /// property<int> foobar;
 /// property<string> text: "Something";
 /// property<string> text <=> two.way;
 /// property alias <=> two.way;
 /// ```
 fn parse_property_declaration(p: &mut impl Parser) {
-    let mut p = p.start_node(SyntaxKind::PropertyDeclaration);
-    if p.peek().as_str() != "property" {
-        p.consume(); // input/output/inout
+    let checkpoint = p.checkpoint();
+    while matches!(p.peek().as_str(), "in" | "out" | "in-out" | "in_out" | "private") {
+        p.consume();
     }
-    debug_assert_eq!(p.peek().as_str(), "property");
+    if p.peek().as_str() != "property" {
+        p.error("Expected 'property' keyword");
+        return;
+    }
+    let mut p = p.start_node_at(checkpoint, SyntaxKind::PropertyDeclaration);
     p.consume(); // property
 
     if p.test(SyntaxKind::LAngle) {
@@ -390,7 +408,7 @@ fn parse_property_declaration(p: &mut impl Parser) {
 fn parse_property_animation(p: &mut impl Parser) {
     debug_assert_eq!(p.peek().as_str(), "animate");
     let mut p = p.start_node(SyntaxKind::PropertyAnimation);
-    p.consume(); // animate
+    p.expect(SyntaxKind::Identifier); // animate
     if p.nth(0).kind() == SyntaxKind::Star {
         p.consume();
     } else {
@@ -425,6 +443,22 @@ fn parse_property_animation(p: &mut impl Parser) {
 }
 
 #[cfg_attr(test, parser_test)]
+/// ```test,PropertyChangedCallback
+/// changed the-property => { x = y; }
+/// ```
+fn parse_changed_callback(p: &mut impl Parser) {
+    debug_assert_eq!(p.peek().as_str(), "changed");
+    let mut p = p.start_node(SyntaxKind::PropertyChangedCallback);
+    p.expect(SyntaxKind::Identifier); // changed
+    {
+        let mut p = p.start_node(SyntaxKind::DeclaredIdentifier);
+        p.expect(SyntaxKind::Identifier);
+    }
+    p.expect(SyntaxKind::FatArrow);
+    parse_code_block(&mut *p);
+}
+
+#[cfg_attr(test, parser_test)]
 /// ```test,States
 /// states []
 /// states [ foo when bar : { x:y; } another_state : { x:z; }]
@@ -432,7 +466,7 @@ fn parse_property_animation(p: &mut impl Parser) {
 fn parse_states(p: &mut impl Parser) {
     debug_assert_eq!(p.peek().as_str(), "states");
     let mut p = p.start_node(SyntaxKind::States);
-    p.consume(); // "states"
+    p.expect(SyntaxKind::Identifier); // "states"
     p.expect(SyntaxKind::LBracket);
     while parse_state(&mut *p) {}
     p.expect(SyntaxKind::RBracket);
@@ -442,6 +476,8 @@ fn parse_states(p: &mut impl Parser) {
 /// ```test,State
 /// foo : { x: 1px + 2px; aaa.y: {1px + 2px} }
 /// foo when bar == 1:  { color: blue; foo.color: red;   }
+/// a when b:  { color: blue; in { animate color { duration: 120s; } }   }
+/// a when b:  { out { animate foo.bar { } } foo.bar: 42;  }
 /// ```
 fn parse_state(p: &mut impl Parser) -> bool {
     if p.nth(0).kind() != SyntaxKind::Identifier {
@@ -469,6 +505,17 @@ fn parse_state(p: &mut impl Parser) -> bool {
             }
             SyntaxKind::Eof => return false,
             _ => {
+                if p.nth(1).kind() == SyntaxKind::LBrace
+                    && matches!(p.peek().as_str(), "in" | "out")
+                {
+                    let mut p = p.start_node(SyntaxKind::Transition);
+                    p.consume(); // "in" or "out"
+                    p.expect(SyntaxKind::LBrace);
+                    if !parse_transition_inner(&mut *p) {
+                        return false;
+                    }
+                    continue;
+                };
                 let checkpoint = p.checkpoint();
                 if !parse_qualified_name(&mut *p)
                     || !p.expect(SyntaxKind::Colon)
@@ -491,7 +538,7 @@ fn parse_state(p: &mut impl Parser) -> bool {
 fn parse_transitions(p: &mut impl Parser) {
     debug_assert_eq!(p.peek().as_str(), "transitions");
     let mut p = p.start_node(SyntaxKind::Transitions);
-    p.consume(); // "transitions"
+    p.expect(SyntaxKind::Identifier); // "transitions"
     p.expect(SyntaxKind::LBracket);
     while p.nth(0).kind() != SyntaxKind::RBracket && parse_transition(&mut *p) {}
     p.expect(SyntaxKind::RBracket);
@@ -518,7 +565,15 @@ fn parse_transition(p: &mut impl Parser) -> bool {
     if !p.expect(SyntaxKind::LBrace) {
         return false;
     }
+    parse_transition_inner(&mut *p)
+}
 
+#[cfg_attr(test, parser_test)]
+/// ```test
+/// }
+/// animate x { duration: 88ms; }  animate foo.bar { } }
+/// ```
+fn parse_transition_inner(p: &mut impl Parser) -> bool {
     loop {
         match p.nth(0).kind() {
             SyntaxKind::RBrace => {
@@ -535,4 +590,61 @@ fn parse_transition(p: &mut impl Parser) -> bool {
             }
         }
     }
+}
+
+#[cfg_attr(test, parser_test)]
+/// ```test,Function
+/// function foo() {}
+/// function bar(xx : int) { yy = xx; }
+/// function bar(xx : int,) -> int { return 42; }
+/// public function aa(x: int, b: {a: int}, c: int) {}
+/// protected pure function fff() {}
+/// ```
+fn parse_function(p: &mut impl Parser) {
+    let mut p = p.start_node(SyntaxKind::Function);
+    if matches!(p.peek().as_str(), "public" | "protected") {
+        p.consume();
+        if p.peek().as_str() == "pure" {
+            p.consume()
+        }
+    } else if p.peek().as_str() == "pure" {
+        p.consume();
+        if matches!(p.peek().as_str(), "public" | "protected") {
+            p.consume()
+        }
+    }
+    if p.peek().as_str() != "function" {
+        p.error("Unexpected identifier");
+        p.consume();
+        while p.peek().kind == SyntaxKind::Identifier && p.peek().as_str() != "function" {
+            p.consume();
+        }
+    }
+    debug_assert_eq!(p.peek().as_str(), "function");
+    p.expect(SyntaxKind::Identifier); // "function"
+    {
+        let mut p = p.start_node(SyntaxKind::DeclaredIdentifier);
+        p.expect(SyntaxKind::Identifier);
+    }
+    if p.expect(SyntaxKind::LParent) {
+        while p.peek().kind() != SyntaxKind::RParent {
+            let mut p_arg = p.start_node(SyntaxKind::ArgumentDeclaration);
+            {
+                let mut p = p_arg.start_node(SyntaxKind::DeclaredIdentifier);
+                p.expect(SyntaxKind::Identifier);
+            }
+            p_arg.expect(SyntaxKind::Colon);
+            parse_type(&mut *p_arg);
+            drop(p_arg);
+            if !p.test(SyntaxKind::Comma) {
+                break;
+            }
+        }
+        p.expect(SyntaxKind::RParent);
+        if p.test(SyntaxKind::Arrow) {
+            let mut p = p.start_node(SyntaxKind::ReturnType);
+            parse_type(&mut *p);
+        }
+    }
+    parse_code_block(&mut *p);
 }

@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
  Test-Case := Rectangle {
 
@@ -25,7 +25,7 @@ assert_eq(instance.get_this__has_6_slashes__(), 86);
 ```
 
 ```rust
-let instance = Test_Case::new();
+let instance = Test_Case::new().unwrap();
 assert_eq!(instance.get_property_x1(), 42.);
 assert_eq!(instance.get_property_x2(), 42.);
 assert_eq!(instance.get_this__has_6_slashes__(), 86);

@@ -1,12 +1,12 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 use slint::Model;
 use slint::VecModel;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-slint::slint!(import { MainWindow } from "circledraw.slint";);
+slint::slint!(export { MainWindow } from "circledraw.slint";);
 
 enum Change {
     CircleAdded { row: usize },
@@ -61,7 +61,7 @@ where
 }
 
 pub fn main() {
-    let main_window = MainWindow::new();
+    let main_window = MainWindow::new().unwrap();
 
     let model = Rc::new(VecModel::default());
     main_window.set_model(model.clone().into());
@@ -149,5 +149,5 @@ pub fn main() {
         });
     }
 
-    main_window.run();
+    main_window.run().unwrap();
 }

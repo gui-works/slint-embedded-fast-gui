@@ -1,18 +1,19 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // cSpell: ignore vecmodel
 
 //! Model and Repeater
 
-use crate::component::ComponentVTable;
+use crate::item_tree::ItemTreeVTable;
 use crate::item_tree::TraversalOrder;
-use crate::items::ItemRef;
+pub use crate::items::{StandardListViewItem, TableColumn};
 use crate::layout::Orientation;
 use crate::lengths::{LogicalLength, RectLengths};
 use crate::{Coord, Property, SharedString, SharedVector};
-pub use adapters::{FilterModel, MapModel, SortModel};
+pub use adapters::{FilterModel, MapModel, ReverseModel, SortModel};
 use alloc::boxed::Box;
+use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 use core::pin::Pin;
@@ -22,12 +23,11 @@ use euclid::num::{Ceil, Floor};
 pub use model_peer::*;
 use once_cell::unsync::OnceCell;
 use pin_project::pin_project;
-use pin_weak::rc::{PinWeak, Rc};
 
 mod adapters;
 mod model_peer;
 
-type ComponentRc<C> = vtable::VRc<crate::component::ComponentVTable, C>;
+type ItemTreeRc<C> = vtable::VRc<crate::item_tree::ItemTreeVTable, C>;
 
 /// This trait defines the interface that users of a model can use to track changes
 /// to a model. It is supplied via [`Model::model_tracker`] and implementation usually
@@ -50,11 +50,17 @@ impl ModelTracker for () {
     fn track_row_data_changes(&self, _row: usize) {}
 }
 
-/// A Model is providing Data for the Repeater or ListView elements of the `.slint` language
+/// A Model is providing Data for the repeated elements with `for` in the `.slint` language
 ///
 /// If the model can be changed, the type implementing the Model trait should holds
 /// a [`ModelNotify`], and is responsible to call functions on it to let the UI know that
 /// something has changed.
+///
+/// Properties of type array will be mapped to a [`ModelRc<T>`], which wraps a `Rc<Model<Data = T>>.`
+/// The [`ModelRc`] documentation has examples on how to set models to array properties.
+///
+/// It is more efficient to operate on the model and send changes through the `ModelNotify` rather than
+/// resetting the property with a different model.
 ///
 /// ## Example
 ///
@@ -113,11 +119,13 @@ impl ModelTracker for () {
 /// }
 /// ```
 pub trait Model {
-    /// The model data: A model is a set of row and each row has this data
+    /// The model data: A model is a set of rows and each row has this data
     type Data;
-    /// The amount of row in the model
+    /// The number of rows in the model
     fn row_count(&self) -> usize;
-    /// Returns the data for a particular row. This function should be called with `row < row_count()`.
+    /// Returns the data for a particular row.
+    ///
+    /// This function should normally be called with `row < row_count()` and should return None otherwise.
     ///
     /// This function does not register dependencies on the current binding. For an equivalent
     /// function that tracks dependencies, see [`ModelExt::row_data_tracked`]
@@ -156,7 +164,7 @@ pub trait Model {
     /// Return something that can be downcast'ed (typically self)
     ///
     /// This is useful to get back to the actual model from a [`ModelRc`] stored
-    /// in a component.
+    /// in a ItemTree.
     ///
     /// ```
     /// # use i_slint_core::model::*;
@@ -170,7 +178,7 @@ pub trait Model {
     /// Note: the default implementation returns nothing interesting. this method should be
     /// implemented by model implementation to return something useful. For example:
     /// ```ignore
-    /// fn as_any(&self) -> &dyn core::any::Any { self }
+    ///     fn as_any(&self) -> &dyn core::any::Any { self }
     /// ```
     fn as_any(&self) -> &dyn core::any::Any {
         &()
@@ -229,6 +237,15 @@ pub trait ModelExt: Model {
         F: FnMut(&Self::Data, &Self::Data) -> core::cmp::Ordering + 'static,
     {
         SortModel::new(self, sort_function)
+    }
+
+    /// Returns a new Model where the elements are reversed.
+    /// This is a shortcut for [`ReverseModel::new()`].
+    fn reverse(self) -> ReverseModel<Self>
+    where
+        Self: Sized + 'static,
+    {
+        ReverseModel::new(self)
     }
 }
 
@@ -296,7 +313,7 @@ impl<M: Model> Model for Rc<M> {
     }
 }
 
-/// A model backed by a `Vec<T>`
+/// A [`Model`] backed by a `Vec<T>`
 #[derive(Default)]
 pub struct VecModel<T> {
     array: RefCell<Vec<T>>,
@@ -461,7 +478,7 @@ impl Model for usize {
     }
 
     fn row_data(&self, row: usize) -> Option<Self::Data> {
-        (row < self.row_count()).then(|| row as i32)
+        (row < self.row_count()).then_some(row as i32)
     }
 
     fn as_any(&self) -> &dyn core::any::Any {
@@ -485,7 +502,7 @@ impl Model for bool {
     }
 
     fn row_data(&self, row: usize) -> Option<Self::Data> {
-        (row < self.row_count()).then(|| ())
+        (row < self.row_count()).then_some(())
     }
 
     fn as_any(&self) -> &dyn core::any::Any {
@@ -497,17 +514,79 @@ impl Model for bool {
     }
 }
 
-/// A Reference counted [`Model`].
+/// ModelRc is a type wrapper for a reference counted implementation of the [`Model`] trait.
 ///
-/// The `ModelRc` struct holds something that implements the [`Model`] trait.
-/// This is used in `for` expressions in the .slint language.
-/// Array properties in the .slint language are holding a ModelRc.
+/// Models are used to represent sequences of the same data type. In `.slint` code those
+/// are represented using the `[T]` array syntax and typically used in `for` expressions,
+/// array properties, and array struct fields.
 ///
-/// An empty model can be constructed with [`ModelRc::default()`].
-/// Use [`ModelRc::new()`] To construct a ModelRc from something that implements the
-/// [`Model`] trait.
-/// It is also possible to use the [`From`] trait to convert from `Rc<dyn Model>`.
-
+/// For example, a `property <[string]> foo` will be of type `ModelRc<SharedString>`
+/// and, behind the scenes, wraps a `Rc<dyn Model<Data = SharedString>>.`
+///
+/// An array struct field will also be of type `ModelRc`:
+///
+/// ```slint,no-preview
+/// export struct AddressBook {
+///     names: [string]
+/// }
+/// ```
+///
+/// When accessing `AddressBook` from Rust, the `names` field will be of type `ModelRc<SharedString>`.
+///
+/// There are several ways of constructing a ModelRc in Rust:
+///
+/// * An empty ModelRc can be constructed with [`ModelRc::default()`].
+/// * A `ModelRc` can be constructed from a slice or an array using the [`From`] trait.
+///   This allocates a [`VecModel`].
+/// * Use [`ModelRc::new()`] to construct a `ModelRc` from a type that implements the
+///   [`Model`] trait, such as [`VecModel`] or your own implementation.
+/// * If you have your model already in an `Rc`, then you can use the [`From`] trait
+///   to convert from `Rc<dyn Model<Data = T>>` to `ModelRc`.
+///
+/// ## Example
+///
+/// ```rust
+/// # i_slint_backend_testing::init_no_event_loop();
+/// use slint::{slint, SharedString, ModelRc, Model, VecModel};
+/// use std::rc::Rc;
+/// slint!{
+///     import { Button } from "std-widgets.slint";
+///     export component Example {
+///         callback add_item <=> btn.clicked;
+///         in property <[string]> the_model;
+///         HorizontalLayout {
+///             for it in the_model : Text { text: it; }
+///             btn := Button { text: "Add"; }
+///         }
+///     }
+/// }
+/// let ui = Example::new().unwrap();
+/// // Create a VecModel and put it in an Rc.
+/// let the_model : Rc<VecModel<SharedString>> =
+///         Rc::new(VecModel::from(vec!["Hello".into(), "World".into()]));
+/// // Convert it to a ModelRc.
+/// let the_model_rc = ModelRc::from(the_model.clone());
+/// // Pass the model to the ui: The generated set_the_model setter from the
+/// // the_model property takes a ModelRc.
+/// ui.set_the_model(the_model_rc);
+///
+/// // We have kept a strong reference to the_model, to modify it in a callback.
+/// ui.on_add_item(move || {
+///     // Use VecModel API: VecModel uses the Model notification mechanism to let Slint
+///     // know it needs to refresh the UI.
+///     the_model.push("SomeValue".into());
+/// });
+///
+/// // Alternative: we can re-use a getter.
+/// let ui_weak = ui.as_weak();
+/// ui.on_add_item(move || {
+///     let ui = ui_weak.unwrap();
+///     let the_model_rc = ui.get_the_model();
+///     let the_model = the_model_rc.as_any().downcast_ref::<VecModel<SharedString>>()
+///         .expect("We know we set a VecModel earlier");
+///     the_model.push("An Item".into());
+/// });
+/// ```
 pub struct ModelRc<T>(Option<Rc<dyn Model<Data = T>>>);
 
 impl<T> core::fmt::Debug for ModelRc<T> {
@@ -560,6 +639,18 @@ impl<T> From<Rc<dyn Model<Data = T> + 'static>> for ModelRc<T> {
     }
 }
 
+impl<T: Clone + 'static> From<&[T]> for ModelRc<T> {
+    fn from(slice: &[T]) -> Self {
+        VecModel::from_slice(slice)
+    }
+}
+
+impl<T: Clone + 'static, const N: usize> From<[T; N]> for ModelRc<T> {
+    fn from(array: [T; N]) -> Self {
+        VecModel::from_slice(&array)
+    }
+}
+
 impl<T> TryInto<Rc<dyn Model<Data = T>>> for ModelRc<T> {
     type Error = ();
 
@@ -594,15 +685,19 @@ impl<T> Model for ModelRc<T> {
     }
 }
 
-/// Component that can be instantiated by a repeater.
-pub trait RepeatedComponent:
-    crate::component::Component + vtable::HasStaticVTable<ComponentVTable> + 'static
+/// ItemTree that can be instantiated by a repeater.
+pub trait RepeatedItemTree:
+    crate::item_tree::ItemTree + vtable::HasStaticVTable<ItemTreeVTable> + 'static
 {
     /// The data corresponding to the model
     type Data: 'static;
 
-    /// Update this component at the given index and the given data
+    /// Update this ItemTree at the given index and the given data
     fn update(&self, index: usize, data: Self::Data);
+
+    /// Called once after the ItemTree has been instantiated and update()
+    /// was called once.
+    fn init(&self) {}
 
     /// Layout this item in the listview
     ///
@@ -615,7 +710,7 @@ pub trait RepeatedComponent:
     ) {
     }
 
-    /// Returns what's needed to perform the layout if this component is in a box layout
+    /// Returns what's needed to perform the layout if this ItemTrees is in a box layout
     fn box_layout_data(
         self: Pin<&Self>,
         _orientation: Orientation,
@@ -625,31 +720,31 @@ pub trait RepeatedComponent:
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum RepeatedComponentState {
+enum RepeatedInstanceState {
     /// The item is in a clean state
     Clean,
     /// The model data is stale and needs to be refreshed
     Dirty,
 }
-struct RepeaterInner<C: RepeatedComponent> {
-    components: Vec<(RepeatedComponentState, Option<ComponentRc<C>>)>,
+struct RepeaterInner<C: RepeatedItemTree> {
+    instances: Vec<(RepeatedInstanceState, Option<ItemTreeRc<C>>)>,
 
     // The remaining properties only make sense for ListView
-    /// The model row (index) of the first component in the `components` vector.
+    /// The model row (index) of the first ItemTree in the `instances` vector.
     offset: usize,
     /// The average visible item height.
     cached_item_height: LogicalLength,
     /// The viewport_y last time the layout of the ListView was done
     previous_viewport_y: LogicalLength,
-    /// the position of the item in the row `offset` (which corresponds to `components[0]`).
+    /// the position of the item in the row `offset` (which corresponds to `instances[0]`).
     /// We will try to keep this constant when re-layouting items
     anchor_y: LogicalLength,
 }
 
-impl<C: RepeatedComponent> Default for RepeaterInner<C> {
+impl<C: RepeatedItemTree> Default for RepeaterInner<C> {
     fn default() -> Self {
         RepeaterInner {
-            components: Default::default(),
+            instances: Default::default(),
             offset: 0,
             cached_item_height: Default::default(),
             previous_viewport_y: Default::default(),
@@ -658,32 +753,41 @@ impl<C: RepeatedComponent> Default for RepeaterInner<C> {
     }
 }
 
-/// This field is put in a component when using the `for` syntax
-/// It helps instantiating the components `C`
+/// This struct is put in a component when using the `for` syntax
+/// It helps instantiating the ItemTree `T`
 #[pin_project]
-pub struct RepeaterTracker<C: RepeatedComponent> {
-    inner: RefCell<RepeaterInner<C>>,
+pub struct RepeaterTracker<T: RepeatedItemTree> {
+    inner: RefCell<RepeaterInner<T>>,
     #[pin]
-    model: Property<ModelRc<C::Data>>,
+    model: Property<ModelRc<T::Data>>,
     #[pin]
     is_dirty: Property<bool>,
-    /// Only used for the list view to track if the scrollbar has changed and item needs to be layed out again.
+    /// Only used for the list view to track if the scrollbar has changed and item needs to be laid out again.
     #[pin]
     listview_geometry_tracker: crate::properties::PropertyTracker,
 }
 
-impl<C: RepeatedComponent> ModelChangeListener for RepeaterTracker<C> {
+impl<T: RepeatedItemTree> ModelChangeListener for RepeaterTracker<T> {
     /// Notify the peers that a specific row was changed
-    fn row_changed(&self, row: usize) {
-        self.is_dirty.set(true);
+    fn row_changed(self: Pin<&Self>, row: usize) {
         let mut inner = self.inner.borrow_mut();
         let inner = &mut *inner;
-        if let Some(c) = inner.components.get_mut(row.wrapping_sub(inner.offset)) {
-            c.0 = RepeatedComponentState::Dirty;
+        if let Some(c) = inner.instances.get_mut(row.wrapping_sub(inner.offset)) {
+            if !self.model.is_dirty() {
+                if let Some(comp) = c.1.as_ref() {
+                    let model = self.project_ref().model.get_untracked();
+                    if let Some(data) = model.row_data(row) {
+                        comp.update(row, data);
+                    }
+                    c.0 = RepeatedInstanceState::Clean;
+                }
+            } else {
+                c.0 = RepeatedInstanceState::Dirty;
+            }
         }
     }
     /// Notify the peers that rows were added
-    fn row_added(&self, mut index: usize, mut count: usize) {
+    fn row_added(self: Pin<&Self>, mut index: usize, mut count: usize) {
         let mut inner = self.inner.borrow_mut();
         if index < inner.offset {
             if index + count < inner.offset {
@@ -694,21 +798,21 @@ impl<C: RepeatedComponent> ModelChangeListener for RepeaterTracker<C> {
         } else {
             index -= inner.offset;
         }
-        if count == 0 || index > inner.components.len() {
+        if count == 0 || index > inner.instances.len() {
             return;
         }
         self.is_dirty.set(true);
-        inner.components.splice(
+        inner.instances.splice(
             index..index,
-            core::iter::repeat((RepeatedComponentState::Dirty, None)).take(count),
+            core::iter::repeat((RepeatedInstanceState::Dirty, None)).take(count),
         );
-        for c in inner.components[index + count..].iter_mut() {
+        for c in inner.instances[index + count..].iter_mut() {
             // Because all the indexes are dirty
-            c.0 = RepeatedComponentState::Dirty;
+            c.0 = RepeatedInstanceState::Dirty;
         }
     }
     /// Notify the peers that rows were removed
-    fn row_removed(&self, mut index: usize, mut count: usize) {
+    fn row_removed(self: Pin<&Self>, mut index: usize, mut count: usize) {
         let mut inner = self.inner.borrow_mut();
         if index < inner.offset {
             if index + count < inner.offset {
@@ -719,27 +823,27 @@ impl<C: RepeatedComponent> ModelChangeListener for RepeaterTracker<C> {
         } else {
             index -= inner.offset;
         }
-        if count == 0 || index >= inner.components.len() {
+        if count == 0 || index >= inner.instances.len() {
             return;
         }
-        if (index + count) > inner.components.len() {
-            count = inner.components.len() - index;
+        if (index + count) > inner.instances.len() {
+            count = inner.instances.len() - index;
         }
         self.is_dirty.set(true);
-        inner.components.drain(index..(index + count));
-        for c in inner.components[index..].iter_mut() {
+        inner.instances.drain(index..(index + count));
+        for c in inner.instances[index..].iter_mut() {
             // Because all the indexes are dirty
-            c.0 = RepeatedComponentState::Dirty;
+            c.0 = RepeatedInstanceState::Dirty;
         }
     }
 
-    fn reset(&self) {
+    fn reset(self: Pin<&Self>) {
         self.is_dirty.set(true);
-        self.inner.borrow_mut().components.clear();
+        self.inner.borrow_mut().instances.clear();
     }
 }
 
-impl<C: RepeatedComponent> Default for RepeaterTracker<C> {
+impl<C: RepeatedItemTree> Default for RepeaterTracker<C> {
     fn default() -> Self {
         Self {
             inner: Default::default(),
@@ -751,15 +855,15 @@ impl<C: RepeatedComponent> Default for RepeaterTracker<C> {
 }
 
 #[pin_project]
-pub struct Repeater<C: RepeatedComponent>(#[pin] ModelChangeListenerContainer<RepeaterTracker<C>>);
+pub struct Repeater<C: RepeatedItemTree>(#[pin] ModelChangeListenerContainer<RepeaterTracker<C>>);
 
-impl<C: RepeatedComponent> Default for Repeater<C> {
+impl<C: RepeatedItemTree> Default for Repeater<C> {
     fn default() -> Self {
         Self(Default::default())
     }
 }
 
-impl<C: RepeatedComponent + 'static> Repeater<C> {
+impl<C: RepeatedItemTree + 'static> Repeater<C> {
     fn data(self: Pin<&Self>) -> Pin<&RepeaterTracker<C>> {
         self.project_ref().0.get()
     }
@@ -781,8 +885,8 @@ impl<C: RepeatedComponent + 'static> Repeater<C> {
     }
 
     /// Call this function to make sure that the model is updated.
-    /// The init function is the function to create a component
-    pub fn ensure_updated(self: Pin<&Self>, init: impl Fn() -> ComponentRc<C>) {
+    /// The init function is the function to create a ItemTree
+    pub fn ensure_updated(self: Pin<&Self>, init: impl Fn() -> ItemTreeRc<C>) {
         let model = self.model();
         if self.data().project_ref().is_dirty.get() {
             self.ensure_updated_impl(init, &model, model.row_count());
@@ -792,43 +896,55 @@ impl<C: RepeatedComponent + 'static> Repeater<C> {
     // returns true if new items were created
     fn ensure_updated_impl(
         self: Pin<&Self>,
-        init: impl Fn() -> ComponentRc<C>,
+        init: impl Fn() -> ItemTreeRc<C>,
         model: &ModelRc<C::Data>,
         count: usize,
     ) -> bool {
         let mut inner = self.0.inner.borrow_mut();
-        inner.components.resize_with(count, || (RepeatedComponentState::Dirty, None));
+        inner.instances.resize_with(count, || (RepeatedInstanceState::Dirty, None));
         let offset = inner.offset;
-        let mut created = false;
-        for (i, c) in inner.components.iter_mut().enumerate() {
-            if c.0 == RepeatedComponentState::Dirty {
-                if c.1.is_none() {
-                    created = true;
+        let mut any_items_created = false;
+        for (i, c) in inner.instances.iter_mut().enumerate() {
+            if c.0 == RepeatedInstanceState::Dirty {
+                let created = if c.1.is_none() {
+                    any_items_created = true;
                     c.1 = Some(init());
+                    true
+                } else {
+                    false
+                };
+                if let Some(data) = model.row_data(i + offset) {
+                    c.1.as_ref().unwrap().update(i + offset, data);
                 }
-                c.1.as_ref().unwrap().update(i + offset, model.row_data(i + offset).unwrap());
-                c.0 = RepeatedComponentState::Clean;
+                if created {
+                    c.1.as_ref().unwrap().init();
+                }
+                c.0 = RepeatedInstanceState::Clean;
             }
         }
         self.data().is_dirty.set(false);
-        created
+        any_items_created
     }
 
-    /// Same as `Self::ensuer_updated` but for a ListView
+    /// Same as `Self::ensure_updated` but for a ListView
     pub fn ensure_updated_listview(
         self: Pin<&Self>,
-        init: impl Fn() -> ComponentRc<C>,
+        init: impl Fn() -> ItemTreeRc<C>,
         viewport_width: Pin<&Property<LogicalLength>>,
         viewport_height: Pin<&Property<LogicalLength>>,
         viewport_y: Pin<&Property<LogicalLength>>,
         listview_width: LogicalLength,
         listview_height: Pin<&Property<LogicalLength>>,
     ) {
+        // Query is_dirty to track model changes
+        self.data().project_ref().is_dirty.get();
+        self.data().project_ref().is_dirty.set(false);
+
         viewport_width.set(listview_width);
         let model = self.model();
         let row_count = model.row_count();
         if row_count == 0 {
-            self.0.inner.borrow_mut().components.clear();
+            self.0.inner.borrow_mut().instances.clear();
             viewport_height.set(LogicalLength::zero());
             viewport_y.set(LogicalLength::zero());
 
@@ -845,14 +961,14 @@ impl<C: RepeatedComponent + 'static> Repeater<C> {
         } else {
             let total_height = Cell::new(LogicalLength::zero());
             let count = Cell::new(0);
-            let get_height_visitor = |item: Pin<ItemRef>| {
+            let get_height_visitor = |x: &ItemTreeRc<C>| {
+                let height = x.as_pin_ref().item_geometry(0).height_length();
                 count.set(count.get() + 1);
-                let height = item.as_ref().geometry().height_length();
                 total_height.set(total_height.get() + height);
             };
-            for c in self.data().inner.borrow().components.iter() {
+            for c in self.data().inner.borrow().instances.iter() {
                 if let Some(x) = c.1.as_ref() {
-                    get_height_visitor(x.as_pin_ref().get_item_ref(0));
+                    get_height_visitor(x);
                 }
             }
 
@@ -866,9 +982,9 @@ impl<C: RepeatedComponent + 'static> Repeater<C> {
                 }
 
                 self.ensure_updated_impl(&init, &model, 1);
-                if let Some(c) = self.data().inner.borrow().components.get(0) {
+                if let Some(c) = self.data().inner.borrow().instances.first() {
                     if let Some(x) = c.1.as_ref() {
-                        get_height_visitor(x.as_pin_ref().get_item_ref(0));
+                        get_height_visitor(x);
                     }
                 } else {
                     panic!("Could not determine size of items");
@@ -879,15 +995,19 @@ impl<C: RepeatedComponent + 'static> Repeater<C> {
 
         let data = self.data();
         let mut inner = data.inner.borrow_mut();
+        if inner.offset >= row_count {
+            inner.offset = row_count - 1;
+        }
+
         let one_and_a_half_screen = listview_height * 3 as Coord / 2 as Coord;
         let first_item_y = inner.anchor_y;
-        let last_item_bottom = first_item_y + element_height * inner.components.len() as Coord;
+        let last_item_bottom = first_item_y + element_height * inner.instances.len() as Coord;
 
         let (mut new_offset, mut new_offset_y) = if first_item_y > -vp_y + one_and_a_half_screen
             || last_item_bottom + element_height < -vp_y
         {
             // We are jumping more than 1.5 screens, consider this as a random seek.
-            inner.components.clear();
+            inner.instances.clear();
             inner.offset = ((-vp_y / element_height).get().floor() as usize).min(row_count - 1);
             (inner.offset, -vp_y)
         } else if vp_y < inner.previous_viewport_y {
@@ -895,22 +1015,17 @@ impl<C: RepeatedComponent + 'static> Repeater<C> {
             let mut it_y = first_item_y;
             let mut new_offset = inner.offset;
             debug_assert!(it_y <= -vp_y); // we scrolled down, the anchor should be hidden
-            for c in inner.components.iter_mut() {
-                if c.0 == RepeatedComponentState::Dirty {
+            for c in inner.instances.iter_mut() {
+                if c.0 == RepeatedInstanceState::Dirty {
                     if c.1.is_none() {
                         c.1 = Some(init());
                     }
-                    c.1.as_ref().unwrap().update(new_offset, model.row_data(new_offset).unwrap());
-                    c.0 = RepeatedComponentState::Clean;
+                    if let Some(data) = model.row_data(new_offset) {
+                        c.1.as_ref().unwrap().update(new_offset, data);
+                    }
+                    c.0 = RepeatedInstanceState::Clean;
                 }
-                let h =
-                    c.1.as_ref()
-                        .unwrap()
-                        .as_pin_ref()
-                        .get_item_ref(0)
-                        .as_ref()
-                        .geometry()
-                        .height_length();
+                let h = c.1.as_ref().unwrap().as_pin_ref().item_geometry(0).height_length();
                 if it_y + h >= -vp_y || new_offset + 1 >= row_count {
                     break;
                 }
@@ -926,54 +1041,58 @@ impl<C: RepeatedComponent + 'static> Repeater<C> {
         loop {
             // If there is a gap before the new_offset and the beginning of the visible viewport,
             // try to fill it with items. First look at items that are before new_offset in the
-            // inner.components, if any.
+            // inner.instances, if any.
             while new_offset > inner.offset && new_offset_y > -vp_y {
                 new_offset -= 1;
-                new_offset_y -= inner.components[new_offset - inner.offset]
+                new_offset_y -= inner.instances[new_offset - inner.offset]
                     .1
                     .as_ref()
                     .unwrap()
                     .as_pin_ref()
-                    .get_item_ref(0)
-                    .as_ref()
-                    .geometry()
+                    .item_geometry(0)
                     .height_length();
             }
-            // If there is still a gap, fill it with new component before
-            let mut new_components = Vec::new();
+            // If there is still a gap, fill it with new instances before
+            let mut new_instances = Vec::new();
             while new_offset > 0 && new_offset_y > -vp_y {
                 new_offset -= 1;
-                let new_component = init();
-                new_component.update(new_offset, model.row_data(new_offset).unwrap());
-                new_offset_y -=
-                    new_component.as_pin_ref().get_item_ref(0).as_ref().geometry().height_length();
-                new_components.push(new_component);
+                let new_instance = init();
+                if let Some(data) = model.row_data(new_offset) {
+                    new_instance.update(new_offset, data);
+                }
+                new_offset_y -= new_instance.as_pin_ref().item_geometry(0).height_length();
+                new_instances.push(new_instance);
             }
-            if !new_components.is_empty() {
-                inner.components.splice(
+            if !new_instances.is_empty() {
+                inner.instances.splice(
                     0..0,
-                    new_components
+                    new_instances
                         .into_iter()
                         .rev()
-                        .map(|c| (RepeatedComponentState::Clean, Some(c))),
+                        .map(|c| (RepeatedInstanceState::Clean, Some(c))),
                 );
                 inner.offset = new_offset;
             }
             assert!(
-                new_offset >= inner.offset && new_offset <= inner.offset + inner.components.len()
+                new_offset >= inner.offset && new_offset <= inner.offset + inner.instances.len()
             );
 
             // Now we will layout items until we fit the view, starting with the ones that are already instantiated
             let mut y = new_offset_y;
             let mut idx = new_offset;
-            let components_begin = new_offset - inner.offset;
-            for c in &mut inner.components[components_begin..] {
-                if c.0 == RepeatedComponentState::Dirty {
+            let instances_begin = new_offset - inner.offset;
+            for c in &mut inner.instances[instances_begin..] {
+                if idx >= row_count {
+                    break;
+                }
+                if c.0 == RepeatedInstanceState::Dirty {
                     if c.1.is_none() {
                         c.1 = Some(init());
                     }
-                    c.1.as_ref().unwrap().update(idx, model.row_data(idx).unwrap());
-                    c.0 = RepeatedComponentState::Clean;
+                    if let Some(data) = model.row_data(idx) {
+                        c.1.as_ref().unwrap().update(idx, data);
+                    }
+                    c.0 = RepeatedInstanceState::Clean;
                 }
                 if let Some(x) = c.1.as_ref() {
                     x.as_pin_ref().listview_layout(&mut y, viewport_width);
@@ -986,10 +1105,12 @@ impl<C: RepeatedComponent + 'static> Repeater<C> {
 
             // create more items until there is no more room.
             while y < -vp_y + listview_height && idx < row_count {
-                let new_component = init();
-                new_component.update(idx, model.row_data(idx).unwrap());
-                new_component.as_pin_ref().listview_layout(&mut y, viewport_width);
-                inner.components.push((RepeatedComponentState::Clean, Some(new_component)));
+                let new_instance = init();
+                if let Some(data) = model.row_data(idx) {
+                    new_instance.update(idx, data);
+                }
+                new_instance.as_pin_ref().listview_layout(&mut y, viewport_width);
+                inner.instances.push((RepeatedInstanceState::Clean, Some(new_instance)));
                 idx += 1;
             }
             if y < -vp_y + listview_height && vp_y < LogicalLength::zero() {
@@ -999,18 +1120,22 @@ impl<C: RepeatedComponent + 'static> Repeater<C> {
                 continue;
             }
 
-            // Let's cleanup the components that are not shown.
+            // Let's cleanup the instances that are not shown.
             if new_offset != inner.offset {
-                let components_begin = new_offset - inner.offset;
-                inner.components.splice(0..components_begin, core::iter::empty());
+                let instances_begin = new_offset - inner.offset;
+                inner.instances.splice(0..instances_begin, core::iter::empty());
                 inner.offset = new_offset;
             }
-            if inner.components.len() != idx - new_offset {
-                inner.components.splice(idx - new_offset.., core::iter::empty());
+            if inner.instances.len() != idx - new_offset {
+                inner.instances.splice(idx - new_offset.., core::iter::empty());
+            }
+
+            if inner.instances.is_empty() {
+                break;
             }
 
             // Now re-compute some coordinate such a way that the scrollbar are adjusted.
-            inner.cached_item_height = (y - new_offset_y) / inner.components.len() as Coord;
+            inner.cached_item_height = (y - new_offset_y) / inner.instances.len() as Coord;
             inner.anchor_y = inner.cached_item_height * inner.offset as Coord;
             viewport_height.set(inner.cached_item_height * row_count as Coord);
             let new_viewport_y = -inner.anchor_y + vp_y + new_offset_y;
@@ -1024,14 +1149,6 @@ impl<C: RepeatedComponent + 'static> Repeater<C> {
     pub fn model_set_row_data(self: Pin<&Self>, row: usize, data: C::Data) {
         let model = self.model();
         model.set_row_data(row, data);
-        if let Some(c) = self.data().inner.borrow_mut().components.get_mut(row) {
-            if c.0 == RepeatedComponentState::Dirty {
-                if let Some(comp) = c.1.as_ref() {
-                    comp.update(row, model.row_data(row).unwrap());
-                    c.0 = RepeatedComponentState::Clean;
-                }
-            }
-        }
     }
 
     /// Set the model binding
@@ -1039,17 +1156,17 @@ impl<C: RepeatedComponent + 'static> Repeater<C> {
         self.0.model.set_binding(binding);
     }
 
-    /// Call the visitor for each component
+    /// Call the visitor for the root of each instance
     pub fn visit(
         &self,
         order: TraversalOrder,
         mut visitor: crate::item_tree::ItemVisitorRefMut,
     ) -> crate::item_tree::VisitChildrenResult {
         // We can't keep self.inner borrowed because the event might modify the model
-        let count = self.0.inner.borrow().components.len();
+        let count = self.0.inner.borrow().instances.len() as u32;
         for i in 0..count {
             let i = if order == TraversalOrder::BackToFront { i } else { count - i - 1 };
-            let c = self.0.inner.borrow().components.get(i).and_then(|c| c.1.clone());
+            let c = self.0.inner.borrow().instances.get(i as usize).and_then(|c| c.1.clone());
             if let Some(c) = c {
                 if c.as_pin_ref().visit_children_item(-1, order, visitor.borrow_mut()).has_aborted()
                 {
@@ -1060,24 +1177,26 @@ impl<C: RepeatedComponent + 'static> Repeater<C> {
         crate::item_tree::VisitChildrenResult::CONTINUE
     }
 
-    /// Return the amount of item currently in the component
+    /// Return the amount of instances currently in the repeater
     pub fn len(&self) -> usize {
-        self.0.inner.borrow().components.len()
+        self.0.inner.borrow().instances.len()
     }
 
     /// Return the range of indices used by this Repeater.
     ///
     /// Two values are necessary here since the Repeater can start to insert the data from its
     /// model at an offset.
-    pub fn range(&self) -> (usize, usize) {
+    pub fn range(&self) -> core::ops::Range<usize> {
         let inner = self.0.inner.borrow();
-        (inner.offset, inner.offset + inner.components.len())
+        core::ops::Range { start: inner.offset, end: inner.offset + inner.instances.len() }
     }
 
-    pub fn component_at(&self, index: usize) -> Option<ComponentRc<C>> {
+    /// Return the instance for the given model index.
+    /// The index should be within [`Self::range()`]
+    pub fn instance_at(&self, index: usize) -> Option<ItemTreeRc<C>> {
         let inner = self.0.inner.borrow();
         inner
-            .components
+            .instances
             .get(index - inner.offset)
             .map(|c| c.1.clone().expect("That was updated before!"))
     }
@@ -1087,29 +1206,21 @@ impl<C: RepeatedComponent + 'static> Repeater<C> {
         self.len() == 0
     }
 
-    /// Returns a vector containing all components
-    pub fn components_vec(&self) -> Vec<ComponentRc<C>> {
-        self.0.inner.borrow().components.iter().flat_map(|x| x.1.clone()).collect()
-    }
-}
-
-/// Represent an item in a StandardListView
-#[repr(C)]
-#[derive(Clone, Default, Debug, PartialEq)]
-pub struct StandardListViewItem {
-    /// The text content of the item
-    pub text: crate::SharedString,
-}
-
-impl From<&str> for StandardListViewItem {
-    fn from(other: &str) -> Self {
-        return Self { text: other.into() };
+    /// Returns a vector containing all instances
+    pub fn instances_vec(&self) -> Vec<ItemTreeRc<C>> {
+        self.0.inner.borrow().instances.iter().flat_map(|x| x.1.clone()).collect()
     }
 }
 
 impl From<SharedString> for StandardListViewItem {
-    fn from(other: SharedString) -> Self {
-        return Self { text: other };
+    fn from(value: SharedString) -> Self {
+        StandardListViewItem { text: value }
+    }
+}
+
+impl From<&str> for StandardListViewItem {
+    fn from(value: &str) -> Self {
+        StandardListViewItem { text: value.into() }
     }
 }
 
@@ -1225,18 +1336,18 @@ fn test_vecmodel_set_vec() {
         }
     }
     impl ModelChangeListener for TestView {
-        fn row_changed(&self, row: usize) {
+        fn row_changed(self: Pin<&Self>, row: usize) {
             self.changed_rows.borrow_mut().push((row, self.row_count()));
         }
 
-        fn row_added(&self, index: usize, count: usize) {
+        fn row_added(self: Pin<&Self>, index: usize, count: usize) {
             self.added_rows.borrow_mut().push((index, count, self.row_count()));
         }
 
-        fn row_removed(&self, index: usize, count: usize) {
+        fn row_removed(self: Pin<&Self>, index: usize, count: usize) {
             self.removed_rows.borrow_mut().push((index, count, self.row_count()));
         }
-        fn reset(&self) {
+        fn reset(self: Pin<&Self>) {
             *self.reset.borrow_mut() += 1;
         }
     }

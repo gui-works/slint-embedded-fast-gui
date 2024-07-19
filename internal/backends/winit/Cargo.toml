@@ -1,15 +1,16 @@
-# Copyright © SixtyFPS GmbH <info@slint-ui.com>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 [package]
 name = "i-slint-backend-winit"
-version = "0.3.2"
-authors = ["Slint Developers <info@slint-ui.com>"]
-edition = "2021"
-license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
-description = "OpenGL rendering backend for Slint"
-repository = "https://github.com/slint-ui/slint"
-homepage = "https://slint-ui.com"
+description = "Winit backend for Slint"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
 build = "build.rs"
 
 [lib]
@@ -18,82 +19,67 @@ path = "lib.rs"
 # Note, these features need to be kept in sync (along with their defaults) in
 # the C++ crate's CMakeLists.txt
 [features]
-wayland = ["winit/wayland", "glutin/wayland", "copypasta/wayland"]
-x11 = ["winit/x11", "glutin/x11", "copypasta/x11"]
-renderer-winit-femtovg = ["femtovg", "fontdb", "libc", "yeslogic-fontconfig-sys", "winapi", "dwrote", "imgref", "unicode-script", "ttf-parser", "rgb"]
-renderer-winit-skia = ["skia-safe", "glow", "unicode-segmentation", "metal", "objc", "core-graphics-types", "foreign-types", "wio", "winapi/d3d12", "winapi/dxgi", "winapi/dxgi1_2", "winapi/dxgi1_3", "winapi/dxgi1_4", "winapi/d3d12sdklayers", "winapi/synchapi"]
-renderer-winit-skia-opengl = ["skia-safe/gl", "glow", "unicode-segmentation"]
-renderer-winit-software = ["femtovg", "imgref", "rgb"]
-rtti = ["i-slint-core/rtti"]
+wayland = ["winit/wayland", "winit/wayland-csd-adwaita", "glutin?/wayland", "glutin-winit?/wayland", "copypasta/wayland", "i-slint-renderer-skia?/wayland", "softbuffer?/wayland", "softbuffer?/wayland-dlopen"]
+x11 = ["winit/x11", "glutin?/x11", "glutin?/glx", "glutin-winit?/x11", "glutin-winit?/glx", "copypasta/x11", "i-slint-renderer-skia?/x11", "softbuffer?/x11", "softbuffer?/x11-dlopen"]
+renderer-femtovg = ["dep:i-slint-renderer-femtovg", "dep:glutin", "dep:glutin-winit"]
+renderer-skia = ["i-slint-renderer-skia", "winit/rwh_06"]
+renderer-skia-opengl = ["renderer-skia", "i-slint-renderer-skia/opengl"]
+renderer-skia-vulkan = ["renderer-skia", "i-slint-renderer-skia/vulkan"]
+renderer-software = ["dep:softbuffer", "dep:imgref", "dep:rgb", "i-slint-core/software-renderer-systemfonts", "dep:bytemuck", "winit/rwh_06"]
+accessibility = ["dep:accesskit", "dep:accesskit_winit"]
+raw-window-handle-06 = ["winit/rwh_06"]
 default = []
 
 [dependencies]
-i-slint-core = { version = "=0.3.2", path = "../../../internal/core" }
-i-slint-core-macros = { version = "=0.3.2", path = "../../../internal/core-macros" }
-i-slint-common = { version = "=0.3.2", path = "../../../internal/common" }
+i-slint-core = { workspace = true, features = ["default"] }
+i-slint-core-macros = { workspace = true, features = ["default"] }
+i-slint-common = { workspace = true, features = ["default"] }
 
 const-field-offset = { version = "0.1", path = "../../../helper_crates/const-field-offset" }
-vtable = { version = "0.1.6", path = "../../../helper_crates/vtable" }
 
 cfg-if = "1"
-copypasta = { version = "0.8.1", default-features = false }
-derive_more = "0.99.5"
+derive_more = { workspace = true }
 lyon_path = "1.0"
 once_cell = "1.5"
 pin-weak = "1"
 scoped-tls-hkt = "0.1"
-winit = { version = "0.27.5", default-features = false }
-dark-light = "0.2.2"
-instant = "0.1"
+winit = { version = "0.30.2", default-features = false }
+raw-window-handle = { version = "0.6", features = ["alloc"] }
+scopeguard =  { version = "1.1.0", default-features = false }
 
 # For the FemtoVG renderer
-femtovg = { version = "0.3.7", optional = true, default-features = false, features = ["image-loading"] }
-fontdb = { version = "0.9.3", optional = true, default-features = false }
-ttf-parser = { version = "0.17.0", optional = true } # Use the same version was femtovg's rustybuzz, to avoid duplicate crates
-unicode-script = { version = "0.5.4", optional = true } # Use the same version was femtovg's rustybuzz, to avoid duplicate crates
-imgref = { version = "1.6.1", optional = true }
-rgb = { version = "0.8.27", optional = true }
+i-slint-renderer-femtovg = { workspace = true, features = ["default"], optional = true }
 
 # For the Skia renderer
-skia-safe = { version = "0.55.0", optional = true, features = ["textlayout"] }
-glow = { version = "0.11", optional = true }
-unicode-segmentation = { version = "1.8.0", optional = true }
+i-slint-renderer-skia = {  workspace = true, features = ["default"], optional = true }
+
+# For the software renderer
+softbuffer = { workspace = true, optional = true, default-features = false }
+imgref = { version = "1.6.1", optional = true }
+rgb = { version = "0.8.27", optional = true }
+bytemuck = { workspace = true, optional = true, features = ["derive"] }
+
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-web-sys = { version = "0.3", features=["console", "WebGlContextAttributes", "CanvasRenderingContext2d", "HtmlInputElement", "HtmlCanvasElement", "Window", "Document", "CssStyleDeclaration", "Event", "KeyboardEvent", "InputEvent", "CompositionEvent"] }
+web-sys = { version = "0.3", features=["HtmlInputElement", "HtmlCanvasElement", "Window", "Document", "Event", "KeyboardEvent", "InputEvent", "CompositionEvent", "DomStringMap", "ClipboardEvent", "DataTransfer"] }
 wasm-bindgen = { version = "0.2" }
-send_wrapper = "0.6.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-fontdb = { version = "0.9.3", optional = true, features = ["memmap", "fontconfig"] }
-glutin = { version = "0.29", default-features = false }
-
-# For the FemtoVG renderer
-[target.'cfg(target_family = "windows")'.dependencies]
-dwrote = { version = "0.11.0", optional = true }
-winapi = { version = "0.3", optional = true, features = ["dwrite"] }
-skia-safe = { version = "0.55.0", optional = true, features = ["d3d"] }
-wio = { version = "0.2.2", optional = true }
-
-[target.'cfg(not(any(target_family = "windows", target_os = "macos", target_os = "ios", target_arch = "wasm32")))'.dependencies]
-libc = { version = "0.2", optional = true }
-yeslogic-fontconfig-sys = { version = "3.2", optional = true }
+glutin = { workspace = true, optional = true, default-features = false, features = ["egl", "wgl"] }
+glutin-winit = { version = "0.5", optional = true, default-features = false, features = ["egl", "wgl"] }
+accesskit = { version = "0.16.0", optional = true }
+accesskit_winit = { version = "0.22.0", optional = true }
+copypasta = { version = "0.10", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # For GL rendering
-cocoa = { version = "0.24.0" }
-core-foundation = { version = "0.9.1" }
-core-text = { version = "19.1.0" }
-# For Metal rendering with Skia
-metal = { version = "0.24.0", optional = true }
-# Use the same version of foreign-types as the metal crate uses.
-foreign-types = { version = "0.3.2", optional = true }
-objc = { version = "0.2.7", optional = true }
-core-graphics-types = { version = "0.1.1", optional = true }
-skia-safe = { version = "0.55.0", optional = true, features = ["metal"] }
-
-[target.'cfg(not(any(target_os = "macos", target_family = "windows")))'.dependencies]
-skia-safe = { version = "0.55.0", optional = true, features = ["gl"] }
+cocoa = { version = "0.25.0" }
 
 [build-dependencies]
-cfg_aliases = "0.1.0"
+cfg_aliases = { workspace = true }
+
+[dev-dependencies]
+slint = { path = "../../../api/rs/slint", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-software", "raw-window-handle-06"] }
+
+[package.metadata.docs.rs]
+features = ["wayland", "renderer-software"]

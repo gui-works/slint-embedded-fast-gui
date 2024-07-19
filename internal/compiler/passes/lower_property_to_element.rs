@@ -1,22 +1,20 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Pass that lowers synthetic properties such as `opacity` and `layer` properties to their corresponding elements.
 //! For example `f := Foo { opacity: <some float>; }` is mapped to `Opacity { opacity <=> f.opacity; f := Foo { ... } }`
-
-use std::cell::RefCell;
-use std::rc::Rc;
 
 use crate::diagnostics::BuildDiagnostics;
 use crate::expression_tree::{BindingExpression, Expression, NamedReference};
 use crate::langtype::Type;
 use crate::object_tree::{self, Component, Element, ElementRc};
 use crate::typeregister::TypeRegister;
+use std::rc::Rc;
 
 /// If any element in `component` declares a binding to `property_name`, then a new
 /// element of type `element_name` is created, injected as a parent to the element and bindings
 /// to property_name and all properties in  extra_properties are mapped.
-/// Default balue for the property extra_properties is queried witht the `default_value_for_extra_properties`
+/// Default value for the property extra_properties is queried with the `default_value_for_extra_properties`
 pub(crate) fn lower_property_to_element(
     component: &Rc<Component>,
     property_name: &'static str,
@@ -54,7 +52,7 @@ pub(crate) fn lower_property_to_element(
                         .property_analysis
                         .borrow()
                         .get(property_name)
-                        .map_or(false, |a| a.is_set))
+                        .map_or(false, |a| a.is_set || a.is_linked))
         };
 
         for mut child in old_children {
@@ -102,21 +100,15 @@ fn create_property_element(
 ) -> ElementRc {
     let bindings = core::iter::once(property_name)
         .chain(extra_properties)
-        .filter_map(|property_name| {
-            if child.borrow().bindings.contains_key(property_name) {
-                Some((
-                    property_name.to_string(),
-                    BindingExpression::new_two_way(NamedReference::new(child, property_name))
-                        .into(),
-                ))
-            } else {
-                default_value_for_extra_properties.map(|f| {
-                    (
-                        property_name.to_string(),
-                        BindingExpression::from(f(child, property_name)).into(),
-                    )
-                })
+        .map(|property_name| {
+            let mut bind =
+                BindingExpression::new_two_way(NamedReference::new(child, property_name));
+            if let Some(default_value_for_extra_properties) = default_value_for_extra_properties {
+                if !child.borrow().bindings.contains_key(property_name) {
+                    bind.expression = default_value_for_extra_properties(child, property_name)
+                }
             }
+            (property_name.to_string(), bind.into())
         })
         .collect();
 
@@ -127,5 +119,5 @@ fn create_property_element(
         bindings,
         ..Default::default()
     };
-    Rc::new(RefCell::new(element))
+    element.make_rc()
 }

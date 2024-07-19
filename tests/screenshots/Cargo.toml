@@ -1,0 +1,31 @@
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+[package]
+name = "test-driver-screenshots"
+description = "Driver for the tests taking screenshots in Slint"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish = false
+
+[[bin]]
+path = "main.rs"
+name = "test-driver-screenshot"
+
+[dependencies]
+slint = { workspace = true, features = ["std", "compat-1-2"] }
+i-slint-core = { workspace = true, features = ["default", "software-renderer"] }
+i-slint-backend-testing = { workspace = true }
+image = { workspace = true }
+crossterm = "0.27"
+
+[build-dependencies]
+i-slint-compiler = { workspace = true, features = ["default", "rust", "display-diagnostics", "software-renderer"] }
+walkdir = "2.3"
+spin_on = { workspace = true }
+test_driver_lib = { path = "../driver/driverlib" }

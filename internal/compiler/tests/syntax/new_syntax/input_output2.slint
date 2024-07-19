@@ -1,12 +1,27 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+global Glo {
+    property <int> priv1: 34;
+    in property <int> in1: 11;
+    out property <int> out1: 33;
+    private property <int> priv2: 55;
+    in-out property <int> inout1: 2;
+
+    callback foo(int);
+    foo(x) => {
+        out1 = 42;
+        in1 = 55;
+//      ^error{Assignment on a input property}
+    }
+}
 
 component Compo inherits Rectangle {
     property <int> priv1: 42;
     private property <int> priv2: priv1;
-    output property <int> output1: priv2;
-    input property <int> input1: output1;
-    inout property <int> inout1: input1;
+    out property <int> output1: priv2;
+    in property <int> input1: output1;
+    in-out property <int> inout1: input1;
 
     TouchArea {
         clicked => {
@@ -16,6 +31,9 @@ component Compo inherits Rectangle {
             input1 = 75;
 //          ^error{Assignment on a input property}
             inout1 = 75;
+
+            self.pressed-x = 42px;
+//          ^error{Assignment on a output property}
         }
     }
 
@@ -24,9 +42,9 @@ component Compo inherits Rectangle {
 OldCompo := Rectangle {
     property <int> inout2: 42;
     private property <int> priv2: inout2;
-    output property <int> output1: priv2;
-    input property <int> input1: output1;
-    inout property <int> inout1: input1;
+    out property <int> output1: priv2;
+    in property <int> input1: output1;
+    in-out property <int> inout1: input1;
 
     TouchArea {
         clicked => {
@@ -36,18 +54,24 @@ OldCompo := Rectangle {
             input1 = 75;
 //          ^error{Assignment on a input property}
             inout1 = 75;
+            pressed-x = 45px;
+//          ^warning{Assignment on an output property is deprecated}
+            pressed-y -= 45px;
+//          ^warning{Self assignment on an output property is deprecated}
         }
+        has-hover: true;
+//      ^warning{Assigning to output property 'has-hover' is deprecated}
     }
 }
 
-component A inherits Compo {
+export component A inherits Compo {
     input1: priv1;
 //          ^error{Unknown unqualified identifier 'priv1'}
 }
 
-component Foo inherits Rectangle {
+export component Foo inherits Rectangle {
 
-    input property <[int]> input_model;
+    in property <[int]> input_model;
 
     c1 := OldCompo {
 
@@ -81,6 +105,13 @@ component Foo inherits Rectangle {
             input_model[42] += 12;
 //          ^error{Self assignment on a input property}
 
+            Glo.out1 = Glo.in1;
+//          ^error{Assignment on a output property}
+            Glo.inout1 = Glo.priv1;
+//                           ^error{'priv1' is private}
+            Glo.priv2 = Glo.out1;
+//              ^error{'priv2' is private}
+            Glo.in1 = 32;
         }
     }
 }

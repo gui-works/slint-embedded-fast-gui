@@ -1,7 +1,7 @@
 %YAML 1.2
 ---
-# Copyright © SixtyFPS GmbH <info@slint-ui.com>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 # See http://www.sublimetext.com/docs/3/syntax.html
 name: Slint
@@ -38,7 +38,7 @@ contexts:
       scope: constant.other.color.slint
 
   types:
-    - match: '\b(int|bool|float|duration|angle|string|image|brush|color|length|physical-length)\b'
+    - match: '\b(int|bool|float|duration|angle|string|image|brush|color|length|physical-length|relative-font-size)\b'
       scope: storage.type.slint
 
   constants:
@@ -50,9 +50,9 @@ contexts:
     # strings in YAML. When using single quoted strings, only single quotes
     # need to be escaped: this is done by using two single quotes next to each
     # other.
-    - match: '\b(import|from|export|global|struct|component|inherits)\b'
+    - match: '\b(import|from|export|global|struct|enum|component|inherits)\b'
       scope: keyword.slint
-    - match: '\b(property|callback|animate|states|transitions|inout|input|output)\b'
+    - match: '\b(property|callback|animate|states|transitions|function|in|out|in-out|private|public)\b'
       scope: keyword.other.slint
     - match: '\b(if|for|return)\b'
       scope: keyword.control.slint

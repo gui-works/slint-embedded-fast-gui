@@ -1,16 +1,18 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
-export Label := Text {
+import { Palette } from "std-widgets.slint";
+
+export component Label inherits Text {
     font-size: 28px;
     horizontal-stretch: 1;
 }
 
-export Page := Rectangle {
-    background: white;
+export component Page inherits Rectangle {
+    background: Palette.background;
     animate y { duration: 300ms; easing: ease-out; }
 }
 
-export Preview := Image {
+export component Preview inherits Image {
     source: @image-url("images/cat.jpg");
 }

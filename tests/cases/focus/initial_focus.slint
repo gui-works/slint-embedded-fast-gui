@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 TestCase := Rectangle {
     width: 400phx;
@@ -24,7 +24,7 @@ TestCase := Rectangle {
 
 /*
 ```rust
-let instance = TestCase::new();
+let instance = TestCase::new().unwrap();
 assert!(instance.get_input1_focused());
 assert!(!instance.get_input2_focused());
 
@@ -65,15 +65,15 @@ var instance = new slint.TestCase();
 assert(instance.input1_focused);
 assert(!instance.input2_focused);
 
-instance.send_keyboard_string_sequence("Only for field 1");
+slintlib.private_api.send_keyboard_string_sequence(instance, "Only for field 1");
 assert.equal(instance.input1_text, "Only for field 1");
 assert.equal(instance.input2_text, "");
 
-instance.send_mouse_click(150., 100.);
+slintlib.private_api.send_mouse_click(instance, 150., 100.);
 assert(instance.input1_focused);
 assert(!instance.input2_focused);
 
-instance.send_mouse_click(150., 300.);
+slintlib.private_api.send_mouse_click(instance, 150., 300.);
 assert(!instance.input1_focused);
 assert(instance.input2_focused);
 ```

@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 global MyType := {
     property <int> aaa;
@@ -21,6 +21,7 @@ global MyType := {
 //  ^error{A global component cannot have sub elements}
     for x in mod : Text { }
 //  ^error{A global component cannot have sub elements}
+//           ^^error{Builtin function must be called}
     aaa <=> bbb;
 
     property <int> eee <=> aaa;
@@ -30,7 +31,7 @@ global MyType := {
 
 }
 
-SuperSimple := Rectangle {
+export SuperSimple := Rectangle {
     MyType {
 //  ^error{Cannot create an instance of a global component}
         ccc: "hello";

@@ -1,12 +1,12 @@
 #!/bin/bash -e
-# Copyright © SixtyFPS GmbH <info@slint-ui.com>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: MIT
 
 OUTPUT=$(slint-viewer - --save-data - << EOF
 import { StandardButton, GridBox, LineEdit } from "std-widgets.slint";
-_ := Dialog {
-    property name <=> name-le.text;
-    property address <=> address-le.text;
+export component _ inherits Dialog {
+    in-out property address <=> address-le.text;
+    in-out property name <=> name-le.text;
     StandardButton { kind: ok; }
     StandardButton { kind: cancel; }
     preferred-width: 300px;

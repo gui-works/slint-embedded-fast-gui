@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use anyhow::Context;
 use clap::Parser;
@@ -7,10 +7,10 @@ use std::error::Error;
 use std::path::PathBuf;
 
 mod cppdocs;
-mod enumdocs;
 mod license_headers_check;
 mod nodepackage;
 mod reuse_compliance_check;
+mod slintdocs;
 
 #[derive(Debug, clap::Parser)]
 #[command(author, version, about, long_about = None)]
@@ -20,11 +20,11 @@ pub enum TaskCommand {
     #[command(name = "cppdocs")]
     CppDocs(CppDocsCommand),
     #[command(name = "node_package")]
-    NodePackage,
+    NodePackage(nodepackage::NodePackageOptions),
     #[command(name = "check_reuse_compliance")]
     ReuseComplianceCheck(reuse_compliance_check::ReuseComplianceCheck),
-    #[command(name = "enumdocs")]
-    EnumDocs,
+    #[command(name = "slintdocs")]
+    SlintDocs(SlintDocsCommand),
 }
 
 #[derive(Debug, clap::Parser)]
@@ -36,6 +36,14 @@ pub struct ApplicationArguments {
 
 #[derive(Debug, clap::Parser)]
 pub struct CppDocsCommand {
+    #[arg(long, action)]
+    show_warnings: bool,
+    #[arg(long, action)]
+    experimental: bool,
+}
+
+#[derive(Debug, clap::Parser)]
+pub struct SlintDocsCommand {
     #[arg(long, action)]
     show_warnings: bool,
 }
@@ -85,10 +93,10 @@ where
 fn main() -> Result<(), Box<dyn Error>> {
     match ApplicationArguments::parse().command {
         TaskCommand::CheckLicenseHeaders(cmd) => cmd.check_license_headers()?,
-        TaskCommand::CppDocs(cmd) => cppdocs::generate(cmd.show_warnings)?,
-        TaskCommand::NodePackage => nodepackage::generate()?,
+        TaskCommand::CppDocs(cmd) => cppdocs::generate(cmd.show_warnings, cmd.experimental)?,
+        TaskCommand::SlintDocs(cmd) => slintdocs::generate(cmd.show_warnings)?,
+        TaskCommand::NodePackage(cmd) => nodepackage::generate(cmd.sha1)?,
         TaskCommand::ReuseComplianceCheck(cmd) => cmd.check_reuse_compliance()?,
-        TaskCommand::EnumDocs => enumdocs::generate()?,
     };
 
     Ok(())

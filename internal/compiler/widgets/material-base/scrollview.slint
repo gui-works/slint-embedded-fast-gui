@@ -1,0 +1,140 @@
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+
+import { MaterialPalette } from "styling.slint";
+
+component ScrollBar inherits Rectangle {
+    in-out property <bool> horizontal;
+    in-out property <length> maximum;
+    in-out property <length> page-size;
+    // this is always negative and bigger than  -maximum
+    in-out property <length> value;
+    in-out property <bool> enabled <=> touch-area.enabled;
+
+    states [
+        disabled when !touch-area.enabled : {
+            background.border-color: MaterialPalette.control-foreground;
+            handle.opacity: 0.12;
+        }
+        hover when touch-area.has-hover : {
+            state-layer.opacity: 0.08;
+        }
+        pressed when touch-area.has-hover : {
+            state-layer.opacity: 0.12;
+        }
+    ]
+
+    state-layer := Rectangle {
+        width: 100%;
+        height: 100%;
+        background: MaterialPalette.accent-background;
+        border-radius: 4px;
+        opacity: 0;
+        visible: handle.width > 0 && handle.height > 0;
+
+        animate opacity { duration: 250ms; easing: ease; }
+    }
+
+    handle := Rectangle {
+        x: !root.horizontal ? 0phx : (root.width - handle.width) * (-root.value / root.maximum);
+        y: root.horizontal ? 0phx : (root.height - handle.height) * (-root.value / root.maximum);
+        width: !root.horizontal ? parent.width : root.maximum <= 0phx ? 0phx : max(32px, parent.width * max(root.page-size / (root.maximum + root.page-size)));
+        height: root.horizontal ? parent.height : root.maximum <= 0phx ? 0phx : max(32px, parent.height * (root.page-size / (root.maximum + root.page-size)));
+
+        background := Rectangle {
+            width: 100%;
+            height: 100%;
+            border-radius: 4px;
+            border-color: MaterialPalette.border;
+            border-width: 1px;
+        }
+    }
+
+    touch-area := TouchArea {
+        property <length> pressed-value;
+
+        width: parent.width;
+        height: parent.height;
+
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                self.pressed-value = -root.value;
+            }
+        }
+
+        moved => {
+            if (self.enabled && self.pressed) {
+                root.value = -max(0px, min(root.maximum, self.pressed-value + (
+                    root.horizontal ? (touch-area.mouse-x - touch-area.pressed-x) * (root.maximum / (root.width - handle.width))
+                               : (touch-area.mouse-y - touch-area.pressed-y) * (root.maximum / (root.height - handle.height))
+                )));
+            }
+        }
+
+        scroll-event(event) => {
+            if (root.horizontal && event.delta-x != 0) {
+                root.value = max(-root.maximum, min(0px, root.value + event.delta-x));
+                return accept;
+            } else if (!root.horizontal && event.delta-y != 0) {
+                root.value = max(-root.maximum, min(0px, root.value + event.delta-y));
+                return accept;
+            }
+            reject
+        }
+    }
+}
+
+// Scrollview contains a viewport that is bigger than the view and can be scrolled.
+export component ScrollView {
+    in property <bool> enabled: true;
+    out property <length> visible-width <=> flickable.width;
+    out property <length> visible-height <=> flickable.height;
+    in-out property <bool> has-focus;
+    in-out property <length> viewport-width <=> flickable.viewport-width;
+    in-out property <length> viewport-height <=> flickable.viewport-height;
+    in-out property <length> viewport-x <=> flickable.viewport-x;
+    in-out property <length> viewport-y <=> flickable.viewport-y;
+
+    min-height: 50px;
+    min-width: 50px;
+    horizontal-stretch: 1;
+    vertical-stretch: 1;
+    preferred-height: 100%;
+    preferred-width: 100%;
+
+    flickable := Flickable {
+        x: 0;
+        y: 0;
+        viewport-y <=> vertical-bar.value;
+        viewport-x <=> horizontal-bar.value;
+        width: parent.width - vertical-bar.width - 4px;
+        height: parent.height - horizontal-bar.height - 4px;
+
+        @children
+    }
+
+    vertical-bar := ScrollBar {
+        width: 8px;
+        x: flickable.width + flickable.x;
+        y: flickable.y;
+        height: flickable.height;
+        horizontal: false;
+        maximum: flickable.viewport-height - flickable.height;
+        page-size: flickable.height;
+        enabled: root.enabled;
+        visible: flickable.viewport-height > flickable.height;
+    }
+
+    horizontal-bar := ScrollBar {
+        height: 8px;
+        y: flickable.height + flickable.y;
+        x: flickable.x;
+        width: flickable.width;
+        horizontal: true;
+        maximum: flickable.viewport-width - flickable.width;
+        page-size: flickable.width;
+        enabled: root.enabled;
+        visible: flickable.viewport-width > flickable.width;
+    }
+}

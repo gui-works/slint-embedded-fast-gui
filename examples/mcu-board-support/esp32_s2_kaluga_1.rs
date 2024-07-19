@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
@@ -7,17 +7,12 @@ use core::{cell::RefCell, convert::Infallible};
 use display_interface_spi::SPIInterfaceNoCS;
 use embedded_hal::digital::v2::OutputPin;
 use esp32s2_hal::{
-    clock::ClockControl, pac::Peripherals, prelude::*, spi, systimer::SystemTimer,
+    clock::ClockControl, peripherals::Peripherals, prelude::*, spi, systimer::SystemTimer,
     timer::TimerGroup, Delay, Rtc, IO,
 };
 use esp_alloc::EspHeap;
 use esp_println::println;
 pub use xtensa_lx_rt::entry;
-
-#[alloc_error_handler]
-fn oom(layout: core::alloc::Layout) -> ! {
-    panic!("Out of memory {:?}", layout);
-}
 
 #[inline(never)]
 #[panic_handler]
@@ -34,21 +29,25 @@ static ALLOCATOR: EspHeap = EspHeap::empty();
 pub fn init() {
     const HEAP_SIZE: usize = 160 * 1024;
     static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
-    unsafe { ALLOCATOR.init(&mut HEAP as *mut u8, core::mem::size_of_val(&HEAP)) }
+    unsafe { ALLOCATOR.init(core::ptr::addr_of_mut!(HEAP) as *mut u8, HEAP_SIZE) }
     slint::platform::set_platform(Box::new(EspBackend::default()))
         .expect("backend already initialized");
 }
 
 #[derive(Default)]
 struct EspBackend {
-    window: RefCell<Option<Rc<slint::platform::software_renderer::MinimalSoftwareWindow<1>>>>,
+    window: RefCell<Option<Rc<slint::platform::software_renderer::MinimalSoftwareWindow>>>,
 }
 
 impl slint::platform::Platform for EspBackend {
-    fn create_window_adapter(&self) -> Rc<dyn slint::platform::WindowAdapter> {
-        let window = slint::platform::software_renderer::MinimalSoftwareWindow::new();
+    fn create_window_adapter(
+        &self,
+    ) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+        let window = slint::platform::software_renderer::MinimalSoftwareWindow::new(
+            slint::platform::software_renderer::RepaintBufferType::ReusedBuffer,
+        );
         self.window.replace(Some(window.clone()));
-        window
+        Ok(window)
     }
 
     fn duration_since_start(&self) -> core::time::Duration {
@@ -57,16 +56,18 @@ impl slint::platform::Platform for EspBackend {
         )
     }
 
-    fn run_event_loop(&self) {
-        let peripherals = Peripherals::take().unwrap();
+    fn run_event_loop(&self) -> Result<(), slint::PlatformError> {
+        let peripherals = Peripherals::take();
         let mut system = peripherals.SYSTEM.split();
         let mut clocks = ClockControl::boot_defaults(system.clock_control).freeze();
 
         // Disable the RTC and TIMG watchdog timers
         let mut rtc_cntl = Rtc::new(peripherals.RTC_CNTL);
-        let timer_group0 = TimerGroup::new(peripherals.TIMG0, &clocks);
+        let timer_group0 =
+            TimerGroup::new(peripherals.TIMG0, &clocks, &mut system.peripheral_clock_control);
         let mut wdt0 = timer_group0.wdt;
-        let timer_group1 = TimerGroup::new(peripherals.TIMG1, &clocks);
+        let timer_group1 =
+            TimerGroup::new(peripherals.TIMG1, &clocks, &mut system.peripheral_clock_control);
         let mut wdt1 = timer_group1.wdt;
 
         rtc_cntl.rwdt.disable();
@@ -159,30 +160,4 @@ impl<
             )
             .unwrap();
     }
-}
-
-// FIXME: implement properly upstream
-#[no_mangle]
-extern "C" fn fmaxf(a: f32, b: f32) -> f32 {
-    if a > b {
-        a
-    } else {
-        b
-    }
-}
-#[no_mangle]
-extern "C" fn fminf(a: f32, b: f32) -> f32 {
-    if a < b {
-        a
-    } else {
-        b
-    }
-}
-#[no_mangle]
-extern "C" fn fmodf() {
-    unimplemented!("fmodf");
-}
-#[no_mangle]
-extern "C" fn fmod(a: f64, b: f64) -> f64 {
-    ((a as u32) % (b as u32)) as f64
 }

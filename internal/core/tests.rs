@@ -1,14 +1,13 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Functions useful for testing
 #![warn(missing_docs)]
 #![allow(unsafe_code)]
 
-use crate::input::{KeyEvent, KeyEventType, KeyboardModifiers, MouseEvent};
-use crate::window::WindowInner;
-use crate::Coord;
-use crate::SharedString;
+use crate::api::LogicalPosition;
+use crate::input::key_codes::Key;
+use crate::platform::WindowEvent;
 
 /// Slint animations do not use real time, but use a mocked time.
 /// Normally, the event loop update the time of the animation using
@@ -23,75 +22,77 @@ pub extern "C" fn slint_mock_elapsed_time(time_in_ms: u64) {
         tick
     });
     crate::timers::TimerList::maybe_activate_timers(tick);
+    crate::properties::ChangeTracker::run_change_handlers();
+}
+
+/// Return the current mocked time.
+#[no_mangle]
+pub extern "C" fn slint_get_mocked_time() -> u64 {
+    crate::animations::CURRENT_ANIMATION_DRIVER.with(|driver| driver.current_tick()).as_millis()
 }
 
 /// Simulate a click on a position within the component.
 #[no_mangle]
 pub extern "C" fn slint_send_mouse_click(
-    component: &crate::component::ComponentRc,
-    x: Coord,
-    y: Coord,
+    x: f32,
+    y: f32,
     window_adapter: &crate::window::WindowAdapterRc,
 ) {
-    let mut state = crate::input::MouseInputState::default();
-    let position = euclid::point2(x, y);
+    let position = LogicalPosition::new(x, y);
+    let button = crate::items::PointerEventButton::Left;
 
-    state = crate::input::process_mouse_input(
-        component.clone(),
-        MouseEvent::Moved { position },
-        window_adapter,
-        state,
-    );
-    state = crate::input::process_mouse_input(
-        component.clone(),
-        MouseEvent::Pressed { position, button: crate::items::PointerEventButton::Left },
-        window_adapter,
-        state,
-    );
+    window_adapter.window().dispatch_event(WindowEvent::PointerMoved { position });
+    window_adapter.window().dispatch_event(WindowEvent::PointerPressed { position, button });
     slint_mock_elapsed_time(50);
-    crate::input::process_mouse_input(
-        component.clone(),
-        MouseEvent::Released { position, button: crate::items::PointerEventButton::Left },
-        window_adapter,
-        state,
-    );
+    window_adapter.window().dispatch_event(WindowEvent::PointerReleased { position, button });
+}
+
+/// Simulate a character input event (pressed or released).
+#[no_mangle]
+pub extern "C" fn slint_send_keyboard_char(
+    string: &crate::SharedString,
+    pressed: bool,
+    window_adapter: &crate::window::WindowAdapterRc,
+) {
+    for ch in string.chars() {
+        window_adapter.window().dispatch_event(if pressed {
+            WindowEvent::KeyPressed { text: ch.into() }
+        } else {
+            WindowEvent::KeyReleased { text: ch.into() }
+        })
+    }
 }
 
 /// Simulate a character input event.
 #[no_mangle]
 pub extern "C" fn send_keyboard_string_sequence(
     sequence: &crate::SharedString,
-    modifiers: KeyboardModifiers,
     window_adapter: &crate::window::WindowAdapterRc,
 ) {
     for ch in sequence.chars() {
-        let mut modifiers = modifiers;
         if ch.is_ascii_uppercase() {
-            modifiers.shift = true;
+            window_adapter
+                .window()
+                .dispatch_event(WindowEvent::KeyPressed { text: Key::Shift.into() });
         }
-        let mut buffer = [0; 6];
-        let text = SharedString::from(ch.encode_utf8(&mut buffer) as &str);
 
-        WindowInner::from_pub(window_adapter.window()).process_key_input(&KeyEvent {
-            event_type: KeyEventType::KeyPressed,
-            text: text.clone(),
-            modifiers,
-            ..Default::default()
-        });
-        WindowInner::from_pub(window_adapter.window()).process_key_input(&KeyEvent {
-            event_type: KeyEventType::KeyReleased,
-            text,
-            modifiers,
-            ..Default::default()
-        });
+        let text: crate::SharedString = ch.into();
+        window_adapter.window().dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+        window_adapter.window().dispatch_event(WindowEvent::KeyReleased { text });
+
+        if ch.is_ascii_uppercase() {
+            window_adapter
+                .window()
+                .dispatch_event(WindowEvent::KeyReleased { text: Key::Shift.into() });
+        }
     }
 }
 
 /// implementation details for debug_log()
 #[doc(hidden)]
 pub fn debug_log_impl(args: core::fmt::Arguments) {
-    crate::platform::PLATFORM_INSTANCE.with(|p| match p.get() {
-        Some(platform) => platform.debug_log(args),
+    crate::context::GLOBAL_CONTEXT.with(|p| match p.get() {
+        Some(ctx) => ctx.0.platform.debug_log(args),
         None => default_debug_log(args),
     });
 }

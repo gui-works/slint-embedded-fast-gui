@@ -1,5 +1,16 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+
+export struct Player := {
+    skill-profile: int,
+}
+export struct NewGameTeam := {
+    players: [Player],
+}
+export struct NewGameParameters := {
+    teams: [NewGameTeam],
+}
 
 
 struct StructWithArrayOfStruct := { prop: [{hello: string, world: int}], xxx: int }
@@ -10,19 +21,23 @@ TestCase := Rectangle {
     property <[string]> p3 : [ ];
     property <[{a: int, b: int}]> p4 : [ { a: 1 }, { a: 42, b: 10 } ];
     property <StructWithArrayOfStruct> p5 : { prop: [{hello: "hello"}, {world: 42.0 }]};
+
+    property <NewGameParameters> p6 : { teams: [{ players: [ { skill-profile: 9 } ] }] } ;
 }
 
 
 /*
 ```js
 var instance = new slint.TestCase({});
-assert.deepEqual(instance.p1, [12, 13]);
-assert.deepEqual(instance.p2, [14, 15.5]);
-assert.deepEqual(instance.p3, []);
-assert.deepEqual(instance.p4, [{a: 1, b: 0}, {a: 42, b: 10}]);
-assert.deepEqual(instance.p5, { prop: [{hello: "hello", world: 0}, { hello: "", world: 42}], xxx: 0 });
+assert.deepEqual(Array.from(instance.p1), [12, 13]);
+assert.deepEqual(Array.from(instance.p2), [14, 15.5]);
+assert.deepEqual(Array.from(instance.p3), []);
+assert.deepEqual(Array.from(instance.p4), [{a: 1, b: 0}, {a: 42, b: 10}]);
+let p5val = instance.p5;
+p5val.prop = Array.from(p5val.prop);
+assert.deepEqual(p5val, { prop: [{hello: "hello", world: 0}, { hello: "", world: 42}], xxx: 0 });
 
 instance.p3 = ["Hello", "World"];
-assert.deepEqual(instance.p3, ["Hello", "World"]);
+assert.deepEqual(Array.from(instance.p3), ["Hello", "World"]);
 ```
 */

@@ -1,12 +1,16 @@
-# Copyright © SixtyFPS GmbH <info@slint-ui.com>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 [package]
 name = "test-driver-rust"
-version = "0.3.2"
-authors = ["Slint Developers <info@slint-ui.com>"]
-edition = "2021"
-license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
+description = "Driver for the rust-based tests in Slint"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
 publish = false
 
 [[bin]]
@@ -17,11 +21,13 @@ name = "test-driver-rust"
 build-time = ["i-slint-compiler", "spin_on"]
 
 [dependencies]
-slint = { path = "../../../api/rs/slint", default-features = false, features = ["std", "compat-0-3-0"] }
-i-slint-backend-testing = { path = "../../../internal/backends/testing" }
+slint = { workspace = true, features = ["std", "compat-1-2"] }
+i-slint-backend-testing = { workspace = true, features = ["internal"] }
+slint-interpreter = { workspace = true, features = ["std", "compat-1-2", "internal"] }
+spin_on = { workspace = true }
 
 [build-dependencies]
-i-slint-compiler = { path = "../../../internal/compiler", features = ["rust", "display-diagnostics"], optional = true }
+i-slint-compiler = { workspace = true, features = ["default", "rust", "display-diagnostics"], optional = true }
 
-spin_on = { version = "0.1", optional = true}
+spin_on = { workspace = true, optional = true }
 test_driver_lib = { path = "../driverlib" }

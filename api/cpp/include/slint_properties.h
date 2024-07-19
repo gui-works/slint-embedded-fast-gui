@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 #pragma once
 #include <string_view>
@@ -7,16 +7,21 @@
 
 namespace slint::cbindgen_private {
 struct PropertyAnimation;
+struct ChangeTracker
+{
+    void *inner;
+};
 }
 
 #include "slint_properties_internal.h"
+#include "slint_builtin_structs_internal.h"
 
 namespace slint::private_api {
 
 using cbindgen_private::StateInfo;
 
 inline void slint_property_set_animated_binding_helper(
-        const cbindgen_private::PropertyHandleOpaque *handle, void (*binding)(void *, int32_t *),
+        const cbindgen_private::PropertyHandleOpaque *handle, void (*binding)(void *, int *),
         void *user_data, void (*drop_user_data)(void *),
         const cbindgen_private::PropertyAnimation *animation_data,
         cbindgen_private::PropertyAnimation (*transition_data)(void *, uint64_t *))
@@ -290,6 +295,43 @@ struct PropertyTracker
 
 private:
     cbindgen_private::PropertyTrackerOpaque inner;
+};
+
+struct ChangeTracker
+{
+    ChangeTracker() { cbindgen_private::slint_change_tracker_construct(&inner); }
+    ~ChangeTracker() { cbindgen_private::slint_change_tracker_drop(&inner); }
+
+    template<typename Data, typename FnEval, typename FnNotify>
+    void init(Data data, FnEval fn_eval, FnNotify fn_notify)
+    {
+        using Value = std::invoke_result_t<FnEval, Data>;
+        struct Inner
+        {
+            Data data;
+            FnEval fn_eval;
+            FnNotify fn_notify;
+            Value value;
+        };
+        auto data_ptr =
+                new Inner { std::move(data), std::move(fn_eval), std::move(fn_notify), Value() };
+        cbindgen_private::slint_change_tracker_init(
+                &inner, data_ptr, [](void *d) { delete reinterpret_cast<Inner *>(d); },
+                [](void *d) {
+                    auto inner = reinterpret_cast<Inner *>(d);
+                    auto v = inner->fn_eval(inner->data);
+                    bool r = v != inner->value;
+                    inner->value = v;
+                    return r;
+                },
+                [](void *d) {
+                    auto inner = reinterpret_cast<Inner *>(d);
+                    inner->fn_notify(inner->data, inner->value);
+                });
+    }
+
+private:
+    cbindgen_private::ChangeTracker inner;
 };
 
 } // namespace slint::private_api

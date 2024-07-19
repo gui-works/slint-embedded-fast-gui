@@ -1,20 +1,22 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 #![warn(missing_docs)]
 //! module for rendering the tree of items
 
 use super::graphics::RenderingCache;
 use super::items::*;
-use crate::component::ComponentRc;
-use crate::graphics::CachedGraphicsData;
-use crate::item_tree::{
-    ItemRc, ItemVisitor, ItemVisitorResult, ItemVisitorVTable, VisitChildrenResult,
-};
+use crate::graphics::{CachedGraphicsData, FontRequest, Image, IntRect};
+use crate::item_tree::ItemTreeRc;
+use crate::item_tree::{ItemVisitor, ItemVisitorResult, ItemVisitorVTable, VisitChildrenResult};
 use crate::lengths::{
-    LogicalLength, LogicalPoint, LogicalPx, LogicalRect, LogicalSize, LogicalVector,
+    LogicalBorderRadius, LogicalLength, LogicalPoint, LogicalPx, LogicalRect, LogicalSize,
+    LogicalVector,
 };
-use crate::Coord;
+use crate::properties::PropertyTracker;
+use crate::window::WindowInner;
+use crate::{Brush, Coord, SharedString};
+#[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
 use core::cell::{Cell, RefCell};
 use core::pin::Pin;
@@ -72,18 +74,27 @@ impl CachedRenderingData {
 /// [`ItemCache::component_destroyed`] must be called to clear the cache for that
 /// component.
 #[cfg(feature = "std")]
-#[derive(Default)]
 pub struct ItemCache<T> {
     /// The pointer is a pointer to a component
-    map: RefCell<HashMap<*const vtable::Dyn, HashMap<usize, CachedGraphicsData<T>>>>,
+    map: RefCell<HashMap<*const vtable::Dyn, HashMap<u32, CachedGraphicsData<T>>>>,
+    /// Track if the window scale factor changes; used to clear the cache if necessary.
+    window_scale_factor_tracker: Pin<Box<PropertyTracker>>,
 }
+
+#[cfg(feature = "std")]
+impl<T> Default for ItemCache<T> {
+    fn default() -> Self {
+        Self { map: Default::default(), window_scale_factor_tracker: Box::pin(Default::default()) }
+    }
+}
+
 #[cfg(feature = "std")]
 impl<T: Clone> ItemCache<T> {
     /// Returns the cached value associated to the `item_rc` if it is still valid.
     /// Otherwise call the `update_fn` to compute that value, and track property access
     /// so it is automatically invalided when property becomes dirty.
     pub fn get_or_update_cache_entry(&self, item_rc: &ItemRc, update_fn: impl FnOnce() -> T) -> T {
-        let component = &(*item_rc.component()) as *const _;
+        let component = &(**item_rc.item_tree()) as *const _;
         let mut borrowed = self.map.borrow_mut();
         match borrowed.entry(component).or_default().entry(item_rc.index()) {
             std::collections::hash_map::Entry::Occupied(mut entry) => {
@@ -124,12 +135,22 @@ impl<T: Clone> ItemCache<T> {
         item_rc: &ItemRc,
         callback: impl FnOnce(&T) -> Option<U>,
     ) -> Option<U> {
-        let component = &(*item_rc.component()) as *const _;
+        let component = &(**item_rc.item_tree()) as *const _;
         self.map
             .borrow()
             .get(&component)
             .and_then(|per_component_entries| per_component_entries.get(&item_rc.index()))
             .and_then(|entry| callback(&entry.data))
+    }
+
+    /// Clears the cache if the window's scale factor has changed since the last call.
+    pub fn clear_cache_if_scale_factor_changed(&self, window: &crate::api::Window) {
+        if self.window_scale_factor_tracker.is_dirty() {
+            self.window_scale_factor_tracker
+                .as_ref()
+                .evaluate_as_dependency_root(|| window.scale_factor());
+            self.clear_all();
+        }
     }
 
     /// free the whole cache
@@ -139,40 +160,42 @@ impl<T: Clone> ItemCache<T> {
 
     /// Function that must be called when a component is destroyed.
     ///
-    /// Usually can be called from [`crate::window::WindowAdapterSealed::unregister_component`]
-    pub fn component_destroyed(&self, component: crate::component::ComponentRef) {
+    /// Usually can be called from [`crate::window::WindowAdapterInternal::unregister_item_tree`]
+    pub fn component_destroyed(&self, component: crate::item_tree::ItemTreeRef) {
         let component_ptr: *const _ =
-            crate::component::ComponentRef::as_ptr(component).cast().as_ptr();
+            crate::item_tree::ItemTreeRef::as_ptr(component).cast().as_ptr();
         self.map.borrow_mut().remove(&component_ptr);
     }
 
     /// free the cache for a given item
     pub fn release(&self, item_rc: &ItemRc) {
-        let component = &(*item_rc.component()) as *const _;
+        let component = &(**item_rc.item_tree()) as *const _;
         if let Some(sub) = self.map.borrow_mut().get_mut(&component) {
             sub.remove(&item_rc.index());
         }
     }
+
+    /// Returns true if there are no entries in the cache; false otherwise.
+    pub fn is_empty(&self) -> bool {
+        self.map.borrow().is_empty()
+    }
 }
 
 /// Return true if the item might be a clipping item
-pub(crate) fn is_clipping_item(item: Pin<ItemRef>) -> bool {
+pub fn is_clipping_item(item: Pin<ItemRef>) -> bool {
     //(FIXME: there should be some flag in the vtable instead of down-casting)
     ItemRef::downcast_pin::<Flickable>(item).is_some()
         || ItemRef::downcast_pin::<Clip>(item).map_or(false, |clip_item| clip_item.as_ref().clip())
 }
 
 /// Renders the children of the item with the specified index into the renderer.
-pub fn render_item_children(
-    renderer: &mut dyn ItemRenderer,
-    component: &ComponentRc,
-    index: isize,
-) {
+pub fn render_item_children(renderer: &mut dyn ItemRenderer, component: &ItemTreeRc, index: isize) {
     let mut actual_visitor =
-        |component: &ComponentRc, index: usize, item: Pin<ItemRef>| -> VisitChildrenResult {
+        |component: &ItemTreeRc, index: u32, item: Pin<ItemRef>| -> VisitChildrenResult {
             renderer.save_state();
+            let item_rc = ItemRc::new(component.clone(), index);
 
-            let (do_draw, item_geometry) = renderer.filter_item(item);
+            let (do_draw, item_geometry) = renderer.filter_item(&item_rc);
 
             let item_origin = item_geometry.origin;
             renderer.translate(item_origin.to_vector());
@@ -186,7 +209,8 @@ pub fn render_item_children(
             {
                 item.as_ref().render(
                     &mut (renderer as &mut dyn ItemRenderer),
-                    &ItemRc::new(component.clone(), index),
+                    &item_rc,
+                    item_geometry.size,
                 )
             } else {
                 RenderingResult::ContinueRenderingChildren
@@ -209,7 +233,7 @@ pub fn render_item_children(
 /// Renders the tree of items that component holds, using the specified renderer. Rendering is done
 /// relative to the specified origin.
 pub fn render_component_items(
-    component: &ComponentRc,
+    component: &ItemTreeRc,
     renderer: &mut dyn ItemRenderer,
     origin: LogicalPoint,
 ) {
@@ -224,15 +248,15 @@ pub fn render_component_items(
 /// Compute the bounding rect of all children. This does /not/ include item's own bounding rect. Remember to run this
 /// via `evaluate_no_tracking`.
 pub fn item_children_bounding_rect(
-    component: &ComponentRc,
+    component: &ItemTreeRc,
     index: isize,
     clip_rect: &LogicalRect,
 ) -> LogicalRect {
     let mut bounding_rect = LogicalRect::zero();
 
     let mut actual_visitor =
-        |component: &ComponentRc, index: usize, item: Pin<ItemRef>| -> VisitChildrenResult {
-            let item_geometry = item.as_ref().geometry();
+        |component: &ItemTreeRc, index: u32, item: Pin<ItemRef>| -> VisitChildrenResult {
+            let item_geometry = ItemTreeRc::borrow_pin(component).as_ref().item_geometry(index);
 
             let local_clip_rect = clip_rect.translate(-item_geometry.origin.to_vector());
 
@@ -259,26 +283,99 @@ pub fn item_children_bounding_rect(
     bounding_rect
 }
 
+/// Trait for an item that represent a Rectangle to the Renderer
+#[allow(missing_docs)]
+pub trait RenderBorderRectangle {
+    fn background(self: Pin<&Self>) -> Brush;
+    fn border_width(self: Pin<&Self>) -> LogicalLength;
+    fn border_radius(self: Pin<&Self>) -> LogicalBorderRadius;
+    fn border_color(self: Pin<&Self>) -> Brush;
+}
+
+/// Trait for an item that represents an Image towards the renderer
+#[allow(missing_docs)]
+pub trait RenderImage {
+    fn target_size(self: Pin<&Self>) -> LogicalSize;
+    fn source(self: Pin<&Self>) -> Image;
+    fn source_clip(self: Pin<&Self>) -> Option<IntRect>;
+    fn image_fit(self: Pin<&Self>) -> ImageFit;
+    fn rendering(self: Pin<&Self>) -> ImageRendering;
+    fn colorize(self: Pin<&Self>) -> Brush;
+    fn alignment(self: Pin<&Self>) -> (ImageHorizontalAlignment, ImageVerticalAlignment);
+    fn tiling(self: Pin<&Self>) -> (ImageTiling, ImageTiling);
+}
+
+/// Trait for an item that represents an Text towards the renderer
+#[allow(missing_docs)]
+pub trait RenderText {
+    fn target_size(self: Pin<&Self>) -> LogicalSize;
+    fn text(self: Pin<&Self>) -> SharedString;
+    fn font_request(self: Pin<&Self>, window: &WindowInner) -> FontRequest;
+    fn color(self: Pin<&Self>) -> Brush;
+    fn alignment(self: Pin<&Self>) -> (TextHorizontalAlignment, TextVerticalAlignment);
+    fn wrap(self: Pin<&Self>) -> TextWrap;
+    fn overflow(self: Pin<&Self>) -> TextOverflow;
+    fn letter_spacing(self: Pin<&Self>) -> LogicalLength;
+    fn stroke(self: Pin<&Self>) -> (Brush, LogicalLength, TextStrokeStyle);
+}
+
 /// Trait used to render each items.
 ///
 /// The item needs to be rendered relative to its (x,y) position. For example,
 /// draw_rectangle should draw a rectangle in `(pos.x + rect.x, pos.y + rect.y)`
 #[allow(missing_docs)]
 pub trait ItemRenderer {
-    fn draw_rectangle(&mut self, rect: Pin<&Rectangle>, _self_rc: &ItemRc);
-    fn draw_border_rectangle(&mut self, rect: Pin<&BorderRectangle>, _self_rc: &ItemRc);
-    fn draw_image(&mut self, image: Pin<&ImageItem>, _self_rc: &ItemRc);
-    fn draw_clipped_image(&mut self, image: Pin<&ClippedImage>, _self_rc: &ItemRc);
-    fn draw_text(&mut self, text: Pin<&Text>, _self_rc: &ItemRc);
-    fn draw_text_input(&mut self, text_input: Pin<&TextInput>, _self_rc: &ItemRc);
+    fn draw_rectangle(&mut self, rect: Pin<&Rectangle>, _self_rc: &ItemRc, _size: LogicalSize);
+    fn draw_border_rectangle(
+        &mut self,
+        rect: Pin<&dyn RenderBorderRectangle>,
+        _self_rc: &ItemRc,
+        _size: LogicalSize,
+        _cache: &CachedRenderingData,
+    );
+    fn draw_image(
+        &mut self,
+        image: Pin<&dyn RenderImage>,
+        _self_rc: &ItemRc,
+        _size: LogicalSize,
+        _cache: &CachedRenderingData,
+    );
+    fn draw_text(
+        &mut self,
+        text: Pin<&dyn RenderText>,
+        _self_rc: &ItemRc,
+        _size: LogicalSize,
+        _cache: &CachedRenderingData,
+    );
+    fn draw_text_input(
+        &mut self,
+        text_input: Pin<&TextInput>,
+        _self_rc: &ItemRc,
+        _size: LogicalSize,
+    );
     #[cfg(feature = "std")]
-    fn draw_path(&mut self, path: Pin<&Path>, _self_rc: &ItemRc);
-    fn draw_box_shadow(&mut self, box_shadow: Pin<&BoxShadow>, _self_rc: &ItemRc);
-    fn visit_opacity(&mut self, opacity_item: Pin<&Opacity>, _self_rc: &ItemRc) -> RenderingResult {
+    fn draw_path(&mut self, path: Pin<&Path>, _self_rc: &ItemRc, _size: LogicalSize);
+    fn draw_box_shadow(
+        &mut self,
+        box_shadow: Pin<&BoxShadow>,
+        _self_rc: &ItemRc,
+        _size: LogicalSize,
+    );
+    fn visit_opacity(
+        &mut self,
+        opacity_item: Pin<&Opacity>,
+        _self_rc: &ItemRc,
+        _size: LogicalSize,
+    ) -> RenderingResult {
         self.apply_opacity(opacity_item.opacity());
         RenderingResult::ContinueRenderingChildren
     }
-    fn visit_layer(&mut self, _layer_item: Pin<&Layer>, _self_rc: &ItemRc) -> RenderingResult {
+    fn visit_layer(
+        &mut self,
+        _layer_item: Pin<&Layer>,
+        _self_rc: &ItemRc,
+        _size: LogicalSize,
+    ) -> RenderingResult {
         // Not supported
         RenderingResult::ContinueRenderingChildren
     }
@@ -286,13 +383,18 @@ pub trait ItemRenderer {
     // Apply the bounds of the Clip element, if enabled. The default implementation calls
     // combine_clip, but the render may choose an alternate way of implementing the clip.
     // For example the GL backend uses a layered rendering approach.
-    fn visit_clip(&mut self, clip_item: Pin<&Clip>, _self_rc: &ItemRc) -> RenderingResult {
+    fn visit_clip(
+        &mut self,
+        clip_item: Pin<&Clip>,
+        item_rc: &ItemRc,
+        _size: LogicalSize,
+    ) -> RenderingResult {
         if clip_item.clip() {
-            let geometry = clip_item.geometry();
+            let geometry = item_rc.geometry();
 
             let clip_region_valid = self.combine_clip(
                 LogicalRect::new(LogicalPoint::default(), geometry.size),
-                clip_item.border_radius(),
+                clip_item.logical_border_radius(),
                 clip_item.border_width(),
             );
 
@@ -313,13 +415,16 @@ pub trait ItemRenderer {
     fn combine_clip(
         &mut self,
         rect: LogicalRect,
-        radius: LogicalLength,
+        radius: LogicalBorderRadius,
         border_width: LogicalLength,
     ) -> bool;
     /// Get the current clip bounding box in the current transformed coordinate.
     fn get_current_clip(&self) -> LogicalRect;
 
     fn translate(&mut self, distance: LogicalVector);
+    fn translation(&self) -> LogicalVector {
+        unimplemented!()
+    }
     fn rotate(&mut self, angle_in_degrees: f32);
     /// Apply the opacity (between 0 and 1) for all following items until the next call to restore_state.
     fn apply_opacity(&mut self, opacity: f32);
@@ -344,23 +449,24 @@ pub trait ItemRenderer {
     /// used by the performance counter overlay.
     fn draw_string(&mut self, string: &str, color: crate::Color);
 
+    fn draw_image_direct(&mut self, image: crate::graphics::Image);
+
     /// This is called before it is being rendered (before the draw_* function).
     /// Returns
     ///  - if the item needs to be drawn (false means it is clipped or doesn't need to be drawn)
     ///  - the geometry of the item
-    fn filter_item(&mut self, item: Pin<ItemRef>) -> (bool, LogicalRect) {
-        let item_geometry = item.as_ref().geometry();
+    fn filter_item(&mut self, item: &ItemRc) -> (bool, LogicalRect) {
+        let item_geometry = item.geometry();
         (self.get_current_clip().intersects(&item_geometry), item_geometry)
     }
 
-    fn window(&self) -> &crate::api::Window;
+    fn window(&self) -> &crate::window::WindowInner;
 
     /// Return the internal renderer
     fn as_any(&mut self) -> Option<&mut dyn core::any::Any>;
 
     /// Returns any rendering metrics collecting since the creation of the renderer (typically
     /// per frame)
-    #[cfg(feature = "std")]
     fn metrics(&self) -> crate::graphics::rendering_metrics_collector::RenderingMetrics {
         Default::default()
     }
@@ -369,8 +475,120 @@ pub trait ItemRenderer {
 /// The cache that needs to be held by the Window for the partial rendering
 pub type PartialRenderingCache = RenderingCache<LogicalRect>;
 
-/// FIXME: Should actually be a region and not just a rectangle
-pub type DirtyRegion = euclid::Box2D<Coord, LogicalPx>;
+/// A region composed of a few rectangles that need to be redrawn.
+#[derive(Default, Clone, Debug)]
+pub struct DirtyRegion {
+    rectangles: [euclid::Box2D<Coord, LogicalPx>; Self::MAX_COUNT],
+    count: usize,
+}
+
+impl DirtyRegion {
+    /// The maximum number of rectangles that can be stored in a DirtyRegion
+    pub(crate) const MAX_COUNT: usize = 3;
+
+    /// An iterator over the part of the region (they can overlap)
+    pub fn iter(&self) -> impl Iterator<Item = euclid::Box2D<Coord, LogicalPx>> + '_ {
+        (0..self.count).map(|x| self.rectangles[x])
+    }
+
+    /// Add a rectangle to the region.
+    ///
+    /// Note that if the region becomes too complex, it might be simplified by being bigger than the actual union.
+    pub fn add_rect(&mut self, rect: LogicalRect) {
+        self.add_box(rect.to_box2d());
+    }
+
+    /// Add a box to the region
+    ///
+    /// Note that if the region becomes too complex, it might be simplified by being bigger than the actual union.
+    pub fn add_box(&mut self, b: euclid::Box2D<Coord, LogicalPx>) {
+        if b.is_empty() {
+            return;
+        }
+        let mut i = 0;
+        while i < self.count {
+            let r = &self.rectangles[i];
+            if r.contains_box(&b) {
+                // the rectangle is already in the union
+                return;
+            } else if b.contains_box(r) {
+                self.rectangles.swap(i, self.count - 1);
+                self.count -= 1;
+                continue;
+            }
+            i += 1;
+        }
+
+        if self.count < Self::MAX_COUNT {
+            self.rectangles[self.count] = b;
+            self.count += 1;
+        } else {
+            let best_merge = (0..self.count)
+                .map(|i| (i, self.rectangles[i].union(&b).area() - self.rectangles[i].area()))
+                .min_by(|a, b| PartialOrd::partial_cmp(&a.1, &b.1).unwrap())
+                .expect("There should always be rectangles")
+                .0;
+            self.rectangles[best_merge] = self.rectangles[best_merge].union(&b);
+        }
+    }
+
+    /// Make an union of two regions.
+    ///
+    /// Note that if the region becomes too complex, it might be simplified by being bigger than the actual union
+    #[must_use]
+    pub fn union(&self, other: &Self) -> Self {
+        let mut s = self.clone();
+        for o in other.iter() {
+            s.add_box(o)
+        }
+        s
+    }
+
+    /// Bounding rectangle of the region.
+    #[must_use]
+    pub fn bounding_rect(&self) -> LogicalRect {
+        if self.count == 0 {
+            return Default::default();
+        }
+        let mut r = self.rectangles[0];
+        for i in 1..self.count {
+            r = r.union(&self.rectangles[i]);
+        }
+        r.to_rect()
+    }
+
+    /// Intersection of a region and a rectangle.
+    #[must_use]
+    pub fn intersection(&self, other: LogicalRect) -> DirtyRegion {
+        let mut ret = self.clone();
+        let other = other.to_box2d();
+        let mut i = 0;
+        while i < ret.count {
+            if let Some(x) = ret.rectangles[i].intersection(&other) {
+                ret.rectangles[i] = x;
+            } else {
+                ret.rectangles.swap(i, ret.count);
+                ret.count -= 1;
+                continue;
+            }
+            i += 1;
+        }
+        ret
+    }
+
+    fn draw_intersects(&self, clipped_geom: LogicalRect) -> bool {
+        let b = clipped_geom.to_box2d();
+        self.iter().any(|r| r.intersects(&b))
+    }
+}
+
+impl From<LogicalRect> for DirtyRegion {
+    fn from(value: LogicalRect) -> Self {
+        let mut s = Self::default();
+        s.add_rect(value);
+        s
+    }
+}
 
 /// Put this structure in the renderer to help with partial rendering
 pub struct PartialRenderer<'a, T> {
@@ -392,44 +610,120 @@ impl<'a, T> PartialRenderer<'a, T> {
     }
 
     /// Visit the tree of item and compute what are the dirty regions
-    pub fn compute_dirty_regions(&mut self, component: &ComponentRc, origin: LogicalPoint) {
+    pub fn compute_dirty_regions(
+        &mut self,
+        component: &ItemTreeRc,
+        origin: LogicalPoint,
+        size: LogicalSize,
+    ) {
+        #[derive(Clone, Copy)]
+        struct ComputeDirtyRegionState {
+            offset: euclid::Vector2D<Coord, LogicalPx>,
+            old_offset: euclid::Vector2D<Coord, LogicalPx>,
+            clipped: LogicalRect,
+            must_refresh_children: bool,
+        }
+
         crate::item_tree::visit_items(
             component,
             crate::item_tree::TraversalOrder::BackToFront,
-            |_, item, _, offset| {
+            |component, item, index, state| {
+                let mut new_state = *state;
                 let mut borrowed = self.cache.borrow_mut();
+                let item_rc = ItemRc::new(component.clone(), index);
+
                 match item.cached_rendering_data_offset().get_entry(&mut borrowed) {
-                    Some(CachedGraphicsData { data, dependency_tracker: Some(tr) }) => {
+                    Some(CachedGraphicsData {
+                        data: cached_geom,
+                        dependency_tracker: Some(tr),
+                    }) => {
                         if tr.is_dirty() {
-                            let old_geom = *data;
+                            let old_geom = *cached_geom;
                             drop(borrowed);
-                            let geom = crate::properties::evaluate_no_tracking(|| {
-                                item.as_ref().geometry()
-                            });
-                            self.mark_dirty_rect(old_geom, *offset);
-                            self.mark_dirty_rect(geom, *offset);
-                            ItemVisitorResult::Continue(*offset + geom.origin.to_vector())
+                            let geom =
+                                crate::properties::evaluate_no_tracking(|| item_rc.geometry());
+
+                            self.mark_dirty_rect(old_geom, state.old_offset, &state.clipped);
+                            self.mark_dirty_rect(geom, state.offset, &state.clipped);
+
+                            new_state.offset += geom.origin.to_vector();
+                            new_state.old_offset += old_geom.origin.to_vector();
+                            if ItemRef::downcast_pin::<Clip>(item).is_some()
+                                || ItemRef::downcast_pin::<Opacity>(item).is_some()
+                            {
+                                // When the opacity or the clip change, this will impact all the children, including
+                                // the ones outside the element, regardless if they are themselves dirty or not.
+                                new_state.must_refresh_children = true;
+                            }
+
+                            ItemVisitorResult::Continue(new_state)
                         } else {
                             tr.as_ref().register_as_dependency_to_current_binding();
-                            ItemVisitorResult::Continue(*offset + data.origin.to_vector())
+
+                            if state.must_refresh_children
+                                || new_state.offset != new_state.old_offset
+                            {
+                                self.mark_dirty_rect(
+                                    *cached_geom,
+                                    state.old_offset,
+                                    &state.clipped,
+                                );
+                                self.mark_dirty_rect(*cached_geom, state.offset, &state.clipped);
+                            }
+
+                            new_state.offset += cached_geom.origin.to_vector();
+                            new_state.old_offset += cached_geom.origin.to_vector();
+                            if crate::properties::evaluate_no_tracking(|| is_clipping_item(item)) {
+                                new_state.clipped = new_state
+                                    .clipped
+                                    .intersection(
+                                        &cached_geom
+                                            .translate(state.offset)
+                                            .union(&cached_geom.translate(state.old_offset)),
+                                    )
+                                    .unwrap_or_default();
+                            }
+                            ItemVisitorResult::Continue(new_state)
                         }
                     }
                     _ => {
                         drop(borrowed);
-                        let geom =
-                            crate::properties::evaluate_no_tracking(|| item.as_ref().geometry());
-                        self.mark_dirty_rect(geom, *offset);
-                        ItemVisitorResult::Continue(*offset + geom.origin.to_vector())
+                        let geom = crate::properties::evaluate_no_tracking(|| {
+                            let geom = item_rc.geometry();
+                            new_state.offset += geom.origin.to_vector();
+                            new_state.old_offset += geom.origin.to_vector();
+                            if is_clipping_item(item) {
+                                new_state.clipped = new_state
+                                    .clipped
+                                    .intersection(&geom.translate(state.offset))
+                                    .unwrap_or_default();
+                            }
+                            geom
+                        });
+                        self.mark_dirty_rect(geom, state.offset, &state.clipped);
+                        ItemVisitorResult::Continue(new_state)
                     }
                 }
             },
-            origin.to_vector(),
+            ComputeDirtyRegionState {
+                offset: origin.to_vector(),
+                old_offset: origin.to_vector(),
+                clipped: LogicalRect::from_size(size),
+                must_refresh_children: false,
+            },
         );
     }
 
-    fn mark_dirty_rect(&mut self, rect: LogicalRect, offset: euclid::Vector2D<Coord, LogicalPx>) {
+    fn mark_dirty_rect(
+        &mut self,
+        rect: LogicalRect,
+        offset: euclid::Vector2D<Coord, LogicalPx>,
+        clip_rect: &LogicalRect,
+    ) {
         if !rect.is_empty() {
-            self.dirty_region = self.dirty_region.union(&rect.translate(offset).to_box2d());
+            if let Some(rect) = rect.translate(offset).intersection(clip_rect) {
+                self.dirty_region.add_rect(rect);
+            }
         }
     }
 
@@ -438,15 +732,15 @@ impl<'a, T> PartialRenderer<'a, T> {
         rendering_data: &CachedRenderingData,
         render_fn: impl FnOnce() -> LogicalRect,
     ) {
-        if let Some(entry) = rendering_data.get_entry(&mut cache.borrow_mut()) {
+        let mut cache = cache.borrow_mut();
+        if let Some(entry) = rendering_data.get_entry(&mut cache) {
             entry
                 .dependency_tracker
-                .get_or_insert_with(|| Box::pin(crate::properties::PropertyTracker::default()))
+                .get_or_insert_with(|| Box::pin(PropertyTracker::default()))
                 .as_ref()
                 .evaluate(render_fn);
         } else {
             let cache_entry = crate::graphics::CachedGraphicsData::new(render_fn);
-            let mut cache = cache.borrow_mut();
             rendering_data.cache_index.set(cache.insert(cache_entry));
             rendering_data.cache_generation.set(cache.generation());
         }
@@ -459,39 +753,54 @@ impl<'a, T> PartialRenderer<'a, T> {
 }
 
 macro_rules! forward_rendering_call {
-    (fn $fn:ident($Ty:ty)) => {
-        fn $fn(&mut self, obj: Pin<&$Ty>, item_rc: &ItemRc) {
+    (fn $fn:ident($Ty:ty) $(-> $Ret:ty)?) => {
+        fn $fn(&mut self, obj: Pin<&$Ty>, item_rc: &ItemRc, size: LogicalSize) $(-> $Ret)? {
+            let mut ret = None;
             Self::do_rendering(&self.cache, &obj.cached_rendering_data, || {
-                self.actual_renderer.$fn(obj, item_rc);
-                type Ty = $Ty;
-                let width = Ty::FIELD_OFFSETS.width.apply_pin(obj).get_untracked();
-                let height = Ty::FIELD_OFFSETS.height.apply_pin(obj).get_untracked();
-                let x = Ty::FIELD_OFFSETS.x.apply_pin(obj).get_untracked();
-                let y = Ty::FIELD_OFFSETS.y.apply_pin(obj).get_untracked();
-                LogicalRect::new(
-                    LogicalPoint::from_lengths(x, y),
-                    LogicalSize::from_lengths(width, height),
-                )
-            })
+                ret = Some(self.actual_renderer.$fn(obj, item_rc, size));
+                item_rc.geometry()
+            });
+            ret.unwrap_or_default()
+        }
+    };
+}
+
+macro_rules! forward_rendering_call2 {
+    (fn $fn:ident($Ty:ty) $(-> $Ret:ty)?) => {
+        fn $fn(&mut self, obj: Pin<&$Ty>, item_rc: &ItemRc, size: LogicalSize, cache: &CachedRenderingData) $(-> $Ret)? {
+            let mut ret = None;
+            Self::do_rendering(&self.cache, &cache, || {
+                ret = Some(self.actual_renderer.$fn(obj, item_rc, size, &cache));
+                item_rc.geometry()
+            });
+            ret.unwrap_or_default()
         }
     };
 }
 
 impl<'a, T: ItemRenderer> ItemRenderer for PartialRenderer<'a, T> {
-    fn filter_item(&mut self, item: Pin<ItemRef>) -> (bool, LogicalRect) {
+    fn filter_item(&mut self, item_rc: &ItemRc) -> (bool, LogicalRect) {
+        let item = item_rc.borrow();
+        let eval = || {
+            if let Some(clip) = ItemRef::downcast_pin::<Clip>(item) {
+                // Make sure we register a dependency on the clip
+                clip.clip();
+            }
+            item_rc.geometry()
+        };
+
         let rendering_data = item.cached_rendering_data_offset();
         let mut cache = self.cache.borrow_mut();
         let item_geometry = match rendering_data.get_entry(&mut cache) {
             Some(CachedGraphicsData { data, dependency_tracker }) => {
                 dependency_tracker
-                    .get_or_insert_with(|| Box::pin(crate::properties::PropertyTracker::default()))
+                    .get_or_insert_with(|| Box::pin(PropertyTracker::default()))
                     .as_ref()
-                    .evaluate_if_dirty(|| *data = item.as_ref().geometry());
+                    .evaluate_if_dirty(|| *data = eval());
                 *data
             }
             None => {
-                let cache_entry =
-                    crate::graphics::CachedGraphicsData::new(|| item.as_ref().geometry());
+                let cache_entry = crate::graphics::CachedGraphicsData::new(eval);
                 let geom = cache_entry.data;
                 rendering_data.cache_index.set(cache.insert(cache_entry));
                 rendering_data.cache_generation.set(cache.generation());
@@ -499,27 +808,31 @@ impl<'a, T: ItemRenderer> ItemRenderer for PartialRenderer<'a, T> {
             }
         };
 
-        //let clip = self.get_current_clip().intersection(&self.dirty_region.to_rect());
-        //let draw = clip.map_or(false, |r| r.intersects(&item_geometry));
-        //FIXME: the dirty_region is in global coordinate but item_geometry and current_clip is not
-        let draw = self.get_current_clip().intersects(&item_geometry);
+        let clipped_geom = self.get_current_clip().intersection(&item_geometry);
+        let draw = clipped_geom.map_or(false, |clipped_geom| {
+            let clipped_geom = clipped_geom.translate(self.translation());
+            self.dirty_region.draw_intersects(clipped_geom)
+        });
+
         (draw, item_geometry)
     }
 
     forward_rendering_call!(fn draw_rectangle(Rectangle));
-    forward_rendering_call!(fn draw_border_rectangle(BorderRectangle));
-    forward_rendering_call!(fn draw_image(ImageItem));
-    forward_rendering_call!(fn draw_clipped_image(ClippedImage));
-    forward_rendering_call!(fn draw_text(Text));
+    forward_rendering_call2!(fn draw_border_rectangle(dyn RenderBorderRectangle));
+    forward_rendering_call2!(fn draw_image(dyn RenderImage));
+    forward_rendering_call2!(fn draw_text(dyn RenderText));
     forward_rendering_call!(fn draw_text_input(TextInput));
     #[cfg(feature = "std")]
     forward_rendering_call!(fn draw_path(Path));
     forward_rendering_call!(fn draw_box_shadow(BoxShadow));
 
+    forward_rendering_call!(fn visit_clip(Clip) -> RenderingResult);
+    forward_rendering_call!(fn visit_opacity(Opacity) -> RenderingResult);
+
     fn combine_clip(
         &mut self,
         rect: LogicalRect,
-        radius: LogicalLength,
+        radius: LogicalBorderRadius,
         border_width: LogicalLength,
     ) -> bool {
         self.actual_renderer.combine_clip(rect, radius, border_width)
@@ -531,6 +844,9 @@ impl<'a, T: ItemRenderer> ItemRenderer for PartialRenderer<'a, T> {
 
     fn translate(&mut self, distance: LogicalVector) {
         self.actual_renderer.translate(distance)
+    }
+    fn translation(&self) -> LogicalVector {
+        self.actual_renderer.translation()
     }
 
     fn rotate(&mut self, angle_in_degrees: f32) {
@@ -565,7 +881,11 @@ impl<'a, T: ItemRenderer> ItemRenderer for PartialRenderer<'a, T> {
         self.actual_renderer.draw_string(string, color)
     }
 
-    fn window(&self) -> &crate::api::Window {
+    fn draw_image_direct(&mut self, image: crate::graphics::image::Image) {
+        self.actual_renderer.draw_image_direct(image)
+    }
+
+    fn window(&self) -> &crate::window::WindowInner {
         self.actual_renderer.window()
     }
 

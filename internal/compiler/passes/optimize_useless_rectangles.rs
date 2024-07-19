@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Remove the rectangles that serves no purposes
 //!
@@ -11,8 +11,8 @@ use crate::object_tree::*;
 use std::rc::Rc;
 
 pub fn optimize_useless_rectangles(root_component: &Rc<Component>) {
-    recurse_elem_including_sub_components(root_component, &(), &mut |parent, _| {
-        let mut parent = parent.borrow_mut();
+    recurse_elem_including_sub_components(root_component, &(), &mut |parent_, _| {
+        let mut parent = parent_.borrow_mut();
         let children = std::mem::take(&mut parent.children);
 
         for elem in children {
@@ -22,14 +22,21 @@ pub fn optimize_useless_rectangles(root_component: &Rc<Component>) {
             }
 
             parent.children.extend(std::mem::take(&mut elem.borrow_mut().children));
+            if let Some(last) = parent.debug.last_mut() {
+                last.element_boundary = true;
+            }
+            parent.debug.extend(std::mem::take(&mut elem.borrow_mut().debug));
 
-            parent
-                .enclosing_component
-                .upgrade()
-                .unwrap()
-                .optimized_elements
-                .borrow_mut()
-                .push(elem);
+            let enclosing = parent.enclosing_component.upgrade().unwrap();
+
+            for popup in enclosing.popup_windows.borrow_mut().iter_mut() {
+                if Rc::ptr_eq(&popup.parent_element, &elem) {
+                    // parent element is use for x/y, and the position of the removed element is 0,0
+                    popup.parent_element = parent_.clone();
+                }
+            }
+
+            enclosing.optimized_elements.borrow_mut().push(elem);
         }
     });
 }
@@ -37,7 +44,7 @@ pub fn optimize_useless_rectangles(root_component: &Rc<Component>) {
 /// Check that this is a element we can optimize
 fn can_optimize(elem: &ElementRc) -> bool {
     let e = elem.borrow();
-    if e.is_flickable_viewport || e.has_popup_child {
+    if e.is_flickable_viewport || e.has_popup_child || e.is_component_placeholder {
         return false;
     };
 
@@ -54,11 +61,19 @@ fn can_optimize(elem: &ElementRc) -> bool {
         _ => return false,
     };
 
-    // Check that no Rectangle property other than height and width are set
     let analysis = e.property_analysis.borrow();
+    for coord in ["x", "y"] {
+        if e.bindings.contains_key(coord) || analysis.get(coord).map_or(false, |a| a.is_set) {
+            return false;
+        }
+    }
+    if analysis.get("absolute-position").map_or(false, |a| a.is_read) {
+        return false;
+    }
+
+    // Check that no Rectangle property are set
     !e.bindings.keys().chain(analysis.iter().filter(|(_, v)| v.is_set).map(|(k, _)| k)).any(|k| {
-        !matches!(k.as_str(), "height" | "width")
-            && !e.property_declarations.contains_key(k.as_str())
+        !e.property_declarations.contains_key(k.as_str())
             && base_type.properties.contains_key(k.as_str())
-    })
+    }) && e.accessibility_props.0.is_empty()
 }

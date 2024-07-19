@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 /*!
 This module contains path related types and functions for the run-time library.
@@ -60,7 +60,7 @@ pub struct PathArcTo {
     /// The radius on the y-axis of the arc.
     pub radius_y: f32,
     #[rtti_field]
-    /// The rotation along the x-axis of the arc in degress.
+    /// The rotation along the x-axis of the arc in degrees.
     pub x_rotation: f32,
     #[rtti_field]
     /// large_arc indicates whether to take the long or the shorter path to complete the arc.
@@ -284,10 +284,10 @@ impl Default for PathData {
 
 impl PathData {
     /// This function returns an iterator that allows traversing the path by means of lyon events.
-    pub fn iter(self) -> PathDataIterator {
+    pub fn iter(self) -> Option<PathDataIterator> {
         PathDataIterator {
             it: match self {
-                PathData::None => LyonPathIteratorVariant::FromPath(lyon_path::Path::new()),
+                PathData::None => return None,
                 PathData::Elements(elements) => LyonPathIteratorVariant::FromPath(
                     PathData::build_path(elements.as_slice().iter()),
                 ),
@@ -312,6 +312,7 @@ impl PathData {
             },
             transform: Default::default(),
         }
+        .into()
     }
 
     fn build_path(element_it: core::slice::Iter<PathElement>) -> lyon_path::Path {

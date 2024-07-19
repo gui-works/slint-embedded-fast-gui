@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 /*!
 This module contains color related types for the run-time library.
@@ -44,6 +44,7 @@ pub struct RgbaColor<T> {
 /// let new_col = Color::from(RgbaColor{ red: 0.5, green: 0.65, blue: 0.32, alpha: 1.});
 /// ```
 #[derive(Copy, Clone, PartialEq, PartialOrd, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[repr(C)]
 pub struct Color {
     red: u8,
@@ -85,10 +86,10 @@ impl From<Color> for RgbaColor<f32> {
 impl From<RgbaColor<f32>> for Color {
     fn from(col: RgbaColor<f32>) -> Self {
         Self {
-            red: (col.red * 255.) as u8,
-            green: (col.green * 255.) as u8,
-            blue: (col.blue * 255.) as u8,
-            alpha: (col.alpha * 255.) as u8,
+            red: (col.red * 255.).round() as u8,
+            green: (col.green * 255.).round() as u8,
+            blue: (col.blue * 255.).round() as u8,
+            alpha: (col.alpha * 255.).round() as u8,
         }
     }
 }
@@ -144,22 +145,40 @@ impl Color {
         RgbaColor::from(*self)
     }
 
+    /// Converts this color to the HSV color space.
+    pub fn to_hsva(&self) -> HsvaColor {
+        let rgba: RgbaColor<f32> = (*self).into();
+        rgba.into()
+    }
+
+    /// Construct a color from the hue, saturation, and value HSV color space parameters.
+    ///
+    /// Hue is between 0 and 360, the others parameters between 0 and 1.
+    pub fn from_hsva(hue: f32, saturation: f32, value: f32, alpha: f32) -> Self {
+        let hsva = HsvaColor { hue, saturation, value, alpha };
+        <RgbaColor<f32>>::from(hsva).into()
+    }
+
     /// Returns the red channel of the color as u8 in the range 0..255.
+    #[inline(always)]
     pub fn red(self) -> u8 {
         self.red
     }
 
     /// Returns the green channel of the color as u8 in the range 0..255.
+    #[inline(always)]
     pub fn green(self) -> u8 {
         self.green
     }
 
     /// Returns the blue channel of the color as u8 in the range 0..255.
+    #[inline(always)]
     pub fn blue(self) -> u8 {
         self.blue
     }
 
     /// Returns the alpha channel of the color as u8 in the range 0..255.
+    #[inline(always)]
     pub fn alpha(self) -> u8 {
         self.alpha
     }
@@ -174,7 +193,7 @@ impl Color {
     pub fn brighter(&self, factor: f32) -> Self {
         let rgba: RgbaColor<f32> = (*self).into();
         let mut hsva: HsvaColor = rgba.into();
-        hsva.v *= 1. + factor;
+        hsva.value *= 1. + factor;
         let rgba: RgbaColor<f32> = hsva.into();
         rgba.into()
     }
@@ -188,20 +207,119 @@ impl Color {
     pub fn darker(&self, factor: f32) -> Self {
         let rgba: RgbaColor<f32> = (*self).into();
         let mut hsva: HsvaColor = rgba.into();
-        hsva.v /= 1. + factor;
+        hsva.value /= 1. + factor;
         let rgba: RgbaColor<f32> = hsva.into();
+        rgba.into()
+    }
+
+    /// Returns a new version of this color with the opacity decreased by `factor`.
+    ///
+    /// The transparency is obtained by multiplying the alpha channel by `(1 - factor)`.
+    ///
+    /// # Examples
+    /// Decreasing the opacity of a red color by half:
+    /// ```
+    /// # use i_slint_core::graphics::Color;
+    /// let red = Color::from_argb_u8(255, 255, 0, 0);
+    /// assert_eq!(red.transparentize(0.5), Color::from_argb_u8(128, 255, 0, 0));
+    /// ```
+    ///
+    /// Decreasing the opacity of a blue color by 20%:
+    /// ```
+    /// # use i_slint_core::graphics::Color;
+    /// let blue = Color::from_argb_u8(200, 0, 0, 255);
+    /// assert_eq!(blue.transparentize(0.2), Color::from_argb_u8(160, 0, 0, 255));
+    /// ```
+    ///
+    /// Negative values increase the opacity
+    ///
+    /// ```
+    /// # use i_slint_core::graphics::Color;
+    /// let blue = Color::from_argb_u8(200, 0, 0, 255);
+    /// assert_eq!(blue.transparentize(-0.1), Color::from_argb_u8(220, 0, 0, 255));
+    /// ```
+
+    #[must_use]
+    pub fn transparentize(&self, factor: f32) -> Self {
+        let mut color = *self;
+        color.alpha = ((self.alpha as f32) * (1.0 - factor))
+            .round()
+            .clamp(u8::MIN as f32, u8::MAX as f32) as u8;
+        color
+    }
+
+    /// Returns a new color that is a mix of this color and `other`. The specified factor is
+    /// clamped to be between `0.0` and `1.0` and then applied to this color, while `1.0 - factor`
+    /// is applied to `other`.
+    ///
+    /// # Examples
+    /// Mix red with black half-and-half:
+    /// ```
+    /// # use i_slint_core::graphics::Color;
+    /// let red = Color::from_rgb_u8(255, 0, 0);
+    /// let black = Color::from_rgb_u8(0, 0, 0);
+    /// assert_eq!(red.mix(&black, 0.5), Color::from_rgb_u8(128, 0, 0));
+    /// ```
+    ///
+    /// Mix Purple with OrangeRed,  with `75%` purpe and `25%` orange red ratio:
+    /// ```
+    /// # use i_slint_core::graphics::Color;
+    /// let purple = Color::from_rgb_u8(128, 0, 128);
+    /// let orange_red = Color::from_rgb_u8(255, 69, 0);
+    /// assert_eq!(purple.mix(&orange_red, 0.75), Color::from_rgb_u8(160, 17, 96));
+    /// ```
+    #[must_use]
+    pub fn mix(&self, other: &Self, factor: f32) -> Self {
+        // * NOTE: The opacity (`alpha` as a "percentage") of each color involved
+        // *       must be taken into account when mixing them. Because of this,
+        // *       we cannot just interpolate between them.
+        // * NOTE: Considering the spec (textual):
+        // *       <https://github.com/sass/sass/blob/47d30713765b975c86fa32ec359ed16e83ad1ecc/spec/built-in-modules/color.md#mix>
+
+        fn lerp(v1: u8, v2: u8, f: f32) -> u8 {
+            (v1 as f32 * f + v2 as f32 * (1.0 - f)).clamp(u8::MIN as f32, u8::MAX as f32).round()
+                as u8
+        }
+
+        let original_factor = factor.clamp(0.0, 1.0);
+
+        let self_opacity = RgbaColor::<f32>::from(*self).alpha;
+        let other_opacity = RgbaColor::<f32>::from(*other).alpha;
+
+        let normal_weight = 2.0 * original_factor - 1.0;
+        let alpha_distance = self_opacity - other_opacity;
+        let weight_by_distance = normal_weight * alpha_distance;
+
+        // As to not divide by 0.0
+        let combined_weight = if weight_by_distance == -1.0 {
+            normal_weight
+        } else {
+            (normal_weight + alpha_distance) / (1.0 + weight_by_distance)
+        };
+
+        let channels_factor = (combined_weight + 1.0) / 2.0;
+
+        let red = lerp(self.red, other.red, channels_factor);
+        let green = lerp(self.green, other.green, channels_factor);
+        let blue = lerp(self.blue, other.blue, channels_factor);
+
+        let alpha = lerp(self.alpha, other.alpha, original_factor);
+
+        Self { red, green, blue, alpha }
+    }
+
+    /// Returns a new version of this color with the opacity set to `alpha`.
+    #[must_use]
+    pub fn with_alpha(&self, alpha: f32) -> Self {
+        let mut rgba: RgbaColor<f32> = (*self).into();
+        rgba.alpha = alpha.clamp(0.0, 1.0);
         rgba.into()
     }
 }
 
 impl InterpolatedPropertyValue for Color {
     fn interpolate(&self, target_value: &Self, t: f32) -> Self {
-        Self {
-            red: self.red.interpolate(&target_value.red, t),
-            green: self.green.interpolate(&target_value.green, t),
-            blue: self.blue.interpolate(&target_value.blue, t),
-            alpha: self.alpha.interpolate(&target_value.alpha, t),
-        }
+        target_value.mix(self, t)
     }
 }
 
@@ -211,12 +329,20 @@ impl core::fmt::Display for Color {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct HsvaColor {
-    h: f32,
-    s: f32,
-    v: f32,
-    alpha: f32,
+/// HsvaColor stores the hue, saturation, value and alpha components of a color
+/// in the HSV color space as `f32 ` fields.
+/// This is merely a helper struct for use with [`Color`].
+#[derive(Copy, Clone, PartialEq, PartialOrd, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct HsvaColor {
+    /// The hue component in degrees between 0 and 360.
+    pub hue: f32,
+    /// The saturation component, between 0 and 1.
+    pub saturation: f32,
+    /// The value component, between 0 and 1.
+    pub value: f32,
+    /// The alpha component, between 0 and 1.
+    pub alpha: f32,
 }
 
 impl From<RgbaColor<f32>> for HsvaColor {
@@ -245,7 +371,7 @@ impl From<RgbaColor<f32>> for HsvaColor {
 
         let saturation = if max == 0. { 0. } else { chroma / max };
 
-        Self { h: hue, s: saturation, v: max, alpha: col.alpha }
+        Self { hue, saturation, value: max, alpha: col.alpha }
     }
 }
 
@@ -253,11 +379,11 @@ impl From<HsvaColor> for RgbaColor<f32> {
     fn from(col: HsvaColor) -> Self {
         // RGB to HSL conversion from https://en.wikipedia.org/wiki/HSL_and_HSV#Color_conversion_formulae
 
-        let chroma = col.s * col.v;
+        let chroma = col.saturation * col.value;
 
-        let x = chroma * (1. - ((col.h / 60.) % 2. - 1.).abs());
+        let x = chroma * (1. - ((col.hue / 60.) % 2. - 1.).abs());
 
-        let (red, green, blue) = match (col.h / 60.0) as usize {
+        let (red, green, blue) = match (col.hue / 60.0) as usize {
             0 => (chroma, x, 0.),
             1 => (x, chroma, 0.),
             2 => (0., chroma, x),
@@ -267,9 +393,21 @@ impl From<HsvaColor> for RgbaColor<f32> {
             _ => (0., 0., 0.),
         };
 
-        let m = col.v - chroma;
+        let m = col.value - chroma;
 
         Self { red: red + m, green: green + m, blue: blue + m, alpha: col.alpha }
+    }
+}
+
+impl From<HsvaColor> for Color {
+    fn from(value: HsvaColor) -> Self {
+        RgbaColor::from(value).into()
+    }
+}
+
+impl From<Color> for HsvaColor {
+    fn from(value: Color) -> Self {
+        value.to_hsva()
     }
 }
 
@@ -278,20 +416,20 @@ fn test_rgb_to_hsv() {
     // White
     assert_eq!(
         HsvaColor::from(RgbaColor::<f32> { red: 1., green: 1., blue: 1., alpha: 0.5 }),
-        HsvaColor { h: 0., s: 0., v: 1., alpha: 0.5 }
+        HsvaColor { hue: 0., saturation: 0., value: 1., alpha: 0.5 }
     );
     assert_eq!(
-        RgbaColor::<f32>::from(HsvaColor { h: 0., s: 0., v: 1., alpha: 0.3 }),
+        RgbaColor::<f32>::from(HsvaColor { hue: 0., saturation: 0., value: 1., alpha: 0.3 }),
         RgbaColor::<f32> { red: 1., green: 1., blue: 1., alpha: 0.3 }
     );
 
     // Bright greenish, verified via colorizer.org
     assert_eq!(
         HsvaColor::from(RgbaColor::<f32> { red: 0., green: 0.9, blue: 0., alpha: 1.0 }),
-        HsvaColor { h: 120., s: 1., v: 0.9, alpha: 1.0 }
+        HsvaColor { hue: 120., saturation: 1., value: 0.9, alpha: 1.0 }
     );
     assert_eq!(
-        RgbaColor::<f32>::from(HsvaColor { h: 120., s: 1., v: 0.9, alpha: 1.0 }),
+        RgbaColor::<f32>::from(HsvaColor { hue: 120., saturation: 1., value: 0.9, alpha: 1.0 }),
         RgbaColor::<f32> { red: 0., green: 0.9, blue: 0., alpha: 1.0 }
     );
 }
@@ -301,6 +439,17 @@ fn test_brighter_darker() {
     let blue = Color::from_rgb_u8(0, 0, 128);
     assert_eq!(blue.brighter(0.5), Color::from_rgb_u8(0, 0, 192));
     assert_eq!(blue.darker(0.5), Color::from_rgb_u8(0, 0, 85));
+}
+
+#[test]
+fn test_transparent_transition() {
+    let color = Color::from_argb_u8(0, 0, 0, 0);
+    let interpolated = color.interpolate(&Color::from_rgb_u8(211, 211, 211), 0.25);
+    assert_eq!(interpolated, Color::from_argb_u8(64, 211, 211, 211));
+    let interpolated = color.interpolate(&Color::from_rgb_u8(211, 211, 211), 0.5);
+    assert_eq!(interpolated, Color::from_argb_u8(128, 211, 211, 211));
+    let interpolated = color.interpolate(&Color::from_rgb_u8(211, 211, 211), 0.75);
+    assert_eq!(interpolated, Color::from_argb_u8(191, 211, 211, 211));
 }
 
 #[cfg(feature = "ffi")]
@@ -316,5 +465,45 @@ pub(crate) mod ffi {
     #[no_mangle]
     pub unsafe extern "C" fn slint_color_darker(col: &Color, factor: f32, out: *mut Color) {
         core::ptr::write(out, col.darker(factor))
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn slint_color_transparentize(col: &Color, factor: f32, out: *mut Color) {
+        core::ptr::write(out, col.transparentize(factor))
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn slint_color_mix(
+        col1: &Color,
+        col2: &Color,
+        factor: f32,
+        out: *mut Color,
+    ) {
+        core::ptr::write(out, col1.mix(col2, factor))
+    }
+
+    #[no_mangle]
+    pub unsafe extern "C" fn slint_color_with_alpha(col: &Color, alpha: f32, out: *mut Color) {
+        core::ptr::write(out, col.with_alpha(alpha))
+    }
+
+    #[no_mangle]
+    pub extern "C" fn slint_color_to_hsva(
+        col: &Color,
+        h: &mut f32,
+        s: &mut f32,
+        v: &mut f32,
+        a: &mut f32,
+    ) {
+        let hsv = col.to_hsva();
+        *h = hsv.hue;
+        *s = hsv.saturation;
+        *v = hsv.value;
+        *a = hsv.alpha;
+    }
+
+    #[no_mangle]
+    pub extern "C" fn slint_color_from_hsva(h: f32, s: f32, v: f32, a: f32) -> Color {
+        Color::from_hsva(h, s, v, a)
     }
 }

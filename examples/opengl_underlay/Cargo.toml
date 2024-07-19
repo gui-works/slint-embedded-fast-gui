@@ -1,13 +1,13 @@
-# Copyright © SixtyFPS GmbH <info@slint-ui.com>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: MIT
 
 [package]
 name = "opengl_underlay"
-version = "0.3.2"
-authors = ["Slint Developers <info@slint-ui.com>"]
+version = "1.7.0"
+authors = ["Slint Developers <info@slint.dev>"]
 edition = "2021"
 build = "build.rs"
-license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
+license = "MIT"
 publish = false
 
 [[bin]]
@@ -16,9 +16,8 @@ name = "opengl_underlay"
 
 [dependencies]
 slint = { path = "../../api/rs/slint" }
-# Use a git version until https://github.com/grovesNL/glow/issues/210 is released to crates.io
-glow = { version = "0.11", git = "https://github.com/grovesNL/glow", rev = "11853d28ae64fbd7db5c856fe8b92a4a20fded94" }
-instant = { version = "0.1", features = [ "now" ] }
+glow = { version = "0.13" }
+web-time = { version = "1.0" }
 
 [build-dependencies]
 slint-build = { path = "../../api/rs/build" }
@@ -35,4 +34,3 @@ slint-build = { path = "../../api/rs/build" }
 #wasm# wasm-bindgen = { version = "0.2" }
 #wasm# web-sys = { version = "0.3", features=["console"] }
 #wasm# console_error_panic_hook = "0.1.5"
-#wasm# instant = { version = "0.1", features = [ "wasm-bindgen" ] }

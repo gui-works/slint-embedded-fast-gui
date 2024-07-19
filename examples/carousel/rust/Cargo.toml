@@ -1,21 +1,21 @@
-# Copyright © SixtyFPS GmbH <info@slint-ui.com>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: MIT
 
 [package]
 name = "carousel"
-version = "0.3.2"
-authors = ["Slint Developers <info@slint-ui.com>"]
+version = "1.7.0"
+authors = ["Slint Developers <info@slint.dev>"]
 edition = "2021"
 build = "build.rs"
 publish = false
-license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
+license = "MIT"
 
 [[bin]]
 path = "main.rs"
 name = "carousel"
 
 [dependencies]
-slint = { path = "../../../api/rs/slint", default-features = false, features = ["compat-0-3-0"] }
+slint = { path = "../../../api/rs/slint", default-features = false, features = ["compat-1-2"] }
 mcu-board-support = { path = "../../mcu-board-support", optional = true }
 
 [build-dependencies]
@@ -23,7 +23,7 @@ slint-build = { path = "../../../api/rs/build" }
 
 [features]
 default = ["slint/default"]
-simulator = ["mcu-board-support", "slint/renderer-winit-software", "slint/backend-winit", "slint/std"]
+simulator = ["mcu-board-support", "slint/renderer-software", "slint/backend-winit", "slint/std"]
 
 
 # Remove the `#wasm#` to uncomment the wasm build.

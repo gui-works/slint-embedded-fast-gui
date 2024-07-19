@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! This pass creates properties that are used but are otherwise not real.
 //!
@@ -17,18 +17,19 @@ use std::rc::Rc;
 pub fn materialize_fake_properties(component: &Rc<Component>) {
     let mut to_materialize = std::collections::HashMap::new();
 
-    recurse_elem_including_sub_components_no_borrow(component, &(), &mut |elem, _| {
-        visit_all_named_references_in_element(elem, |nr| {
-            let elem = nr.element();
-            let elem = elem.borrow();
-            if !to_materialize.contains_key(nr) {
-                if let Some(ty) =
-                    should_materialize(&elem.property_declarations, &elem.base_type, nr.name())
-                {
-                    to_materialize.insert(nr.clone(), ty);
-                }
+    visit_all_named_references(component, &mut |nr| {
+        let elem = nr.element();
+        let elem = elem.borrow();
+        if !to_materialize.contains_key(nr) {
+            if let Some(ty) =
+                should_materialize(&elem.property_declarations, &elem.base_type, nr.name())
+            {
+                to_materialize.insert(nr.clone(), ty);
             }
-        });
+        }
+    });
+
+    recurse_elem_including_sub_components_no_borrow(component, &(), &mut |elem, _| {
         for prop in elem.borrow().bindings.keys() {
             let nr = NamedReference::new(elem, prop);
             if let std::collections::hash_map::Entry::Vacant(e) = to_materialize.entry(nr) {
@@ -103,6 +104,9 @@ fn should_materialize(
         let ty = crate::typeregister::reserved_property(prop).property_type;
         if ty != Type::Invalid {
             return Some(ty);
+        } else if prop == "close-on-click" {
+            // PopupWindow::close-on-click
+            return Some(Type::Bool);
         }
     }
     None

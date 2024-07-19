@@ -1,7 +1,7 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-SuperSimple := Rectangle {
+export SuperSimple := Rectangle {
     88;
 //  ^error{Parse error}
     * / - + // no error there as this is already reported in the previous line
@@ -9,7 +9,7 @@ SuperSimple := Rectangle {
         background: blue + 3
         x: 45phx;
 //      ^error{Syntax error: expected ';'}
-// FIXME: would be nice if the smeicolon error was on the previous line
+// FIXME: would be nice if the semicolon error was on the previous line
     }
 
     there was already parse error in this scope, so no more
@@ -21,4 +21,11 @@ SuperSimple := Rectangle {
         * .
 //      ^error{Parse error}
     }
-}
+  };
+// ^error{Extra semicolon. Remove this semicolon}
+
+struct F {};
+//         ^error{Extra semicolon. Remove this semicolon}
+
+export {F};
+//        ^error{Extra semicolon. Remove this semicolon}

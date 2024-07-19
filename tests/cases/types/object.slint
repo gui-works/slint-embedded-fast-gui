@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 TestCase := Rectangle {
     property<{a: string, b: int}> foo: {a : "444", b: 12 };
@@ -18,8 +18,8 @@ TestCase := Rectangle {
         foo.b += 8 + obj_conversion2.b;
     }
 
-    callback return_object() -> { aa: { bb: int } };
-    return_object => { return { aa: { bb: { cc: 42 }.cc } }; }
+    function return_object() -> { aa: { bb: int } }
+    { return { aa: { bb: { cc: 42 }.cc } }; }
     property <bool> test: return_object().aa.bb == 42 && obj_binop_merge;
 
 }
@@ -27,7 +27,7 @@ TestCase := Rectangle {
 
 /*
 ```rust
-let instance = TestCase::new();
+let instance = TestCase::new().unwrap();
 assert_eq!(instance.get_foo_a(), slint::SharedString::from("444"));
 assert_eq!(instance.get_foo_b(), 12);
 instance.invoke_change_foo();

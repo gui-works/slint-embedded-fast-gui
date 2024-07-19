@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
@@ -13,7 +13,7 @@ pub fn main() {
     #[cfg(all(debug_assertions, target_arch = "wasm32"))]
     console_error_panic_hook::set_once();
 
-    let main_window = MainWindow::new();
+    let main_window = MainWindow::new().unwrap();
     main_window.set_ink_levels(slint::VecModel::from_slice(&[
         InkLevel { color: slint::Color::from_rgb_u8(0, 255, 255), level: 0.40 },
         InkLevel { color: slint::Color::from_rgb_u8(255, 0, 255), level: 0.20 },
@@ -42,5 +42,5 @@ pub fn main() {
         std::process::exit(0);
     });
 
-    main_window.run();
+    main_window.run().unwrap();
 }

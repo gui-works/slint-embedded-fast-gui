@@ -1,6 +1,6 @@
 #!/bin/bash -e
-# Copyright © SixtyFPS GmbH <info@slint-ui.com>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 cd `dirname $0`/../editors/vscode
 
@@ -14,7 +14,7 @@ fi
 
 git checkout $modified_files
 
-# The version number is a shorterned time stamp of the last commit
+# The version number is a shortend time stamp of the last commit
 nightly_version=`git log -1 --format=%cd --date="format:%Y.%-m.%-d%H"`
 last_commit=`git log -1 --format=%H`
 
@@ -25,7 +25,8 @@ git show HEAD:./package.json | jq --arg nightly_version "${nightly_version}" '
 .version = $nightly_version |
 .name += "-nightly" |
 .displayName += " (Nightly)" |
-.description += " (Nightly)"' > package.json
+.description += " (Nightly)" |
+. + {"preview": true}' > package.json
 
 cat >README.md <<EOT
 # Slint for Visual Studio Code Nightly
@@ -42,4 +43,4 @@ cat > CHANGELOG.md <<EOT
 This nightly build was created from commit $last_commit
 EOT
 
-echo "package.json, REAMDE.md, etc. have been modified. You can package the extension now. Run git checkout afterwards to undo the modifications done by this script."
+echo "package.json, README.md, etc. have been modified. You can package the extension now. Run git checkout afterwards to undo the modifications done by this script."

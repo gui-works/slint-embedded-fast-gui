@@ -1,22 +1,22 @@
-# Copyright © SixtyFPS GmbH <info@slint-ui.com>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 [package]
 name = "slint-lsp"
-version = "0.3.2"
-authors = ["Slint Developers <info@slint-ui.com>"]
-edition = "2021"
-license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
-description = "A language server protocol implementation for slint. "
-repository = "https://github.com/slint-ui/slint"
-homepage = "https://slint-ui.com"
-categories = ["gui", "development-tools"]
-keywords = ["lsp"]
-rust-version = "1.60"
+description = "A language server protocol implementation for Slint"
+authors = ["Slint Developers <info@slint.dev>"]
+edition.workspace = true
+homepage = "https://slint.dev"
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version = "1.7.0"
+categories = ["gui", "development-tools", "command-line-utilities"]
+keywords = ["lsp", "ui", "toolkit"]
 
 [package.metadata.bundle]
 name = "Slint Live Preview"
-icon = ["../../logo/slint-logo-small-light-128x128.png"]
+icon = ["../../logo/slint-logo-small-light.png"]
 
 [[bin]]
 name = "slint-lsp"
@@ -32,55 +32,93 @@ path = "wasm_main.rs"
 name = "slint_lsp_wasm"
 
 [features]
-backend-qt = ["slint-interpreter/backend-qt", "preview"]
-eventloop-qt = ["backend-qt"]
-renderer-winit-qt = ["backend-qt"]
+backend-qt = ["slint/backend-qt", "preview"]
 
-backend-winit = ["slint-interpreter/backend-winit", "preview"]
-backend-winit-x11 = ["slint-interpreter/backend-winit-x11", "preview"]
-backend-winit-wayland = ["slint-interpreter/backend-winit-wayland", "preview"]
+backend-winit = ["slint/backend-winit", "preview"]
+backend-winit-x11 = ["slint/backend-winit-x11", "preview"]
+backend-winit-wayland = ["slint/backend-winit-wayland", "preview"]
+backend-linuxkms = ["slint/backend-linuxkms", "preview"]
+backend-linuxkms-noseat = ["slint/backend-linuxkms-noseat", "preview"]
+backend-default = ["slint/backend-default", "preview"]
 
-renderer-winit-femtovg = ["slint-interpreter/renderer-winit-femtovg", "preview"]
-renderer-winit-skia = ["slint-interpreter/renderer-winit-skia", "preview"]
-renderer-winit-skia-opengl = ["slint-interpreter/renderer-winit-skia-opengl", "preview"]
+renderer-femtovg = ["slint/renderer-femtovg", "preview"]
+renderer-skia = ["slint/renderer-skia", "preview"]
+renderer-skia-opengl = ["slint/renderer-skia-opengl", "preview"]
+renderer-skia-vulkan = ["slint/renderer-skia-vulkan", "preview"]
+renderer-software = ["slint/renderer-software", "preview"]
 
 # Compat
-backend-gl-all = ["backend-winit", "renderer-winit-femtovg"]
-backend-gl-wayland = ["backend-winit-wayland", "renderer-winit-femtovg"]
-backend-gl-x11 = ["backend-winit-x11", "renderer-winit-femtovg"]
+backend-gl-all = ["backend-winit", "renderer-femtovg"]
+backend-gl-wayland = ["backend-winit-wayland", "renderer-femtovg"]
+backend-gl-x11 = ["backend-winit-x11", "renderer-femtovg"]
+eventloop-qt = ["backend-qt"]
+renderer-winit-qt = ["backend-qt"]
+renderer-winit-femtovg = ["renderer-femtovg"]
+renderer-winit-skia = ["renderer-skia"]
+renderer-winit-skia-opengl= ["renderer-skia-opengl"]
+renderer-winit-skia-vulkan= ["renderer-skia-vulkan"]
+renderer-winit-software = ["renderer-software"]
 
-preview = ["slint-interpreter", "i-slint-core", "i-slint-backend-selector"]
+## Enable support for previewing .slint files
+preview = ["preview-builtin", "preview-external", "preview-engine"]
+## [deprecated] Used to enable the "Show Preview" lenses and action on components.
+preview-lense = []
+## [deprecated] Used to enable partial support for external previewers.
+## Use "preview-external" (and maybe "preview-engine" if you want the LSP binary
+## to provide an implementation of the external preview API when building for WASM)
+preview-api = ["preview-external"]
+## Build in the actual code to act as a preview for slint files.
+preview-engine = ["dep:slint", "dep:slint-interpreter", "dep:i-slint-core", "dep:i-slint-backend-selector", "dep:image", "dep:slint-build", "dep:i-slint-common"]
+## Build in the actual code to act as a preview for slint files. Does nothing in WASM!
+preview-builtin = ["preview-engine"]
+## Support the external preview optionally used by e.g. the VSCode plugin
+preview-external = []
 
-default = ["backend-qt", "backend-winit", "renderer-winit-femtovg", "preview"]
+default = ["backend-default", "renderer-femtovg", "renderer-software", "preview"]
 
 [dependencies]
-i-slint-compiler = { version = "=0.3.2", path = "../../internal/compiler"}
-dunce = "1.0.1"
-euclid = "0.22"
-lsp-types = { version = "0.93.0", features = ["proposed"] }
-serde = "1.0.118"
-serde_json = "1.0.60"
-rowan = "0.15.5"
+i-slint-compiler = { workspace = true, features = ["display-diagnostics"] }
 
+by_address = { workspace = true }
+clru = { workspace = true }
+dissimilar = "1.0.7"
+euclid = { workspace = true }
+itertools = { workspace = true }
+lsp-types = { version = "0.95.0", features = ["proposed"] }
+rowan = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
-# for the preview
-i-slint-core = { version = "=0.3.2", path = "../../internal/core", optional = true }
-slint-interpreter = { version = "=0.3.2", path = "../../internal/interpreter", default-features = false, features = ["compat-0-3-0"], optional = true  }
-i-slint-backend-selector = { version = "=0.3.2", path="../../internal/backends/selector", optional = true }
+# for the preview-engine feature
+i-slint-backend-selector = { workspace = true, optional = true }
+i-slint-common = { workspace = true, optional = true }
+i-slint-core = { workspace = true, features = ["std"], optional = true }
+slint = { workspace = true, features = ["compat-1-2"], optional = true }
+slint-interpreter = { workspace = true, features = ["compat-1-2", "highlight", "internal"], optional = true  }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-clap = { version = "4.0", features = ["derive", "wrap_help"] }
+clap = { workspace = true }
 crossbeam-channel = "0.5"  # must match the version used by lsp-server
-lsp-server = "0.6"
+lsp-server = "0.7"
 once_cell = "1.9.0"
-spin_on = "0.1"
+
+# Enable image-rs' default features to make all image formats available for the preview
+image = { workspace = true, optional = true, features = ["default"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1.5"
+js-sys = { version = "0.3.57" }
+send_wrapper = { workspace = true }
+serde-wasm-bindgen = "0.6.0"
 wasm-bindgen = "0.2.80"
 wasm-bindgen-futures = "0.4.30"
-serde-wasm-bindgen = "0.4.5"
-js-sys = { version = "0.3.57" }
-console_error_panic_hook = "0.1.5"
+
+[dev-dependencies]
+i-slint-backend-testing = { path = "../../internal/backends/testing" }
+spin_on = { workspace = true }
+
+[build-dependencies]
+slint-build = { workspace = true, features = ["default"], optional = true }
 
 # [package.metadata.wasm-pack.profile.release]
 # wasm-opt = false

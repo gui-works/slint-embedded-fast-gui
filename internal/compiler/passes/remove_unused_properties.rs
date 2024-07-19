@@ -1,12 +1,12 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Remove the properties which are not used
 
-use crate::object_tree::Component;
+use crate::object_tree::{Component, Document};
 use std::collections::HashSet;
 
-pub fn remove_unused_properties(component: &Component) {
+pub fn remove_unused_properties(doc: &Document) {
     fn recurse_remove_unused_properties(component: &Component) {
         crate::object_tree::recurse_elem_including_sub_components_no_borrow(
             component,
@@ -31,13 +31,10 @@ pub fn remove_unused_properties(component: &Component) {
                     elem.property_declarations.remove(x);
                     elem.property_analysis.borrow_mut().remove(x);
                     elem.bindings.remove(x);
+                    elem.change_callbacks.remove(x);
                 }
             },
         );
-
-        for global in &component.used_types.borrow().globals {
-            recurse_remove_unused_properties(global);
-        }
     }
-    recurse_remove_unused_properties(component)
+    doc.visit_all_used_components(|component| recurse_remove_unused_properties(component))
 }

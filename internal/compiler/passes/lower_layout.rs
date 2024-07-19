@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Passe that compute the layout constraint
 
@@ -18,16 +18,28 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-pub async fn lower_layouts(
+pub fn lower_layouts(
     component: &Rc<Component>,
     type_loader: &mut TypeLoader,
+    style_metrics: &Rc<Component>,
     diag: &mut BuildDiagnostics,
 ) {
-    // Ignore import errors
-    let mut build_diags_to_ignore = crate::diagnostics::BuildDiagnostics::default();
-    let style_metrics = type_loader
-        .import_component("std-widgets.slint", "StyleMetrics", &mut build_diags_to_ignore)
-        .await;
+    // lower the preferred-{width, height}: 100%;
+    recurse_elem_including_sub_components(component, &(), &mut |elem, _| {
+        if check_preferred_size_100(elem, "preferred-width", diag) {
+            elem.borrow_mut().default_fill_parent.0 = true;
+        }
+        if check_preferred_size_100(elem, "preferred-height", diag) {
+            elem.borrow_mut().default_fill_parent.1 = true;
+        }
+        let base = elem.borrow().sub_component().cloned();
+        if let Some(base) = base {
+            let base = base.root_element.borrow();
+            let mut elem_mut = elem.borrow_mut();
+            elem_mut.default_fill_parent.0 |= base.default_fill_parent.0;
+            elem_mut.default_fill_parent.1 |= base.default_fill_parent.1;
+        }
+    });
 
     *component.root_constraints.borrow_mut() =
         LayoutConstraints::new(&component.root_element, diag);
@@ -38,18 +50,41 @@ pub async fn lower_layouts(
             &component,
             elem,
             &type_loader.global_type_registry.borrow(),
-            &style_metrics,
+            style_metrics,
             diag,
         );
         check_no_layout_properties(elem, diag);
     });
 }
 
+fn check_preferred_size_100(elem: &ElementRc, prop: &str, diag: &mut BuildDiagnostics) -> bool {
+    let ret = if let Some(p) = elem.borrow().bindings.get(prop) {
+        if p.borrow().expression.ty() == Type::Percent {
+            if !matches!(p.borrow().expression, Expression::NumberLiteral(val, _) if val == 100.) {
+                diag.push_error(
+                    format!("{prop} must either be a length, or the literal '100%'"),
+                    &*p.borrow(),
+                );
+            }
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    if ret {
+        elem.borrow_mut().bindings.remove(prop).unwrap();
+        return true;
+    }
+    false
+}
+
 fn lower_element_layout(
     component: &Rc<Component>,
     elem: &ElementRc,
     type_register: &TypeRegister,
-    style_metrics: &Option<Rc<Component>>,
+    style_metrics: &Rc<Component>,
     diag: &mut BuildDiagnostics,
 ) {
     let base_type = if let ElementType::Builtin(base_type) = &elem.borrow().base_type {
@@ -58,11 +93,23 @@ fn lower_element_layout(
         return;
     };
     match base_type.name.as_str() {
-        "Row" => panic!("Error caught at element lookup time"),
-        "GridLayout" => lower_grid_layout(component, elem, diag),
+        "Row" => {
+            // We shouldn't lower layout if we have a Row in there. Unless the Row is the root of a repeated item,
+            // in which case another error has been reported
+            assert!(
+                diag.has_errors()
+                    && Rc::ptr_eq(&component.root_element, elem)
+                    && component
+                        .parent_element
+                        .upgrade()
+                        .map_or(false, |e| e.borrow().repeated.is_some()),
+                "Error should have been caught at element lookup time"
+            );
+            return;
+        }
+        "GridLayout" => lower_grid_layout(component, elem, diag, type_register),
         "HorizontalLayout" => lower_box_layout(elem, diag, Orientation::Horizontal),
         "VerticalLayout" => lower_box_layout(elem, diag, Orientation::Vertical),
-        "PathLayout" => lower_path_layout(elem, diag),
         "Dialog" => {
             lower_dialog_layout(elem, style_metrics, diag);
             return; // the Dialog stays in the tree as a Dialog
@@ -73,32 +120,24 @@ fn lower_element_layout(
     {
         let mut elem = elem.borrow_mut();
         let elem = &mut *elem;
-        let prev_base = std::mem::replace(
-            &mut elem.base_type,
-            type_register.lookup_element("Rectangle").unwrap(),
-        );
+        let prev_base = std::mem::replace(&mut elem.base_type, type_register.empty_type());
+        elem.default_fill_parent = (true, true);
         // Create fake properties for the layout properties
-        for p in elem.bindings.keys() {
-            if !elem.base_type.lookup_property(p).is_valid()
-                && !elem.property_declarations.contains_key(p)
+        for (p, ty) in prev_base.property_list() {
+            if !elem.base_type.lookup_property(&p).is_valid()
+                && !elem.property_declarations.contains_key(&p)
             {
-                let ty = prev_base.lookup_property(p).property_type;
-                if ty != Type::Invalid {
-                    elem.property_declarations.insert(p.into(), ty.into());
-                }
+                elem.property_declarations.insert(p, ty.into());
             }
         }
     }
-}
-
-pub fn is_layout_element(element: &ElementRc) -> bool {
-    matches!(&element.borrow().base_type, ElementType::Builtin(n) if n.name == "GridLayout" || n.name == "HorizontalLayout" || n.name == "VerticalLayout" || n.name == "PathLayout")
 }
 
 fn lower_grid_layout(
     component: &Rc<Component>,
     grid_layout_element: &ElementRc,
     diag: &mut BuildDiagnostics,
+    type_register: &TypeRegister,
 ) {
     let mut grid = GridLayout {
         elems: Default::default(),
@@ -147,7 +186,13 @@ fn lower_grid_layout(
                 row += 1;
                 col = 0;
             }
-            component.optimized_elements.borrow_mut().push(layout_child);
+            if layout_child.borrow().has_popup_child {
+                // We need to keep that element otherwise the popup will malfunction
+                layout_child.borrow_mut().base_type = type_register.empty_type();
+                collected_children.push(layout_child);
+            } else {
+                component.optimized_elements.borrow_mut().push(layout_child);
+            }
         } else {
             grid.add_element(
                 &layout_child,
@@ -192,13 +237,16 @@ fn lower_grid_layout(
     layout_info_prop_v.element().borrow_mut().bindings.insert(
         layout_info_prop_v.name().into(),
         BindingExpression::new_with_span(
-            Expression::ComputeLayoutInfo(Layout::GridLayout(grid), Orientation::Vertical),
+            Expression::ComputeLayoutInfo(Layout::GridLayout(grid.clone()), Orientation::Vertical),
             span,
         )
         .into(),
     );
     grid_layout_element.borrow_mut().layout_info_prop =
         Some((layout_info_prop_h, layout_info_prop_v));
+    for d in grid_layout_element.borrow_mut().debug.iter_mut() {
+        d.layout = Some(Layout::GridLayout(grid.clone()));
+    }
 }
 
 impl GridLayout {
@@ -380,17 +428,20 @@ fn lower_box_layout(
     layout_info_prop_v.element().borrow_mut().bindings.insert(
         layout_info_prop_v.name().into(),
         BindingExpression::new_with_span(
-            Expression::ComputeLayoutInfo(Layout::BoxLayout(layout), Orientation::Vertical),
+            Expression::ComputeLayoutInfo(Layout::BoxLayout(layout.clone()), Orientation::Vertical),
             span,
         )
         .into(),
     );
     layout_element.borrow_mut().layout_info_prop = Some((layout_info_prop_h, layout_info_prop_v));
+    for d in layout_element.borrow_mut().debug.iter_mut() {
+        d.layout = Some(Layout::BoxLayout(layout.clone()));
+    }
 }
 
 fn lower_dialog_layout(
     dialog_element: &ElementRc,
-    style_metrics: &Option<Rc<Component>>,
+    style_metrics: &Rc<Component>,
     diag: &mut BuildDiagnostics,
 ) {
     let mut grid = GridLayout {
@@ -398,13 +449,13 @@ fn lower_dialog_layout(
         geometry: LayoutGeometry::new(dialog_element),
         dialog_button_roles: None,
     };
-    if let Some(metrics) = style_metrics.as_ref().map(|comp| &comp.root_element) {
-        grid.geometry.padding.bottom.get_or_insert(NamedReference::new(metrics, "layout-padding"));
-        grid.geometry.padding.top.get_or_insert(NamedReference::new(metrics, "layout-padding"));
-        grid.geometry.padding.left.get_or_insert(NamedReference::new(metrics, "layout-padding"));
-        grid.geometry.padding.right.get_or_insert(NamedReference::new(metrics, "layout-padding"));
-        grid.geometry.spacing.get_or_insert(NamedReference::new(metrics, "layout-spacing"));
-    }
+    let metrics = &style_metrics.root_element;
+    grid.geometry.padding.bottom.get_or_insert(NamedReference::new(metrics, "layout-padding"));
+    grid.geometry.padding.top.get_or_insert(NamedReference::new(metrics, "layout-padding"));
+    grid.geometry.padding.left.get_or_insert(NamedReference::new(metrics, "layout-padding"));
+    grid.geometry.padding.right.get_or_insert(NamedReference::new(metrics, "layout-padding"));
+    grid.geometry.spacing.horizontal.get_or_insert(NamedReference::new(metrics, "layout-spacing"));
+    grid.geometry.spacing.vertical.get_or_insert(NamedReference::new(metrics, "layout-spacing"));
 
     let layout_cache_prop_h = create_new_prop(dialog_element, "layout-cache-h", Type::LayoutCache);
     let layout_cache_prop_v = create_new_prop(dialog_element, "layout-cache-v", Type::LayoutCache);
@@ -497,6 +548,7 @@ fn lower_dialog_layout(
                                             "clicked",
                                         )),
                                         visibility: PropertyVisibility::InOut,
+                                        pure: None,
                                     });
                             }
                         }
@@ -582,79 +634,15 @@ fn lower_dialog_layout(
     layout_info_prop_v.element().borrow_mut().bindings.insert(
         layout_info_prop_v.name().into(),
         BindingExpression::new_with_span(
-            Expression::ComputeLayoutInfo(Layout::GridLayout(grid), Orientation::Vertical),
+            Expression::ComputeLayoutInfo(Layout::GridLayout(grid.clone()), Orientation::Vertical),
             span,
         )
         .into(),
     );
     dialog_element.borrow_mut().layout_info_prop = Some((layout_info_prop_h, layout_info_prop_v));
-}
-
-fn lower_path_layout(layout_element: &ElementRc, diag: &mut BuildDiagnostics) {
-    let layout_cache_prop = create_new_prop(layout_element, "layout-cache", Type::LayoutCache);
-
-    let path_elements_expr =
-        match layout_element.borrow_mut().bindings.remove("elements").map(RefCell::into_inner) {
-            Some(BindingExpression { expression: Expression::PathData(data), .. }) => data,
-            _ => {
-                assert!(diag.has_error());
-                return;
-            }
-        };
-
-    let elements = layout_element.borrow().children.clone();
-    if elements.is_empty() {
-        return;
+    for d in dialog_element.borrow_mut().debug.iter_mut() {
+        d.layout = Some(Layout::GridLayout(grid.clone()));
     }
-    for (index, e) in elements.iter().enumerate() {
-        let (repeater_index, actual_elem) = if e.borrow().repeated.is_some() {
-            (
-                Some(Expression::RepeaterIndexReference { element: Rc::downgrade(e) }),
-                e.borrow().base_type.as_component().root_element.clone(),
-            )
-        } else {
-            (None, e.clone())
-        };
-        let set_prop_from_cache = |prop: &str, offset: usize, size_prop: &str| {
-            let size = NamedReference::new(&actual_elem, size_prop);
-            let expression = Expression::BinaryExpression {
-                lhs: Box::new(Expression::LayoutCacheAccess {
-                    layout_cache_prop: layout_cache_prop.clone(),
-                    index: index * 2 + offset,
-                    repeater_index: repeater_index.as_ref().map(|x| Box::new(x.clone())),
-                }),
-                op: '-',
-                rhs: Box::new(Expression::BinaryExpression {
-                    lhs: Box::new(Expression::PropertyReference(size)),
-                    op: '/',
-                    rhs: Box::new(Expression::NumberLiteral(2., Unit::None)),
-                }),
-            };
-            actual_elem.borrow_mut().bindings.insert(prop.into(), RefCell::new(expression.into()));
-        };
-        set_prop_from_cache("x", 0, "width");
-        set_prop_from_cache("y", 1, "height");
-    }
-    let rect = LayoutRect::install_on_element(layout_element);
-    let path_layout = Layout::PathLayout(PathLayout {
-        elements,
-        path: path_elements_expr,
-        rect,
-        offset_reference: layout_element
-            .borrow()
-            .bindings
-            .contains_key("spacing")
-            .then(|| NamedReference::new(layout_element, "spacing")),
-    });
-    let binding = BindingExpression::new_with_span(
-        Expression::SolveLayout(path_layout, Orientation::Horizontal),
-        layout_element.borrow().to_source_location(),
-    );
-    layout_cache_prop
-        .element()
-        .borrow_mut()
-        .bindings
-        .insert(layout_cache_prop.name().into(), binding.into());
 }
 
 struct CreateLayoutItemResult {
@@ -768,27 +756,6 @@ fn eval_const_expr(
     }
 }
 
-/// Create a new property based on the name. (it might get a different name if that property exist)
-pub fn create_new_prop(elem: &ElementRc, tentative_name: &str, ty: Type) -> NamedReference {
-    let mut e = elem.borrow_mut();
-    if !e.lookup_property(tentative_name).is_valid() {
-        e.property_declarations.insert(tentative_name.into(), ty.into());
-        drop(e);
-        NamedReference::new(elem, tentative_name)
-    } else {
-        let mut counter = 0;
-        loop {
-            counter += 1;
-            let name = format!("{}{}", tentative_name, counter);
-            if !e.lookup_property(&name).is_valid() {
-                e.property_declarations.insert(name.clone(), ty.into());
-                drop(e);
-                return NamedReference::new(elem, &name);
-            }
-        }
-    }
-}
-
 /// Checks that there is grid-layout specific properties left
 fn check_no_layout_properties(item: &ElementRc, diag: &mut BuildDiagnostics) {
     for (prop, expr) in item.borrow().bindings.iter() {
@@ -799,4 +766,48 @@ fn check_no_layout_properties(item: &ElementRc, diag: &mut BuildDiagnostics) {
             diag.push_error(format!("{} used outside of a Dialog", prop), &*expr.borrow());
         }
     }
+}
+
+/// For fixed layout, we need to dissociate the width and the height property of the WindowItem from width and height property
+/// in slint such that the width and height property are actually constants.
+///
+/// The Slint runtime will change the width and height property of the native WindowItem to match those of the actual
+/// window, but we don't want that to happen if we have a fixed layout.
+pub fn check_window_layout(component: &Rc<Component>) {
+    if component.root_constraints.borrow().fixed_height {
+        adjust_window_layout(component, "height");
+    }
+    if component.root_constraints.borrow().fixed_width {
+        adjust_window_layout(component, "width");
+    }
+}
+
+fn adjust_window_layout(component: &Rc<Component>, prop: &str) {
+    let new_prop = crate::layout::create_new_prop(
+        &component.root_element,
+        &format!("fixed-{prop}"),
+        Type::LogicalLength,
+    );
+    {
+        let mut root = component.root_element.borrow_mut();
+        if let Some(b) = root.bindings.remove(prop) {
+            root.bindings.insert(new_prop.name().to_string(), b);
+        };
+        let mut analysis = root.property_analysis.borrow_mut();
+        if let Some(a) = analysis.remove(prop) {
+            analysis.insert(new_prop.name().to_string(), a);
+        };
+        drop(analysis);
+        root.bindings.insert(
+            prop.to_string(),
+            RefCell::new(Expression::PropertyReference(new_prop.clone()).into()),
+        );
+    }
+
+    let old_prop = NamedReference::new(&component.root_element, prop);
+    crate::object_tree::visit_all_named_references(component, &mut |nr| {
+        if nr == &old_prop {
+            *nr = new_prop.clone()
+        }
+    });
 }

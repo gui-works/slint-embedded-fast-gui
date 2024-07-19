@@ -1,8 +1,8 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 
-TestCase := Rectangle {
+export TestCase := Rectangle {
     Path {
         LineTo { x: 100; y: 0; }
         LineTo { x: 100; y: 0; }
@@ -12,5 +12,5 @@ TestCase := Rectangle {
     }
 
     LineTo { x: 100; y: 0; }
-//  ^error{LineTo can only be within the following elements: Path, PathLayout}
+//  ^error{LineTo can only be within a Path element}
 }

@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 MyWid := Rectangle {
     min-width: 20phx;
@@ -81,7 +81,7 @@ assert(instance.get_c1());
 
 
 ```rust
-let instance = TestCase::new();
+let instance = TestCase::new().unwrap();
 assert!(instance.get_v1());
 assert!(instance.get_v2());
 assert!(instance.get_v3());
@@ -93,7 +93,7 @@ assert!(instance.get_c1());
 
 ```js
 var instance = new slint.TestCase();
-instance.send_mouse_click(5., 5.);
+slintlib.private_api.send_mouse_click(instance, 5., 5.);
 assert(instance.v1);
 assert(instance.v2);
 assert(instance.v3);

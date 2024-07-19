@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! This pass converts the verbose markup used for paths, such as
 //!    Path {
@@ -14,18 +14,18 @@ use crate::expression_tree::*;
 use crate::langtype::ElementType;
 use crate::langtype::Type;
 use crate::object_tree::*;
+use crate::EmbedResourcesKind;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 pub fn compile_paths(
     component: &Rc<Component>,
     tr: &crate::typeregister::TypeRegister,
+    _embed_resources: EmbedResourcesKind,
     diag: &mut BuildDiagnostics,
 ) {
     let path_type = tr.lookup_element("Path").unwrap();
     let path_type = path_type.as_builtin();
-    let pathlayout_type = tr.lookup_element("PathLayout").unwrap();
-    let pathlayout_type = pathlayout_type.as_builtin();
 
     recurse_elem(&component.root_element, &(), &mut |elem_, _| {
         let accepted_type = match &elem_.borrow().base_type {
@@ -34,22 +34,24 @@ pub fn compile_paths(
             {
                 path_type
             }
-            ElementType::Builtin(be)
-                if be.native_class.class_name == pathlayout_type.native_class.class_name =>
-            {
-                pathlayout_type
-            }
             _ => return,
         };
 
+        #[cfg(feature = "software-renderer")]
+        if _embed_resources == EmbedResourcesKind::EmbedTextures {
+            diag.push_warning(
+                "Path element is not supported with the software renderer".into(),
+                &*elem_.borrow(),
+            )
+        }
+
         let element_types = &accepted_type.additional_accepted_child_types;
 
-        let mut elem = elem_.borrow_mut();
+        let commands_binding =
+            elem_.borrow_mut().bindings.remove("commands").map(RefCell::into_inner);
 
-        let path_data_binding = if let Some(commands_expr) =
-            elem.bindings.remove("commands").map(RefCell::into_inner)
-        {
-            if let Some(path_child) = elem.children.iter().find(|child| {
+        let path_data_binding = if let Some(commands_expr) = commands_binding {
+            if let Some(path_child) = elem_.borrow().children.iter().find(|child| {
                 element_types
                     .contains_key(&child.borrow().base_type.as_builtin().native_class.class_name)
             }) {
@@ -79,11 +81,15 @@ pub fn compile_paths(
                 )
                 .into(),
                 _ => {
-                    diag.push_error("The commands property only accepts strings".into(), &*elem);
+                    diag.push_error(
+                        "The commands property only accepts strings".into(),
+                        &*elem_.borrow(),
+                    );
                     return;
                 }
             }
         } else {
+            let mut elem = elem_.borrow_mut();
             let new_children = Vec::with_capacity(elem.children.len());
             let old_children = std::mem::replace(&mut elem.children, new_children);
 
@@ -118,7 +124,7 @@ pub fn compile_paths(
             Expression::PathData(crate::expression_tree::Path::Elements(path_data)).into()
         };
 
-        elem.bindings.insert("elements".into(), RefCell::new(path_data_binding));
+        elem_.borrow_mut().bindings.insert("elements".into(), RefCell::new(path_data_binding));
     });
 }
 
@@ -141,8 +147,9 @@ fn compile_path_from_string_literal(
             ("y".to_owned(), Type::Float32),
         ])
         .collect(),
-        name: Some("Point".into()),
+        name: Some("slint::private_api::Point".into()),
         node: None,
+        rust_attributes: None,
     };
 
     let mut points = Vec::new();

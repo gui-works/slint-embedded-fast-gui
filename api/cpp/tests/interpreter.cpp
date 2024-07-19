@@ -1,11 +1,11 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 #define CATCH_CONFIG_MAIN
 #include "catch2/catch.hpp"
 
 #include <slint.h>
-#include <slint_interpreter.h>
+#include <slint-interpreter.h>
 
 SCENARIO("Value API")
 {
@@ -97,7 +97,7 @@ SCENARIO("Value API")
     {
         REQUIRE(!value.to_image().has_value());
         slint::Image image = slint::Image::load_from_path(
-                SOURCE_DIR "/../../logo/slint-logo-square-light-128x128.png");
+                SOURCE_DIR "/../../../logo/slint-logo-square-light-128x128.png");
         REQUIRE(image.size().width == 128);
         value = Value(image);
         REQUIRE(value.type() == Value::Type::Image);
@@ -284,6 +284,12 @@ SCENARIO("Component Compiler")
         REQUIRE(compiler.style() == "fluent");
     }
 
+    SECTION("configure translation domain")
+    {
+        // Make sure this compiles.
+        compiler.set_translation_domain("cpptests");
+    }
+
     SECTION("Compile failure from source")
     {
         auto result = compiler.build_from_source("Syntax Error!!", "");
@@ -292,7 +298,7 @@ SCENARIO("Component Compiler")
 
     SECTION("Compile from source")
     {
-        auto result = compiler.build_from_source("export Dummy := Rectangle {}", "");
+        auto result = compiler.build_from_source("export component Dummy {}", "");
         REQUIRE(result.has_value());
     }
 
@@ -304,11 +310,13 @@ SCENARIO("Component Compiler")
 
         REQUIRE(diags.size() == 1);
         REQUIRE(diags[0].message.starts_with("Could not load"));
+        REQUIRE(diags[0].line == 0);
+        REQUIRE(diags[0].column == 0);
     }
 
     SECTION("Compile from path")
     {
-        auto result = compiler.build_from_path(SOURCE_DIR "/tests/test.slint");
+        auto result = compiler.build_from_path(SOURCE_DIR "/test.slint");
         REQUIRE(result.has_value());
     }
 }
@@ -319,8 +327,10 @@ SCENARIO("Component Definition Properties")
     using namespace slint;
 
     ComponentCompiler compiler;
-    auto comp_def = *compiler.build_from_source(
-            "export Dummy := Rectangle { property <string> test; callback dummy; }", "");
+    auto comp_def =
+            *compiler.build_from_source("export component Dummy { in property <string> test; "
+                                        "callback dummy; public function my-fun() {} }",
+                                        "");
     auto properties = comp_def.properties();
     REQUIRE(properties.size() == 1);
     REQUIRE(properties[0].property_name == "test");
@@ -329,6 +339,17 @@ SCENARIO("Component Definition Properties")
     auto callback_names = comp_def.callbacks();
     REQUIRE(callback_names.size() == 1);
     REQUIRE(callback_names[0] == "dummy");
+
+    auto function_names = comp_def.functions();
+    REQUIRE(function_names.size() == 1);
+    REQUIRE(function_names[0] == "my-fun");
+
+    auto instance = comp_def.create();
+    ComponentDefinition new_comp_def = instance->definition();
+    auto new_props = new_comp_def.properties();
+    REQUIRE(new_props.size() == 1);
+    REQUIRE(new_props[0].property_name == "test");
+    REQUIRE(new_props[0].property_type == Value::Type::String);
 }
 
 SCENARIO("Component Definition Properties / Two-way bindings")
@@ -338,7 +359,7 @@ SCENARIO("Component Definition Properties / Two-way bindings")
 
     ComponentCompiler compiler;
     auto comp_def = *compiler.build_from_source(
-            "export Dummy := Rectangle { property <string> test <=> sub_object.test; "
+            "export component Dummy { in-out property <string> test <=> sub_object.test; "
             "    sub_object := Rectangle { property <string> test; }"
             "}",
             "");
@@ -358,7 +379,7 @@ SCENARIO("Invoke callback")
     SECTION("valid")
     {
         auto result = compiler.build_from_source(
-                "export Dummy := Rectangle { callback some_callback(string, int) -> string; }", "");
+                "export component Dummy  { callback some_callback(string, int) -> string; }", "");
         REQUIRE(result.has_value());
         auto instance = result->create();
         std::string local_string = "_string_on_the_stack_";
@@ -369,7 +390,7 @@ SCENARIO("Invoke callback")
             return Value(SharedString(res));
         }));
         Value args[] = { SharedString("Hello"), 42. };
-        auto res = instance->invoke_callback("some_callback", args);
+        auto res = instance->invoke("some_callback", args);
         REQUIRE(res.has_value());
         REQUIRE(*res->to_string() == SharedString("Hello:42_string_on_the_stack_"));
     }
@@ -377,12 +398,12 @@ SCENARIO("Invoke callback")
     SECTION("invalid")
     {
         auto result = compiler.build_from_source(
-                "export Dummy := Rectangle { callback foo(string, int) -> string; }", "");
+                "export component Dummy { callback foo(string, int) -> string; }", "");
         REQUIRE(result.has_value());
         auto instance = result->create();
         REQUIRE(!instance->set_callback("bar", [](auto) { return Value(); }));
         Value args[] = { SharedString("Hello"), 42. };
-        auto res = instance->invoke_callback("bar", args);
+        auto res = instance->invoke("bar", args);
         REQUIRE(!res.has_value());
     }
 }
@@ -395,7 +416,7 @@ SCENARIO("Array between .slint and C++")
     ComponentCompiler compiler;
 
     auto result = compiler.build_from_source(
-            "export Dummy := Rectangle { property <[int]> array: [1, 2, 3]; }", "");
+            "export component Dummy { in-out property <[int]> array: [1, 2, 3]; }", "");
     REQUIRE(result.has_value());
     auto instance = result->create();
 
@@ -430,10 +451,10 @@ SCENARIO("Angle between .slint and C++")
 
     ComponentCompiler compiler;
 
-    auto result =
-            compiler.build_from_source("export Dummy := Rectangle { property <angle> the_angle: "
-                                       "0.25turn;  property <bool> test: the_angle == 0.5turn; }",
-                                       "");
+    auto result = compiler.build_from_source(
+            "export component Dummy { in-out property <angle> the_angle: "
+            "0.25turn;  out property <bool> test: the_angle == 0.5turn; }",
+            "");
     REQUIRE(result.has_value());
     auto instance = result->create();
 
@@ -462,7 +483,7 @@ SCENARIO("Component Definition Name")
     using namespace slint;
 
     ComponentCompiler compiler;
-    auto comp_def = *compiler.build_from_source("export IHaveAName := Rectangle { }", "");
+    auto comp_def = *compiler.build_from_source("export component IHaveAName { }", "");
     REQUIRE(comp_def.name() == "IHaveAName");
 }
 
@@ -473,12 +494,14 @@ SCENARIO("Send key events")
 
     ComponentCompiler compiler;
     auto comp_def = compiler.build_from_source(R"(
-        export Dummy := Rectangle {
+        export component Dummy {
             forward-focus: scope;
-            property <string> result;
+            out property <string> result;
             scope := FocusScope {
                 key-pressed(event) => {
-                    result += event.text;
+                    if (event.text != Key.Shift && event.text != Key.Control) {
+                        result += event.text;
+                    }
                     return accept;
                 }
             }
@@ -487,7 +510,7 @@ SCENARIO("Send key events")
                                                "");
     REQUIRE(comp_def.has_value());
     auto instance = comp_def->create();
-    slint::testing::send_keyboard_string_sequence(&*instance, "Hello keys!", {});
+    slint::private_api::testing::send_keyboard_string_sequence(&*instance, "Hello keys!");
     REQUIRE(*instance->get_property("result")->to_string() == "Hello keys!");
 }
 
@@ -500,12 +523,13 @@ SCENARIO("Global properties")
 
     auto result = compiler.build_from_source(
             R"(
-        export global The-Global := {
-            property <string> the-property: "€€€";
-            callback to_uppercase(string)->string;
+        export global The-Global {
+            in-out property <string> the-property: "€€€";
+            pure callback to_uppercase(string)->string;
+            public function ff() -> string { return the-property; }
         }
-        export Dummy := Rectangle {
-            property <string> result: The-Global.to_uppercase("abc");
+        export component Dummy {
+            out property <string> result: The-Global.to_uppercase("abc");
         }
     )",
             "");
@@ -533,6 +557,10 @@ SCENARIO("Global properties")
         auto callbacks = *component_definition.global_callbacks("The-Global");
         REQUIRE(callbacks.size() == 1);
         REQUIRE(callbacks[0] == "to_uppercase");
+
+        auto functions = *component_definition.global_functions("The-Global");
+        REQUIRE(functions.size() == 1);
+        REQUIRE(functions[0] == "ff");
     }
 
     auto instance = component_definition.create();
@@ -576,7 +604,7 @@ SCENARIO("Global properties")
         REQUIRE(result->to_string().value() == "ABC");
 
         Value args[] = { SharedString("Hello") };
-        auto res = instance->invoke_global_callback("The_Global", "to-uppercase", args);
+        auto res = instance->invoke_global("The_Global", "to-uppercase", args);
         REQUIRE(res.has_value());
         REQUIRE(*res->to_string() == SharedString("HELLO"));
     }
@@ -586,7 +614,14 @@ SCENARIO("Global properties")
                                                [](auto) { return Value {}; }));
         REQUIRE(!instance->set_global_callback("The-Global", "touppercase",
                                                [](auto) { return Value {}; }));
-        REQUIRE(!instance->invoke_global_callback("TheGlobal", "touppercase", {}));
-        REQUIRE(!instance->invoke_global_callback("The-Global", "touppercase", {}));
+        REQUIRE(!instance->invoke_global("TheGlobal", "touppercase", {}));
+        REQUIRE(!instance->invoke_global("The-Global", "touppercase", {}));
+    }
+    SECTION("invoke function")
+    {
+        REQUIRE(instance->set_global_property("The-Global", "the-property", SharedString("&&&")));
+        auto res = instance->invoke_global("The_Global", "ff", {});
+        REQUIRE(res.has_value());
+        REQUIRE(*res->to_string() == SharedString("&&&"));
     }
 }

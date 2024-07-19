@@ -1,7 +1,7 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-X := Rectangle {
+export X := Rectangle {
     property<brush> g1: @linear-gradient();
 //                      ^error{Expected angle expression}
     property<brush> g2: @linear-gradient(to left, blue, red);
@@ -24,4 +24,9 @@ X := Rectangle {
     property<brush> g12: @linear-gradient(2, blue 45%, red 88%);
 //                                        ^error{Cannot convert float to angle. Use an unit, or multiply by 1deg to convert explicitly}
     property<brush> g13: @linear-gradient(90deg + 0.5turn, true ? blue : red 45%, red 88% + 0.1);
+
+    property<brush> g14: @linear-gradient(-128deg, white, blue r);
+//                                                             ^error{Unknown unqualified identifier 'r'}
+    property <brush> g15: @linear-gradient(90deg, brown o, green); // #3241
+//                                                      ^error{Unknown unqualified identifier 'o'}
 }

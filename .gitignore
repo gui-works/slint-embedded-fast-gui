@@ -9,3 +9,13 @@ tools/figma_import/figma_output
 /_deps
 package-lock.json
 .DS_Store
+Pipfile.lock
+docs/reference/src/language/builtins/enums.md
+docs/reference/src/language/builtins/structs.md
+
+*.node
+*.d.ts
+
+.env
+.envrc
+__pycache__

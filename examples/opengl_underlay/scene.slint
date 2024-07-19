@@ -1,20 +1,22 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 import { ScrollView, Button, CheckBox, SpinBox, Slider, GroupBox, LineEdit, StandardListView,
-    ComboBox, HorizontalBox, VerticalBox, GridBox, TabWidget, TextEdit, AboutSixtyFPS } from "std-widgets.slint";
+    ComboBox, HorizontalBox, VerticalBox, GridBox, TabWidget, TextEdit } from "std-widgets.slint";
 
-App := Window {
+export component App inherits Window {
+    in property <bool> rotation-enabled <=> apply-rotation.checked;
+
     preferred-width: 500px;
     preferred-height: 600px;
     title: "Slint OpenGL Underlay Example";
-    icon: @image-url("../../logo/slint-logo-small-light-128x128.png");
+    icon: @image-url("../../logo/slint-logo-small-light.png");
 
-    property <bool> rotation-enabled <=> apply-rotation.checked;
 
     VerticalBox {
         Rectangle {
             background: #ffffff92;
+
             HorizontalBox {
                 Text {
                     text: "This text is rendered using Slint. The animation below is rendered using OpenGL code.";

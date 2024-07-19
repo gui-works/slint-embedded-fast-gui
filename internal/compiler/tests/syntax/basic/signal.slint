@@ -1,8 +1,14 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-SubElements := Rectangle {
+Base := Rectangle {
+    callback blah;
+}
+
+export SubElements := Rectangle {
     callback foobar;
+    callback foobar;
+//           ^error{Duplicated callback declaration}
 
     callback callback_with_arg(int, string);
 
@@ -35,4 +41,18 @@ SubElements := Rectangle {
     callback_with_arg(a, b, c, d) => { }
 //  ^error{'callback-with-arg' only has 2 arguments, but 4 were provided}
 
+    Base {
+        callback blah;
+//               ^error{Cannot override callback 'blah'}
+    }
+
+    property <bool> pressed;
+    callback pressed;
+//           ^error{Cannot declare callback 'pressed' when a property with the same name exists}
+
+    callback init;
+//           ^error{Cannot override callback 'init'}
+
+    callback width;
+//           ^error{Cannot declare callback 'width' when a property with the same name exists}
 }

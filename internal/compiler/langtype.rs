@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -8,14 +8,15 @@ use std::rc::Rc;
 
 use itertools::Itertools;
 
-use crate::expression_tree::{Expression, Unit};
+use crate::expression_tree::{BuiltinFunction, Expression, Unit};
 use crate::object_tree::{Component, PropertyVisibility};
 use crate::parser::syntax_nodes;
 use crate::typeregister::TypeRegister;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum Type {
     /// Correspond to an uninitialized type, or an error
+    #[default]
     Invalid,
     /// The type of an expression that return nothing
     Void,
@@ -33,6 +34,8 @@ pub enum Type {
         args: Vec<Type>,
     },
 
+    ComponentFactory,
+
     // Other property types:
     Float32,
     Int32,
@@ -41,10 +44,12 @@ pub enum Type {
     Duration,
     PhysicalLength,
     LogicalLength,
+    Rem,
     Angle,
     Percent,
     Image,
     Bool,
+    /// Fake type that can represent anything that can be converted into a model.
     Model,
     PathData, // Either a vector of path elements or a two vectors of events and coordinates
     Easing,
@@ -58,6 +63,8 @@ pub enum Type {
         name: Option<String>,
         /// When declared in .slint, this is the node of the declaration.
         node: Option<syntax_nodes::ObjectType>,
+        /// derived
+        rust_attributes: Option<Vec<String>>,
     },
     Enumeration(Rc<Enumeration>),
 
@@ -85,6 +92,7 @@ impl core::cmp::PartialEq for Type {
             Type::Function { return_type: lhs_rt, args: lhs_args } => {
                 matches!(other, Type::Function { return_type: rhs_rt, args: rhs_args } if lhs_rt == rhs_rt && lhs_args == rhs_args)
             }
+            Type::ComponentFactory => matches!(other, Type::ComponentFactory),
             Type::Float32 => matches!(other, Type::Float32),
             Type::Int32 => matches!(other, Type::Int32),
             Type::String => matches!(other, Type::String),
@@ -93,6 +101,7 @@ impl core::cmp::PartialEq for Type {
             Type::Angle => matches!(other, Type::Angle),
             Type::PhysicalLength => matches!(other, Type::PhysicalLength),
             Type::LogicalLength => matches!(other, Type::LogicalLength),
+            Type::Rem => matches!(other, Type::Rem),
             Type::Percent => matches!(other, Type::Percent),
             Type::Image => matches!(other, Type::Image),
             Type::Bool => matches!(other, Type::Bool),
@@ -101,8 +110,8 @@ impl core::cmp::PartialEq for Type {
             Type::Easing => matches!(other, Type::Easing),
             Type::Brush => matches!(other, Type::Brush),
             Type::Array(a) => matches!(other, Type::Array(b) if a == b),
-            Type::Struct { fields, name, node: _ } => {
-                matches!(other, Type::Struct{fields: f, name: n, node: _} if fields == f && name == n)
+            Type::Struct { fields, name, node: _, rust_attributes: _ } => {
+                matches!(other, Type::Struct{fields:f,name:n,node:_, rust_attributes: _ } if fields == f && name == n)
             }
             Type::Enumeration(lhs) => matches!(other, Type::Enumeration(rhs) if lhs == rhs),
             Type::UnitProduct(a) => matches!(other, Type::UnitProduct(b) if a == b),
@@ -136,6 +145,7 @@ impl Display for Type {
                 }
                 Ok(())
             }
+            Type::ComponentFactory => write!(f, "component-factory"),
             Type::Function { return_type, args } => {
                 write!(f, "function(")?;
                 for (i, arg) in args.iter().enumerate() {
@@ -153,6 +163,7 @@ impl Display for Type {
             Type::Angle => write!(f, "angle"),
             Type::PhysicalLength => write!(f, "physical-length"),
             Type::LogicalLength => write!(f, "length"),
+            Type::Rem => write!(f, "relative-font-size"),
             Type::Percent => write!(f, "percent"),
             Type::Color => write!(f, "color"),
             Type::Image => write!(f, "image"),
@@ -203,14 +214,15 @@ impl Type {
                 | Self::Int32
                 | Self::String
                 | Self::Color
+                | Self::ComponentFactory
                 | Self::Duration
                 | Self::Angle
                 | Self::PhysicalLength
                 | Self::LogicalLength
+                | Self::Rem
                 | Self::Percent
                 | Self::Image
                 | Self::Bool
-                | Self::Model
                 | Self::Easing
                 | Self::Enumeration(_)
                 | Self::ElementReference
@@ -266,6 +278,10 @@ impl Type {
             | (Type::Int32, Type::Model)
             | (Type::PhysicalLength, Type::LogicalLength)
             | (Type::LogicalLength, Type::PhysicalLength)
+            | (Type::Rem, Type::LogicalLength)
+            | (Type::Rem, Type::PhysicalLength)
+            | (Type::LogicalLength, Type::Rem)
+            | (Type::PhysicalLength, Type::Rem)
             | (Type::Percent, Type::Float32)
             | (Type::Brush, Type::Color)
             | (Type::Color, Type::Brush) => true,
@@ -291,6 +307,7 @@ impl Type {
             Type::Duration => Some(Unit::Ms),
             Type::PhysicalLength => Some(Unit::Phx),
             Type::LogicalLength => Some(Unit::Px),
+            Type::Rem => Some(Unit::Rem),
             // Unit::Percent is special that it does not combine with other units like
             Type::Percent => None,
             Type::Angle => Some(Unit::Deg),
@@ -298,6 +315,7 @@ impl Type {
             Type::Void => None,
             Type::InferredProperty | Type::InferredCallback => None,
             Type::Callback { .. } => None,
+            Type::ComponentFactory => None,
             Type::Function { .. } => None,
             Type::Float32 => None,
             Type::Int32 => None,
@@ -328,12 +346,6 @@ impl Type {
     }
 }
 
-impl Default for Type {
-    fn default() -> Self {
-        Self::Invalid
-    }
-}
-
 /// Information about properties in NativeClass
 #[derive(Debug, Clone)]
 pub struct BuiltinPropertyInfo {
@@ -341,16 +353,16 @@ pub struct BuiltinPropertyInfo {
     pub ty: Type,
     /// When set, this is the initial value that we will have to set if no other binding were specified
     pub default_value: Option<Expression>,
-    /// Most properties are just set from the .slint code and never modified by the native code.
-    /// But some properties, such as `TouchArea::pressed` are being set by the native code, these
-    /// are output properties which are meant to be read by the .slint.
-    /// `is_native_output` is true if the native item can modify the property.
-    pub is_native_output: bool,
+    pub property_visibility: PropertyVisibility,
 }
 
 impl BuiltinPropertyInfo {
     pub fn new(ty: Type) -> Self {
-        Self { ty, default_value: None, is_native_output: false }
+        Self { ty, default_value: None, property_visibility: PropertyVisibility::InOut }
+    }
+
+    pub fn is_native_output(&self) -> bool {
+        matches!(self.property_visibility, PropertyVisibility::InOut | PropertyVisibility::Output)
     }
 }
 
@@ -399,7 +411,9 @@ impl ElementType {
                                 resolved_name,
                                 property_type: Type::Invalid,
                                 property_visibility: PropertyVisibility::Private,
+                                declared_pure: None,
                                 is_local_to_component: false,
+                                is_in_direct_base: false,
                             }
                         } else {
                             crate::typeregister::reserved_property(name)
@@ -408,8 +422,10 @@ impl ElementType {
                     Some(p) => PropertyLookupResult {
                         resolved_name,
                         property_type: p.ty.clone(),
-                        property_visibility: PropertyVisibility::InOut,
+                        property_visibility: p.property_visibility,
+                        declared_pure: None,
                         is_local_to_component: false,
+                        is_in_direct_base: false,
                     },
                 }
             }
@@ -425,14 +441,18 @@ impl ElementType {
                     resolved_name,
                     property_type,
                     property_visibility: PropertyVisibility::InOut,
+                    declared_pure: None,
                     is_local_to_component: false,
+                    is_in_direct_base: false,
                 }
             }
             _ => PropertyLookupResult {
                 resolved_name: Cow::Borrowed(name),
                 property_type: Type::Invalid,
                 property_visibility: PropertyVisibility::Private,
+                declared_pure: None,
                 is_local_to_component: false,
+                is_in_direct_base: false,
             },
         }
     }
@@ -461,23 +481,26 @@ impl ElementType {
         }
     }
 
-    pub fn lookup_type_for_child_element(
+    /// This function looks at the element and checks whether it can have Elements of type `name` as children.
+    /// It returns an Error if that is not possible or an Option of the ElementType if it is.
+    /// The option is unset when the compiler does not know the type well enough to avoid further
+    /// probing.
+    pub fn accepts_child_element(
         &self,
         name: &str,
         tr: &TypeRegister,
-    ) -> Result<ElementType, String> {
+    ) -> Result<Option<ElementType>, String> {
         match self {
             Self::Component(component) if component.child_insertion_point.borrow().is_none() => {
                 let base_type = component.root_element.borrow().base_type.clone();
                 if base_type == tr.empty_type() {
                     return Err(format!("'{}' cannot have children. Only components with @children can have children", component.id));
-                } else {
-                    return base_type.lookup_type_for_child_element(name, tr);
                 }
+                return base_type.accepts_child_element(name, tr);
             }
             Self::Builtin(builtin) => {
                 if let Some(child_type) = builtin.additional_accepted_child_types.get(name) {
-                    return Ok(child_type.clone());
+                    return Ok(Some(child_type.clone()));
                 }
                 if builtin.disallow_global_types_as_child_elements {
                     let mut valid_children: Vec<_> =
@@ -494,6 +517,21 @@ impl ElementType {
             }
             _ => {}
         };
+        Ok(None)
+    }
+
+    /// This function looks at the element and checks whether it can have Elements of type `name` as children.
+    /// In addition to what `accepts_child_element` does, this method also probes the type of `name`.
+    /// It returns an Error if that is not possible or an `ElementType` if it is.
+    pub fn lookup_type_for_child_element(
+        &self,
+        name: &str,
+        tr: &TypeRegister,
+    ) -> Result<ElementType, String> {
+        if let Some(ct) = self.accepts_child_element(name, tr)? {
+            return Ok(ct);
+        }
+
         tr.lookup_element(name).and_then(|t| {
             if !tr.expose_internal_types && matches!(&t, Self::Builtin(e) if e.is_internal) {
                 Err(format!("Unknown type {}. (The type exist as an internal type, but cannot be accessed in this scope)", name))
@@ -508,17 +546,17 @@ impl ElementType {
         })
     }
 
-    pub fn lookup_member_function(&self, name: &str) -> Expression {
+    pub fn lookup_member_function(&self, name: &str) -> Option<BuiltinFunction> {
         match self {
             Self::Builtin(builtin) => builtin
                 .member_functions
                 .get(name)
                 .cloned()
-                .unwrap_or_else(|| crate::typeregister::reserved_member_function(name)),
+                .or_else(|| crate::typeregister::reserved_member_function(name)),
             Self::Component(component) => {
                 component.root_element.borrow().base_type.lookup_member_function(name)
             }
-            _ => Expression::Invalid,
+            _ => None,
         }
     }
 
@@ -567,6 +605,17 @@ impl ElementType {
         match self {
             Self::Component(c) => c,
             _ => panic!("should be a component because of the repeater_component pass"),
+        }
+    }
+
+    /// Returns the Slint type name if applicable (for example `Rectangle` or `MyButton` when `component MyButton {}` is used as `MyButton` element)
+    pub fn type_name(&self) -> Option<&str> {
+        match self {
+            ElementType::Component(component) => Some(&component.id),
+            ElementType::Builtin(b) => Some(&b.name),
+            ElementType::Native(_) => None, // Too late, caller should call this function before the native class lowering
+            ElementType::Error => None,
+            ElementType::Global => None,
         }
     }
 }
@@ -647,20 +696,15 @@ impl NativeClass {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum DefaultSizeBinding {
     /// There should not be a default binding for the size
+    #[default]
     None,
     /// The size should default to `width:100%; height:100%`
     ExpandsToParentGeometry,
     /// The size should default to the item's implicit size
     ImplicitSize,
-}
-
-impl Default for DefaultSizeBinding {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -673,7 +717,7 @@ pub struct BuiltinElement {
     /// Non-item type do not have reserved properties (x/width/rowspan/...) added to them  (eg: PropertyAnimation)
     pub is_non_item_type: bool,
     pub accepts_focus: bool,
-    pub member_functions: HashMap<String, Expression>,
+    pub member_functions: HashMap<String, BuiltinFunction>,
     pub is_global: bool,
     pub default_size_binding: DefaultSizeBinding,
     /// When true this is an internal type not shown in the auto-completion
@@ -691,8 +735,11 @@ pub struct PropertyLookupResult<'a> {
     pub resolved_name: std::borrow::Cow<'a, str>,
     pub property_type: Type,
     pub property_visibility: PropertyVisibility,
+    pub declared_pure: Option<bool>,
     /// True if the property is part of the the current component (for visibility purposes)
     pub is_local_to_component: bool,
+    /// True if the property in the direct base of the component (for visibility purposes)
+    pub is_in_direct_base: bool,
 }
 
 impl<'a> PropertyLookupResult<'a> {
@@ -702,12 +749,12 @@ impl<'a> PropertyLookupResult<'a> {
 
     /// Can this property be used in an assignment
     pub fn is_valid_for_assignment(&self) -> bool {
-        match (self.property_visibility, self.is_local_to_component) {
-            (PropertyVisibility::Private, false) => false,
-            (PropertyVisibility::Input, true) => false,
-            (PropertyVisibility::Output, false) => false,
-            _ => true,
-        }
+        !matches!(
+            (self.property_visibility, self.is_local_to_component),
+            (PropertyVisibility::Private, false)
+                | (PropertyVisibility::Input, true)
+                | (PropertyVisibility::Output, false)
+        )
     }
 }
 
@@ -716,6 +763,8 @@ pub struct Enumeration {
     pub name: String,
     pub values: Vec<String>,
     pub default_value: usize, // index in values
+    // For non-builtins enums, this is the declaration node
+    pub node: Option<syntax_nodes::EnumDeclaration>,
 }
 
 impl PartialEq for Enumeration {
@@ -764,62 +813,86 @@ impl EnumerationValue {
     }
 }
 
+#[derive(Debug, PartialEq)]
+pub struct LengthConversionPowers {
+    pub rem_to_px_power: i8,
+    pub px_to_phx_power: i8,
+}
+
 /// If the `Type::UnitProduct(a)` can be converted to `Type::UnitProduct(a)` by multiplying
 /// by the scale factor, return that scale factor, otherwise, return None
-pub fn unit_product_length_conversion(a: &[(Unit, i8)], b: &[(Unit, i8)]) -> Option<i8> {
-    let mut it1 = a.iter();
-    let mut it2 = b.iter();
-    let (mut v1, mut v2) = (it1.next(), it2.next());
-    let mut ppx = 0;
-    let mut lpx = 0;
-    loop {
-        match (v1, v2) {
-            (None, None) => return (ppx == -lpx && ppx != 0).then(|| ppx),
-            (Some(a), Some(b)) if a == b => (),
-            (Some((Unit::Phx, a)), Some((Unit::Phx, b))) => ppx += a - b,
-            (Some((Unit::Px, a)), Some((Unit::Px, b))) => lpx += a - b,
-            (Some((Unit::Phx, a)), _) => {
-                ppx += *a;
-                v1 = it1.next();
-                continue;
-            }
-            (_, Some((Unit::Phx, b))) => {
-                ppx += -b;
-                v2 = it2.next();
-                continue;
-            }
-            (Some((Unit::Px, a)), _) => {
-                lpx += *a;
-                v1 = it1.next();
-                continue;
-            }
-            (_, Some((Unit::Px, b))) => {
-                lpx += -b;
-                v2 = it2.next();
-                continue;
-            }
-            _ => return None,
-        };
-        v1 = it1.next();
-        v2 = it2.next();
+pub fn unit_product_length_conversion(
+    a: &[(Unit, i8)],
+    b: &[(Unit, i8)],
+) -> Option<LengthConversionPowers> {
+    let mut units = [0i8; 16];
+    for (u, count) in a {
+        units[*u as usize] += count;
     }
+    for (u, count) in b {
+        units[*u as usize] -= count;
+    }
+
+    if units[Unit::Px as usize] + units[Unit::Phx as usize] + units[Unit::Rem as usize] != 0 {
+        return None;
+    }
+
+    if units[Unit::Rem as usize] != 0
+        && units[Unit::Phx as usize] == -units[Unit::Rem as usize]
+        && units[Unit::Px as usize] == 0
+    {
+        units[Unit::Px as usize] = -units[Unit::Rem as usize];
+        units[Unit::Phx as usize] = -units[Unit::Rem as usize];
+    }
+
+    let result = LengthConversionPowers {
+        rem_to_px_power: if units[Unit::Rem as usize] != 0 { units[Unit::Px as usize] } else { 0 },
+        px_to_phx_power: if units[Unit::Px as usize] != 0 { units[Unit::Phx as usize] } else { 0 },
+    };
+
+    units[Unit::Px as usize] = 0;
+    units[Unit::Phx as usize] = 0;
+    units[Unit::Rem as usize] = 0;
+    units.into_iter().all(|x| x == 0).then_some(result)
 }
 
 #[test]
 fn unit_product_length_conversion_test() {
     use Option::None;
     use Unit::*;
-    assert_eq!(unit_product_length_conversion(&[(Px, 1)], &[(Phx, 1)]), Some(-1));
-    assert_eq!(unit_product_length_conversion(&[(Phx, -2)], &[(Px, -2)]), Some(-2));
-    assert_eq!(unit_product_length_conversion(&[(Px, 1), (Phx, -2)], &[(Phx, -1)]), Some(-1));
+    assert_eq!(
+        unit_product_length_conversion(&[(Px, 1)], &[(Phx, 1)]),
+        Some(LengthConversionPowers { rem_to_px_power: 0, px_to_phx_power: -1 })
+    );
+    assert_eq!(
+        unit_product_length_conversion(&[(Phx, -2)], &[(Px, -2)]),
+        Some(LengthConversionPowers { rem_to_px_power: 0, px_to_phx_power: -2 })
+    );
+    assert_eq!(
+        unit_product_length_conversion(&[(Px, 1), (Phx, -2)], &[(Phx, -1)]),
+        Some(LengthConversionPowers { rem_to_px_power: 0, px_to_phx_power: -1 })
+    );
     assert_eq!(
         unit_product_length_conversion(
             &[(Deg, 3), (Phx, 2), (Ms, -1)],
             &[(Phx, 4), (Deg, 3), (Ms, -1), (Px, -2)]
         ),
-        Some(-2)
+        Some(LengthConversionPowers { rem_to_px_power: 0, px_to_phx_power: -2 })
     );
     assert_eq!(unit_product_length_conversion(&[(Px, 1)], &[(Phx, -1)]), None);
     assert_eq!(unit_product_length_conversion(&[(Deg, 1), (Phx, -2)], &[(Px, -2)]), None);
     assert_eq!(unit_product_length_conversion(&[(Px, 1)], &[(Phx, -1)]), None);
+
+    assert_eq!(
+        unit_product_length_conversion(&[(Rem, 1)], &[(Px, 1)]),
+        Some(LengthConversionPowers { rem_to_px_power: -1, px_to_phx_power: 0 })
+    );
+    assert_eq!(
+        unit_product_length_conversion(&[(Rem, 1)], &[(Phx, 1)]),
+        Some(LengthConversionPowers { rem_to_px_power: -1, px_to_phx_power: -1 })
+    );
+    assert_eq!(
+        unit_product_length_conversion(&[(Rem, 2)], &[(Phx, 2)]),
+        Some(LengthConversionPowers { rem_to_px_power: -2, px_to_phx_power: -2 })
+    );
 }

@@ -1,12 +1,12 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! This module contains the implementation of the builtin macros.
 //! They are just transformations that convert into some more complicated expression tree
 
 use crate::diagnostics::{BuildDiagnostics, Spanned};
 use crate::expression_tree::{
-    BuiltinFunction, BuiltinMacroFunction, EasingCurve, Expression, Unit,
+    BuiltinFunction, BuiltinMacroFunction, EasingCurve, Expression, MinMaxOp, Unit,
 };
 use crate::langtype::{EnumerationValue, Type};
 use crate::parser::NodeOrToken;
@@ -22,12 +22,16 @@ pub fn lower_macro(
     diag: &mut BuildDiagnostics,
 ) -> Expression {
     match mac {
-        BuiltinMacroFunction::Min => min_max_macro(n, '<', sub_expr.collect(), diag),
-        BuiltinMacroFunction::Max => min_max_macro(n, '>', sub_expr.collect(), diag),
+        BuiltinMacroFunction::Min => min_max_macro(n, MinMaxOp::Min, sub_expr.collect(), diag),
+        BuiltinMacroFunction::Max => min_max_macro(n, MinMaxOp::Max, sub_expr.collect(), diag),
+        BuiltinMacroFunction::Clamp => clamp_macro(n, sub_expr.collect(), diag),
         BuiltinMacroFunction::Mod => mod_macro(n, sub_expr.collect(), diag),
+        BuiltinMacroFunction::Abs => abs_macro(n, sub_expr.collect(), diag),
         BuiltinMacroFunction::Debug => debug_macro(n, sub_expr.collect(), diag),
         BuiltinMacroFunction::CubicBezier => {
             let mut has_error = None;
+            let expected_argument_type_error =
+                "Arguments to cubic bezier curve must be number literal";
             // FIXME: this is not pretty to be handling there.
             // Maybe "cubic_bezier" should be a function that is lowered later
             let mut a = || match sub_expr.next() {
@@ -36,11 +40,16 @@ pub fn lower_macro(
                     0.
                 }
                 Some((Expression::NumberLiteral(val, Unit::None), _)) => val as f32,
+                // handle negative numbers
+                Some((Expression::UnaryOp { sub, op: '-' }, n)) => match *sub {
+                    Expression::NumberLiteral(val, Unit::None) => (-1.0 * val) as f32,
+                    _ => {
+                        has_error.get_or_insert((n, expected_argument_type_error));
+                        0.
+                    }
+                },
                 Some((_, n)) => {
-                    has_error.get_or_insert((
-                        n,
-                        "Arguments to cubic bezier curve must be number literal",
-                    ));
+                    has_error.get_or_insert((n, expected_argument_type_error));
                     0.
                 }
             };
@@ -55,12 +64,13 @@ pub fn lower_macro(
             expr
         }
         BuiltinMacroFunction::Rgb => rgb_macro(n, sub_expr.collect(), diag),
+        BuiltinMacroFunction::Hsv => hsv_macro(n, sub_expr.collect(), diag),
     }
 }
 
 fn min_max_macro(
     node: Option<NodeOrToken>,
-    op: char,
+    op: MinMaxOp,
     args: Vec<(Expression, Option<NodeOrToken>)>,
     diag: &mut BuildDiagnostics,
 ) -> Expression {
@@ -89,6 +99,44 @@ fn min_max_macro(
         base = min_max_expression(base, rhs, op);
     }
     base
+}
+
+fn clamp_macro(
+    node: Option<NodeOrToken>,
+    args: Vec<(Expression, Option<NodeOrToken>)>,
+    diag: &mut BuildDiagnostics,
+) -> Expression {
+    if args.len() != 3 {
+        diag.push_error(
+            "`clamp` needs three values: the `value` to clamp, the `minimun` and the `maximum`"
+                .into(),
+            &node,
+        );
+        return Expression::Invalid;
+    }
+    let (value, value_node) = args.first().unwrap().clone();
+    let ty = match value.ty() {
+        Type::Float32 => Type::Float32,
+        // In case there are other floats, we don't want to convert the result to int
+        Type::Int32 => Type::Float32,
+        Type::PhysicalLength => Type::PhysicalLength,
+        Type::LogicalLength => Type::LogicalLength,
+        Type::Duration => Type::Duration,
+        Type::Angle => Type::Angle,
+        Type::Percent => Type::Float32,
+        _ => {
+            diag.push_error("Invalid argument type".into(), &value_node);
+            return Expression::Invalid;
+        }
+    };
+
+    let (min, min_node) = args.get(1).unwrap().clone();
+    let min = min.maybe_convert_to(ty.clone(), &min_node, diag);
+    let (max, max_node) = args.get(2).unwrap().clone();
+    let max = max.maybe_convert_to(ty.clone(), &max_node, diag);
+
+    let value = min_max_expression(value, max, MinMaxOp::Min);
+    min_max_expression(min, value, MinMaxOp::Max)
 }
 
 fn mod_macro(
@@ -136,13 +184,57 @@ fn mod_macro(
     }
 }
 
+fn abs_macro(
+    node: Option<NodeOrToken>,
+    args: Vec<(Expression, Option<NodeOrToken>)>,
+    diag: &mut BuildDiagnostics,
+) -> Expression {
+    if args.len() != 1 {
+        diag.push_error("Needs 1 argument".into(), &node);
+        return Expression::Invalid;
+    }
+    let ty = args[0].0.ty();
+    let ty = if ty.default_unit().is_some() || matches!(ty, Type::UnitProduct(_)) {
+        ty
+    } else {
+        Type::Float32
+    };
+
+    let source_location = node.map(|n| n.to_source_location());
+    let function = Box::new(Expression::BuiltinFunctionReference(
+        BuiltinFunction::Abs,
+        source_location.clone(),
+    ));
+    if matches!(ty, Type::Float32) {
+        let arguments =
+            args.into_iter().map(|(e, n)| e.maybe_convert_to(ty.clone(), &n, diag)).collect();
+        Expression::FunctionCall { function, arguments, source_location }
+    } else {
+        Expression::Cast {
+            from: Expression::FunctionCall {
+                function,
+                arguments: args
+                    .into_iter()
+                    .map(|(a, _)| Expression::Cast { from: a.into(), to: Type::Float32 })
+                    .collect(),
+                source_location,
+            }
+            .into(),
+            to: ty,
+        }
+    }
+}
+
 fn rgb_macro(
     node: Option<NodeOrToken>,
     args: Vec<(Expression, Option<NodeOrToken>)>,
     diag: &mut BuildDiagnostics,
 ) -> Expression {
-    if args.len() < 3 {
-        diag.push_error("Needs 3 or 4 argument".into(), &node);
+    if args.len() < 3 || args.len() > 4 {
+        diag.push_error(
+            format!("This function needs 3 or 4 arguments, but {} were provided", args.len()),
+            &node,
+        );
         return Expression::Invalid;
     }
     let mut arguments: Vec<_> = args
@@ -170,6 +262,33 @@ fn rgb_macro(
     Expression::FunctionCall {
         function: Box::new(Expression::BuiltinFunctionReference(
             BuiltinFunction::Rgb,
+            node.as_ref().map(|t| t.to_source_location()),
+        )),
+        arguments,
+        source_location: Some(node.to_source_location()),
+    }
+}
+
+fn hsv_macro(
+    node: Option<NodeOrToken>,
+    args: Vec<(Expression, Option<NodeOrToken>)>,
+    diag: &mut BuildDiagnostics,
+) -> Expression {
+    if args.len() < 3 || args.len() > 4 {
+        diag.push_error(
+            format!("This function needs 3 or 4 arguments, but {} were provided", args.len()),
+            &node,
+        );
+        return Expression::Invalid;
+    }
+    let mut arguments: Vec<_> =
+        args.into_iter().map(|(expr, n)| expr.maybe_convert_to(Type::Float32, &n, diag)).collect();
+    if arguments.len() < 4 {
+        arguments.push(Expression::NumberLiteral(1., Unit::None))
+    }
+    Expression::FunctionCall {
+        function: Box::new(Expression::BuiltinFunctionReference(
+            BuiltinFunction::Hsv,
             node.as_ref().map(|t| t.to_source_location()),
         )),
         arguments,
@@ -221,6 +340,7 @@ fn to_debug_string(
         | Type::InferredCallback
         | Type::InferredProperty
         | Type::Callback { .. }
+        | Type::ComponentFactory
         | Type::Function { .. }
         | Type::ElementReference
         | Type::LayoutCache
@@ -238,6 +358,7 @@ fn to_debug_string(
         Type::Duration
         | Type::PhysicalLength
         | Type::LogicalLength
+        | Type::Rem
         | Type::Angle
         | Type::Percent
         | Type::UnitProduct(_) => Expression::BinaryExpression {
@@ -337,24 +458,13 @@ fn to_debug_string(
 /// Generate an expression which is like `min(lhs, rhs)` if op is '<' or `max(lhs, rhs)` if op is '>'.
 /// counter is an unique id.
 /// The rhs and lhs of the expression must have the same numerical type
-pub fn min_max_expression(lhs: Expression, rhs: Expression, op: char) -> Expression {
-    let ty = lhs.ty();
-    let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let n1 = format!("minmax_lhs{}", id);
-    let n2 = format!("minmax_rhs{}", id);
-    let a1 = Box::new(Expression::ReadLocalVariable { name: n1.clone(), ty: ty.clone() });
-    let a2 = Box::new(Expression::ReadLocalVariable { name: n2.clone(), ty });
-    Expression::CodeBlock(vec![
-        Expression::StoreLocalVariable { name: n1, value: Box::new(lhs) },
-        Expression::StoreLocalVariable { name: n2, value: Box::new(rhs) },
-        Expression::Condition {
-            condition: Box::new(Expression::BinaryExpression {
-                lhs: a1.clone(),
-                rhs: a2.clone(),
-                op,
-            }),
-            true_expr: a1,
-            false_expr: a2,
-        },
-    ])
+pub fn min_max_expression(lhs: Expression, rhs: Expression, op: MinMaxOp) -> Expression {
+    let lhs_ty = lhs.ty();
+    let rhs_ty = rhs.ty();
+    let ty = match (lhs_ty, rhs_ty) {
+        (a, b) if a == b => a,
+        (Type::Int32, Type::Float32) | (Type::Float32, Type::Int32) => Type::Float32,
+        _ => Type::Invalid,
+    };
+    Expression::MinMax { ty, op, lhs: Box::new(lhs), rhs: Box::new(rhs) }
 }

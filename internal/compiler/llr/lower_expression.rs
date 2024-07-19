@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -68,10 +68,9 @@ pub fn lower_expression(
             llr_Expression::NumberLiteral(unit.normalize(*n))
         }
         tree_Expression::BoolLiteral(b) => llr_Expression::BoolLiteral(*b),
-        tree_Expression::CallbackReference(nr) => {
-            llr_Expression::PropertyReference(ctx.map_property_reference(nr))
-        }
-        tree_Expression::PropertyReference(nr) => {
+        tree_Expression::CallbackReference(nr, _)
+        | tree_Expression::PropertyReference(nr)
+        | tree_Expression::FunctionReference(nr, _) => {
             llr_Expression::PropertyReference(ctx.map_property_reference(nr))
         }
         tree_Expression::BuiltinFunctionReference(_, _) => panic!(),
@@ -117,17 +116,36 @@ pub fn lower_expression(
             tree_Expression::BuiltinFunctionReference(BuiltinFunction::ShowPopupWindow, _) => {
                 lower_show_popup(arguments, ctx)
             }
-            tree_Expression::BuiltinFunctionReference(f, _) => {
-                let arguments = arguments.iter().map(|e| lower_expression(e, ctx)).collect::<_>();
-                llr_Expression::BuiltinFunctionCall { function: *f, arguments }
+            tree_Expression::BuiltinFunctionReference(BuiltinFunction::ClosePopupWindow, _) => {
+                // FIXME: right now, `popup.close()` will close any visible popup, as the popup argument is ignored
+                llr_Expression::BuiltinFunctionCall {
+                    function: BuiltinFunction::ClosePopupWindow,
+                    arguments: vec![],
+                }
             }
-            tree_Expression::CallbackReference(nr) => {
+            tree_Expression::BuiltinFunctionReference(f, _) => {
+                let mut arguments =
+                    arguments.iter().map(|e| lower_expression(e, ctx)).collect::<Vec<_>>();
+                if *f == BuiltinFunction::Translate {
+                    if let llr_Expression::Array { as_model, .. } = &mut arguments[3] {
+                        *as_model = false;
+                    }
+                }
+                llr_Expression::BuiltinFunctionCall { function: f.clone(), arguments }
+            }
+            tree_Expression::CallbackReference(nr, _) => {
                 let arguments = arguments.iter().map(|e| lower_expression(e, ctx)).collect::<_>();
                 llr_Expression::CallBackCall { callback: ctx.map_property_reference(nr), arguments }
             }
+            tree_Expression::FunctionReference(nr, _) => {
+                let arguments = arguments.iter().map(|e| lower_expression(e, ctx)).collect::<_>();
+                llr_Expression::FunctionCall { function: ctx.map_property_reference(nr), arguments }
+            }
             _ => panic!("not calling a function"),
         },
-        tree_Expression::SelfAssignment { lhs, rhs, op } => lower_assignment(lhs, rhs, *op, ctx),
+        tree_Expression::SelfAssignment { lhs, rhs, op, .. } => {
+            lower_assignment(lhs, rhs, *op, ctx)
+        }
         tree_Expression::BinaryExpression { lhs, rhs, op } => llr_Expression::BinaryExpression {
             lhs: Box::new(lower_expression(lhs, ctx)),
             rhs: Box::new(lower_expression(rhs, ctx)),
@@ -136,8 +154,11 @@ pub fn lower_expression(
         tree_Expression::UnaryOp { sub, op } => {
             llr_Expression::UnaryOp { sub: Box::new(lower_expression(sub, ctx)), op: *op }
         }
-        tree_Expression::ImageReference { resource_ref, .. } => {
-            llr_Expression::ImageReference { resource_ref: resource_ref.clone() }
+        tree_Expression::ImageReference { resource_ref, nine_slice, .. } => {
+            llr_Expression::ImageReference {
+                resource_ref: resource_ref.clone(),
+                nine_slice: *nine_slice,
+            }
         }
         tree_Expression::Condition { condition, true_expr, false_expr } => {
             llr_Expression::Condition {
@@ -174,8 +195,8 @@ pub fn lower_expression(
                 .collect::<_>(),
         },
         tree_Expression::EnumerationValue(e) => llr_Expression::EnumerationValue(e.clone()),
-        tree_Expression::ReturnStatement(x) => {
-            llr_Expression::ReturnStatement(x.as_ref().map(|e| lower_expression(e, ctx).into()))
+        tree_Expression::ReturnStatement(..) => {
+            panic!("The remove return pass should have removed all return")
         }
         tree_Expression::LayoutCacheAccess { layout_cache_prop, index, repeater_index } => {
             llr_Expression::LayoutCacheAccess {
@@ -186,6 +207,13 @@ pub fn lower_expression(
         }
         tree_Expression::ComputeLayoutInfo(l, o) => compute_layout_info(l, *o, ctx),
         tree_Expression::SolveLayout(l, o) => solve_layout(l, *o, ctx),
+        tree_Expression::MinMax { ty, op, lhs, rhs } => llr_Expression::MinMax {
+            ty: ty.clone(),
+            op: *op,
+            lhs: Box::new(lower_expression(lhs, ctx)),
+            rhs: Box::new(lower_expression(rhs, ctx)),
+        },
+        tree_Expression::EmptyComponentFactory => llr_Expression::EmptyComponentFactory,
     }
 }
 
@@ -342,15 +370,17 @@ fn lower_show_popup(args: &[tree_Expression], ctx: &ExpressionContext) -> llr_Ex
             .enumerate()
             .find(|(_, p)| Rc::ptr_eq(&p.component, &pop_comp))
             .unwrap();
-        let x = llr_Expression::PropertyReference(ctx.map_property_reference(&popup.x));
-        let y = llr_Expression::PropertyReference(ctx.map_property_reference(&popup.y));
         let item_ref = lower_expression(
             &tree_Expression::ElementReference(Rc::downgrade(&popup.parent_element)),
             ctx,
         );
         llr_Expression::BuiltinFunctionCall {
             function: BuiltinFunction::ShowPopupWindow,
-            arguments: vec![llr_Expression::NumberLiteral(popup_index as _), x, y, item_ref],
+            arguments: vec![
+                llr_Expression::NumberLiteral(popup_index as _),
+                llr_Expression::BoolLiteral(popup.close_on_click),
+                item_ref,
+            ],
         }
     } else {
         panic!("invalid arguments to ShowPopupWindow");
@@ -385,8 +415,9 @@ pub fn lower_animation(a: &PropertyAnimation, ctx: &ExpressionContext<'_>) -> An
     fn animation_ty() -> Type {
         Type::Struct {
             fields: animation_fields().collect(),
-            name: Some("PropertyAnimation".into()),
+            name: Some("slint::private_api::PropertyAnimation".into()),
             node: None,
+            rust_attributes: None,
         }
     }
 
@@ -424,6 +455,7 @@ pub fn lower_animation(a: &PropertyAnimation, ctx: &ExpressionContext<'_>) -> An
                     .collect(),
                     name: None,
                     node: None,
+                    rust_attributes: None,
                 },
                 values: IntoIterator::into_iter([
                     ("0".to_string(), get_anim),
@@ -488,7 +520,6 @@ fn compute_layout_info(
                 None => sub_expression,
             }
         }
-        crate::layout::Layout::PathLayout(_) => unimplemented!(),
     }
 }
 
@@ -529,7 +560,7 @@ fn solve_layout(
                     llr_Expression::ExtraBuiltinFunctionCall {
                         function: "solve_grid_layout".into(),
                         arguments: vec![make_struct(
-                            "GridLayoutData".into(),
+                            "GridLayoutData",
                             [
                                 ("size", Type::Float32, size),
                                 ("spacing", Type::Float32, spacing),
@@ -551,7 +582,7 @@ fn solve_layout(
                 llr_Expression::ExtraBuiltinFunctionCall {
                     function: "solve_grid_layout".into(),
                     arguments: vec![make_struct(
-                        "GridLayoutData".into(),
+                        "GridLayoutData",
                         [
                             ("size", Type::Float32, size),
                             ("spacing", Type::Float32, spacing),
@@ -568,7 +599,7 @@ fn solve_layout(
             let bld = box_layout_data(layout, o, ctx);
             let size = layout_geometry_size(&layout.geometry.rect, o, ctx);
             let data = make_struct(
-                "BoxLayoutData".into(),
+                "BoxLayoutData",
                 [
                     ("size", Type::Float32, size),
                     ("spacing", Type::Float32, spacing),
@@ -614,40 +645,6 @@ fn solve_layout(
                 },
             }
         }
-        crate::layout::Layout::PathLayout(layout) => {
-            let width = layout_geometry_size(&layout.rect, Orientation::Horizontal, ctx);
-            let height = layout_geometry_size(&layout.rect, Orientation::Vertical, ctx);
-            let elements = compile_path(&layout.path, ctx);
-            let offset = if let Some(expr) = &layout.offset_reference {
-                llr_Expression::PropertyReference(ctx.map_property_reference(expr))
-            } else {
-                llr_Expression::NumberLiteral(0.)
-            };
-
-            // FIXME! repeater
-            let repeater_indices =
-                llr_Expression::Array { element_ty: Type::Int32, values: vec![], as_model: false };
-            let count = layout.elements.len();
-            llr_Expression::ExtraBuiltinFunctionCall {
-                function: "solve_path_layout".into(),
-                arguments: vec![
-                    make_struct(
-                        "PathLayoutData".into(),
-                        [
-                            ("width", Type::Float32, width),
-                            ("height", Type::Float32, height),
-                            ("x", Type::Float32, llr_Expression::NumberLiteral(0.)),
-                            ("y", Type::Float32, llr_Expression::NumberLiteral(0.)),
-                            ("elements", elements.ty(ctx), elements),
-                            ("offset", Type::Int32, offset),
-                            ("item_count", Type::Int32, llr_Expression::NumberLiteral(count as _)),
-                        ],
-                    ),
-                    repeater_indices,
-                ],
-                return_ty: Type::LayoutCache,
-            }
-        }
     }
 }
 
@@ -656,7 +653,7 @@ struct BoxLayoutDataResult {
     cells: llr_Expression,
     /// When there are repeater involved, we need to do a BoxLayoutFunction with the
     /// given cell variable and elements
-    compute_cells: Option<(String, Vec<Either<llr_Expression, usize>>)>,
+    compute_cells: Option<(String, Vec<Either<llr_Expression, u32>>)>,
 }
 
 fn box_layout_data(
@@ -685,6 +682,7 @@ fn box_layout_data(
         .collect(),
         name: Some("BoxLayoutCellData".into()),
         node: None,
+        rust_attributes: None,
     };
 
     if repeater_count == 0 {
@@ -696,7 +694,7 @@ fn box_layout_data(
                     let layout_info =
                         get_layout_info(&li.element, ctx, &li.constraints, orientation);
                     make_struct(
-                        "BoxLayoutCellData".into(),
+                        "BoxLayoutCellData",
                         [("constraint", crate::layout::layout_info_type(), layout_info)],
                     )
                 })
@@ -719,7 +717,7 @@ fn box_layout_data(
                 let layout_info =
                     get_layout_info(&item.element, ctx, &item.constraints, orientation);
                 elements.push(Either::Left(make_struct(
-                    "BoxLayoutCellData".into(),
+                    "BoxLayoutCellData",
                     [("constraint", crate::layout::layout_info_type(), layout_info)],
                 )));
             }
@@ -748,7 +746,7 @@ fn grid_layout_cell_data(
                     get_layout_info(&c.item.element, ctx, &c.item.constraints, orientation);
 
                 make_struct(
-                    "GridLayoutCellData".into(),
+                    "GridLayoutCellData",
                     [
                         ("constraint", crate::layout::layout_info_type(), layout_info),
                         ("col_or_row", Type::Int32, llr_Expression::NumberLiteral(col_or_row as _)),
@@ -771,6 +769,7 @@ pub(super) fn grid_layout_cell_data_ty() -> Type {
         .collect(),
         name: Some("GridLayoutCellData".into()),
         node: None,
+        rust_attributes: None,
     }
 }
 
@@ -786,11 +785,11 @@ fn generate_layout_padding_and_spacing(
             llr_Expression::NumberLiteral(0.)
         }
     };
-    let spacing = padding_prop(layout_geometry.spacing.as_ref());
+    let spacing = padding_prop(layout_geometry.spacing.orientation(orientation));
     let (begin, end) = layout_geometry.padding.begin_end(orientation);
 
     let padding = make_struct(
-        "Padding".into(),
+        "Padding",
         [("begin", Type::Float32, padding_prop(begin)), ("end", Type::Float32, padding_prop(end))],
     );
 
@@ -820,7 +819,7 @@ pub fn get_layout_info(
         lower_expression(&crate::layout::implicit_layout_info_call(elem, orientation), ctx)
     };
 
-    if constraints.has_explicit_restrictions() {
+    if constraints.has_explicit_restrictions(orientation) {
         let store = llr_Expression::StoreLocalVariable {
             name: "layout_info".into(),
             value: layout_info.into(),
@@ -867,6 +866,7 @@ fn compile_path(path: &crate::expression_tree::Path, ctx: &ExpressionContext) ->
                     fields: Default::default(),
                     name: Some("PathElement".to_owned()),
                     node: None,
+                    rust_attributes: None,
                 },
                 values: elements,
                 as_model: false,
@@ -890,6 +890,7 @@ fn compile_path(path: &crate::expression_tree::Path, ctx: &ExpressionContext) ->
                             .collect(),
                         name: element.element_type.native_class.cpp_type.clone(),
                         node: None,
+                        rust_attributes: None,
                     };
 
                     llr_Expression::Struct {
@@ -941,6 +942,7 @@ fn compile_path(path: &crate::expression_tree::Path, ctx: &ExpressionContext) ->
                         .collect(),
                         name: None,
                         node: None,
+                        rust_attributes: None,
                     },
                     values: IntoIterator::into_iter([
                         (
@@ -973,8 +975,8 @@ fn compile_path(path: &crate::expression_tree::Path, ctx: &ExpressionContext) ->
     }
 }
 
-fn make_struct(
-    name: String,
+pub fn make_struct(
+    name: &str,
     it: impl IntoIterator<Item = (&'static str, Type, llr_Expression)>,
 ) -> llr_Expression {
     let mut fields = BTreeMap::<String, Type>::new();
@@ -984,5 +986,13 @@ fn make_struct(
         values.insert(name.to_string(), expr);
     }
 
-    llr_Expression::Struct { ty: Type::Struct { fields, name: Some(name), node: None }, values }
+    llr_Expression::Struct {
+        ty: Type::Struct {
+            fields,
+            name: Some(format!("slint::private_api::{name}")),
+            node: None,
+            rust_attributes: None,
+        },
+        values,
+    }
 }

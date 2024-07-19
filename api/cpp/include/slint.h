@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 #pragma once
 
@@ -8,28 +8,26 @@
 #    pragma GCC diagnostic ignored "-Winvalid-offsetof"
 #endif
 
-#include <vector>
-#include <memory>
-#include <algorithm>
-#include <iostream> // FIXME: remove: iostream always bring it lots of code so we should not have it in this header
-#include <chrono>
-#include <optional>
-#include <thread>
-#include <mutex>
-#include <condition_variable>
-#include <span>
-#include <functional>
-
-namespace slint::cbindgen_private {
-// Workaround https://github.com/eqrion/cbindgen/issues/43
-struct ComponentVTable;
-struct ItemVTable;
-}
 #include "slint_internal.h"
 #include "slint_size.h"
 #include "slint_point.h"
-#include "slint_backend_internal.h"
+#include "slint_platform_internal.h"
 #include "slint_qt_internal.h"
+#include "slint_window.h"
+
+#include <vector>
+#include <memory>
+#include <algorithm>
+#include <chrono>
+#include <optional>
+#include <span>
+#include <functional>
+#include <concepts>
+
+#ifndef SLINT_FEATURE_FREESTANDING
+#    include <mutex>
+#    include <condition_variable>
+#endif
 
 /// \rst
 /// The :code:`slint` namespace is the primary entry point into the Slint C++ API.
@@ -40,211 +38,17 @@ struct ItemVTable;
 /// \endrst
 namespace slint {
 
-// Bring opaque structure in scope
 namespace private_api {
-using cbindgen_private::ComponentVTable;
-using cbindgen_private::ItemVTable;
-using ComponentRc = vtable::VRc<private_api::ComponentVTable>;
-using ComponentRef = vtable::VRef<private_api::ComponentVTable>;
+// Bring opaque structure in scope
+using namespace cbindgen_private;
+using ItemTreeRef = vtable::VRef<private_api::ItemTreeVTable>;
 using IndexRange = cbindgen_private::IndexRange;
 using ItemRef = vtable::VRef<private_api::ItemVTable>;
 using ItemVisitorRefMut = vtable::VRefMut<cbindgen_private::ItemVisitorVTable>;
-using cbindgen_private::ComponentWeak;
-using cbindgen_private::ItemWeak;
-using cbindgen_private::TraversalOrder;
-}
-
-namespace private_api {
 using ItemTreeNode = cbindgen_private::ItemTreeNode;
 using ItemArrayEntry =
         vtable::VOffset<uint8_t, slint::cbindgen_private::ItemVTable, vtable::AllowPin>;
 using ItemArray = slint::cbindgen_private::Slice<ItemArrayEntry>;
-using cbindgen_private::KeyboardModifiers;
-using cbindgen_private::KeyEvent;
-using cbindgen_private::PointerEvent;
-using cbindgen_private::StandardListViewItem;
-
-/// Internal function that checks that the API that must be called from the main
-/// thread is indeed called from the main thread, or abort the program otherwise
-///
-/// Most API should be called from the main thread. When using thread one must
-/// use slint::invoke_from_event_loop
-inline void assert_main_thread()
-{
-#ifndef NDEBUG
-    static auto main_thread_id = std::this_thread::get_id();
-    if (main_thread_id != std::this_thread::get_id()) {
-        std::cerr << "A function that should be only called from the main thread was called from a "
-                     "thread."
-                  << std::endl;
-        std::cerr << "Most API should be called from the main thread. When using thread one must "
-                     "use slint::invoke_from_event_loop."
-                  << std::endl;
-        std::abort();
-    }
-#endif
-}
-
-class WindowAdapterRc
-{
-public:
-    explicit WindowAdapterRc(cbindgen_private::WindowAdapterRcOpaque adopted_inner)
-        : inner(adopted_inner)
-    {
-    }
-    WindowAdapterRc() { cbindgen_private::slint_windowrc_init(&inner); }
-    ~WindowAdapterRc() { cbindgen_private::slint_windowrc_drop(&inner); }
-    WindowAdapterRc(const WindowAdapterRc &other)
-    {
-        assert_main_thread();
-        cbindgen_private::slint_windowrc_clone(&other.inner, &inner);
-    }
-    WindowAdapterRc(WindowAdapterRc &&) = delete;
-    WindowAdapterRc &operator=(WindowAdapterRc &&) = delete;
-    WindowAdapterRc &operator=(const WindowAdapterRc &other)
-    {
-        assert_main_thread();
-        if (this != &other) {
-            cbindgen_private::slint_windowrc_drop(&inner);
-            cbindgen_private::slint_windowrc_clone(&other.inner, &inner);
-        }
-        return *this;
-    }
-
-    void show() const { slint_windowrc_show(&inner); }
-    void hide() const { slint_windowrc_hide(&inner); }
-
-    float scale_factor() const { return slint_windowrc_get_scale_factor(&inner); }
-    void set_scale_factor(float value) const { slint_windowrc_set_scale_factor(&inner, value); }
-
-    bool dark_color_scheme() const { return slint_windowrc_dark_color_scheme(&inner); }
-
-    template<typename Component, typename ItemArray>
-    void unregister_component(Component *c, ItemArray items) const
-    {
-        cbindgen_private::slint_unregister_component(
-                vtable::VRef<ComponentVTable> { &Component::static_vtable, c }, items, &inner);
-    }
-
-    void set_focus_item(const ComponentRc &component_rc, uintptr_t item_index)
-    {
-        cbindgen_private::ItemRc item_rc { component_rc, item_index };
-        cbindgen_private::slint_windowrc_set_focus_item(&inner, &item_rc);
-    }
-
-    template<typename Component, typename ItemArray>
-    void register_component(Component *c, ItemArray items) const
-    {
-        cbindgen_private::slint_register_component(
-                vtable::VRef<ComponentVTable> { &Component::static_vtable, c }, items, &inner);
-    }
-
-    template<typename Component>
-    void set_component(const Component &c) const
-    {
-        auto self_rc = c.self_weak.lock().value().into_dyn();
-        slint_windowrc_set_component(&inner, &self_rc);
-    }
-
-    template<typename Component, typename Parent>
-    void show_popup(const Parent *parent_component, cbindgen_private::Point p,
-                    cbindgen_private::ItemRc parent_item) const
-    {
-        auto popup = Component::create(parent_component).into_dyn();
-        cbindgen_private::slint_windowrc_show_popup(&inner, &popup, p, &parent_item);
-    }
-
-    template<typename F>
-    std::optional<SetRenderingNotifierError> set_rendering_notifier(F callback) const
-    {
-        auto actual_cb = [](RenderingState state, GraphicsAPI graphics_api, void *data) {
-            (*reinterpret_cast<F *>(data))(state, graphics_api);
-        };
-        SetRenderingNotifierError err;
-        if (cbindgen_private::slint_windowrc_set_rendering_notifier(
-                    &inner, actual_cb,
-                    [](void *user_data) { delete reinterpret_cast<F *>(user_data); },
-                    new F(std::move(callback)), &err)) {
-            return {};
-        } else {
-            return err;
-        }
-    }
-
-    template<typename F>
-    void on_close_requested(F callback) const
-    {
-        auto actual_cb = [](void *data) { return (*reinterpret_cast<F *>(data))(); };
-        cbindgen_private::slint_windowrc_on_close_requested(
-                &inner, actual_cb, [](void *user_data) { delete reinterpret_cast<F *>(user_data); },
-                new F(std::move(callback)));
-    }
-
-    void request_redraw() const { cbindgen_private::slint_windowrc_request_redraw(&inner); }
-
-    slint::PhysicalPosition position() const
-    {
-        slint::PhysicalPosition pos;
-        cbindgen_private::slint_windowrc_position(&inner, &pos);
-        return pos;
-    }
-
-    void set_logical_position(const slint::LogicalPosition &pos)
-    {
-        cbindgen_private::slint_windowrc_set_logical_position(&inner, &pos);
-    }
-
-    void set_physical_position(const slint::PhysicalPosition &pos)
-    {
-        cbindgen_private::slint_windowrc_set_physical_position(&inner, &pos);
-    }
-
-    slint::PhysicalSize size() const
-    {
-        return slint::PhysicalSize(cbindgen_private::slint_windowrc_size(&inner));
-    }
-
-    void set_logical_size(const slint::LogicalSize &size)
-    {
-        cbindgen_private::slint_windowrc_set_logical_size(&inner, &size);
-    }
-
-    void set_physical_size(const slint::PhysicalSize &size)
-    {
-        cbindgen_private::slint_windowrc_set_physical_size(&inner, &size);
-    }
-
-    /// Registers a font by the specified path. The path must refer to an existing
-    /// TrueType font.
-    /// \returns an empty optional on success, otherwise an error string
-    inline std::optional<SharedString> register_font_from_path(const SharedString &path)
-    {
-        SharedString maybe_err;
-        cbindgen_private::slint_register_font_from_path(&inner, &path, &maybe_err);
-        if (!maybe_err.empty()) {
-            return maybe_err;
-        } else {
-            return {};
-        }
-    }
-
-    /// Registers a font by the data. The data must be valid TrueType font data.
-    /// \returns an empty optional on success, otherwise an error string
-    inline std::optional<SharedString> register_font_from_data(const uint8_t *data, std::size_t len)
-    {
-        SharedString maybe_err;
-        cbindgen_private::slint_register_font_from_data(
-                &inner, { const_cast<uint8_t *>(data), len }, &maybe_err);
-        if (!maybe_err.empty()) {
-            return maybe_err;
-        } else {
-            return {};
-        }
-    }
-
-private:
-    cbindgen_private::WindowAdapterRcOpaque inner;
-};
 
 constexpr inline ItemTreeNode make_item_node(uint32_t child_count, uint32_t child_index,
                                              uint32_t parent_index, uint32_t item_array_index,
@@ -255,35 +59,45 @@ constexpr inline ItemTreeNode make_item_node(uint32_t child_count, uint32_t chil
                                                     item_array_index } };
 }
 
-constexpr inline ItemTreeNode make_dyn_node(std::uintptr_t offset, std::uint32_t parent_index)
+constexpr inline ItemTreeNode make_dyn_node(std::uint32_t offset, std::uint32_t parent_index)
 {
     return ItemTreeNode { ItemTreeNode::DynamicTree_Body { ItemTreeNode::Tag::DynamicTree, offset,
                                                            parent_index } };
 }
 
-inline ItemRef get_item_ref(ComponentRef component,
-                            const cbindgen_private::Slice<ItemTreeNode> item_tree,
+inline ItemRef get_item_ref(ItemTreeRef item_tree,
+                            const cbindgen_private::Slice<ItemTreeNode> item_tree_array,
                             const private_api::ItemArray item_array, int index)
 {
-    const auto item_array_index = item_tree.ptr[index].item.item_array_index;
+    const auto item_array_index = item_tree_array.ptr[index].item.item_array_index;
     const auto item = item_array[item_array_index];
-    return ItemRef { item.vtable, reinterpret_cast<char *>(component.instance) + item.offset };
+    return ItemRef { item.vtable, reinterpret_cast<char *>(item_tree.instance) + item.offset };
 }
 
-inline void dealloc(const ComponentVTable *, uint8_t *ptr, vtable::Layout layout)
+/// Convert a slint `{height: length, width: length, x: length, y: length}` to a Rect
+inline cbindgen_private::Rect convert_anonymous_rect(std::tuple<float, float, float, float> tuple)
+{
+    // alphabetical order
+    auto [h, w, x, y] = tuple;
+    return cbindgen_private::Rect { .x = x, .y = y, .width = w, .height = h };
+}
+
+inline void dealloc(const ItemTreeVTable *, uint8_t *ptr, [[maybe_unused]] vtable::Layout layout)
 {
 #ifdef __cpp_sized_deallocation
     ::operator delete(reinterpret_cast<void *>(ptr), layout.size,
                       static_cast<std::align_val_t>(layout.align));
-#else
+#elif !defined(__APPLE__) || MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_14
     ::operator delete(reinterpret_cast<void *>(ptr), static_cast<std::align_val_t>(layout.align));
+#else
+    ::operator delete(reinterpret_cast<void *>(ptr));
 #endif
 }
 
 template<typename T>
-inline vtable::Layout drop_in_place(ComponentRef component)
+inline vtable::Layout drop_in_place(ItemTreeRef item_tree)
 {
-    reinterpret_cast<T *>(component.instance)->~T();
+    reinterpret_cast<T *>(item_tree.instance)->~T();
     return vtable::Layout { sizeof(T), alignof(T) };
 }
 
@@ -300,16 +114,16 @@ inline vtable::Layout drop_in_place(ComponentRef component)
 #    endif
 #endif // !defined(DOXYGEN)
 
-template<typename T>
-struct ReturnWrapper
+inline std::optional<cbindgen_private::ItemRc>
+upgrade_item_weak(const cbindgen_private::ItemWeak &item_weak)
 {
-    ReturnWrapper(T val) : value(std::move(val)) { }
-    T value;
-};
-template<>
-struct ReturnWrapper<void>
-{
-};
+    if (auto item_tree_strong = item_weak.item_tree.lock()) {
+        return { { *item_tree_strong, item_weak.index } };
+    } else {
+        return std::nullopt;
+    }
+}
+
 } // namespace private_api
 
 template<typename T>
@@ -321,12 +135,12 @@ class ComponentWeakHandle;
 template<typename T>
 class ComponentHandle
 {
-    vtable::VRc<private_api::ComponentVTable, T> inner;
+    vtable::VRc<private_api::ItemTreeVTable, T> inner;
     friend class ComponentWeakHandle<T>;
 
 public:
     /// internal constructor
-    ComponentHandle(const vtable::VRc<private_api::ComponentVTable, T> &inner) : inner(inner) { }
+    ComponentHandle(const vtable::VRc<private_api::ItemTreeVTable, T> &inner) : inner(inner) { }
 
     /// Arrow operator that implements pointer semantics.
     const T *operator->() const
@@ -354,14 +168,14 @@ public:
     }
 
     /// internal function that returns the internal handle
-    vtable::VRc<private_api::ComponentVTable> into_dyn() const { return inner.into_dyn(); }
+    vtable::VRc<private_api::ItemTreeVTable> into_dyn() const { return inner.into_dyn(); }
 };
 
 /// A weak reference to the component. Can be constructed from a `ComponentHandle<T>`
 template<typename T>
 class ComponentWeakHandle
 {
-    vtable::VWeak<private_api::ComponentVTable, T> inner;
+    vtable::VWeak<private_api::ItemTreeVTable, T> inner;
 
 public:
     /// Constructs a null ComponentWeakHandle. lock() will always return empty.
@@ -382,148 +196,6 @@ public:
     }
 };
 
-/// This class represents a window towards the windowing system, that's used to render the
-/// scene of a component. It provides API to control windowing system specific aspects such
-/// as the position on the screen.
-class Window
-{
-public:
-    /// \private
-    /// Internal function used by the generated code to construct a new instance of this
-    /// public API wrapper.
-    explicit Window(const private_api::WindowAdapterRc &windowrc) : inner(windowrc) { }
-    Window(const Window &other) = delete;
-    Window &operator=(const Window &other) = delete;
-    Window(Window &&other) = delete;
-    Window &operator=(Window &&other) = delete;
-    /// Destroys this window. Window instances are explicitly shared and reference counted.
-    /// If this window instance is the last one referencing the window towards the windowing
-    /// system, then it will also become hidden and destroyed.
-    ~Window() = default;
-
-    /// Registers the window with the windowing system in order to make it visible on the screen.
-    void show() { inner.show(); }
-    /// De-registers the window from the windowing system, therefore hiding it.
-    void hide() { inner.hide(); }
-
-    /// This function allows registering a callback that's invoked during the different phases of
-    /// rendering. This allows custom rendering on top or below of the scene.
-    /// On success, the function returns a std::optional without value. On error, the function
-    /// returns the error code as value in the std::optional.
-    template<typename F>
-    std::optional<SetRenderingNotifierError> set_rendering_notifier(F &&callback) const
-    {
-        return inner.set_rendering_notifier(std::forward<F>(callback));
-    }
-
-    /// This function allows registering a callback that's invoked when the user tries to close
-    /// a window.
-    /// The callback has to return a CloseRequestResponse.
-    template<typename F>
-    void on_close_requested(F &&callback) const
-    {
-        static_assert(std::is_invocable_v<F>, "Functor callback must be callable");
-        static_assert(std::is_same_v<std::invoke_result_t<F>, CloseRequestResponse>,
-                      "Functor callback must return CloseRequestResponse");
-        return inner.on_close_requested(std::forward<F>(callback));
-    }
-
-    /// This function issues a request to the windowing system to redraw the contents of the window.
-    void request_redraw() const { inner.request_redraw(); }
-
-    /// Returns the position of the window on the screen, in physical screen coordinates and
-    /// including a window frame (if present).
-    slint::PhysicalPosition position() const { return inner.position(); }
-
-    /// Sets the position of the window on the screen, in physical screen coordinates and including
-    /// a window frame (if present).
-    /// Note that on some windowing systems, such as Wayland, this functionality is not available.
-    void set_position(const slint::LogicalPosition &pos) { inner.set_logical_position(pos); }
-    /// Sets the position of the window on the screen, in physical screen coordinates and including
-    /// a window frame (if present).
-    /// Note that on some windowing systems, such as Wayland, this functionality is not available.
-    void set_position(const slint::PhysicalPosition &pos) { inner.set_physical_position(pos); }
-
-    /// Returns the size of the window on the screen, in physical screen coordinates and excluding
-    /// a window frame (if present).
-    slint::PhysicalSize size() const { return inner.size(); }
-
-    /// Resizes the window to the specified size on the screen, in logical pixels and excluding
-    /// a window frame (if present).
-    void set_size(const slint::LogicalSize &size) { inner.set_logical_size(size); }
-    /// Resizes the window to the specified size on the screen, in physical pixels and excluding
-    /// a window frame (if present).
-    void set_size(const slint::PhysicalSize &size) { inner.set_physical_size(size); }
-
-    /// \private
-    private_api::WindowAdapterRc &window_handle() { return inner; }
-    /// \private
-    const private_api::WindowAdapterRc &window_handle() const { return inner; }
-
-private:
-    private_api::WindowAdapterRc inner;
-};
-
-/// A Timer that can call a callback at repeated interval
-///
-/// Use the static single_shot function to make a single shot timer
-struct Timer
-{
-    /// Construct a null timer. Use the start() method to activate the timer with a mode, interval
-    /// and callback.
-    Timer() : id(-1) { }
-    /// Construct a timer which will repeat the callback every `interval` milliseconds until
-    /// the destructor of the timer is called.
-    ///
-    /// This is a convenience function and equivalent to calling
-    /// `start(slint::TimerMode::Repeated, interval, callback);` on a default constructed Timer.
-    template<typename F>
-    Timer(std::chrono::milliseconds interval, F callback)
-        : id(cbindgen_private::slint_timer_start(
-                -1, TimerMode::Repeated, interval.count(),
-                [](void *data) { (*reinterpret_cast<F *>(data))(); }, new F(std::move(callback)),
-                [](void *data) { delete reinterpret_cast<F *>(data); }))
-    {
-    }
-    Timer(const Timer &) = delete;
-    Timer &operator=(const Timer &) = delete;
-    ~Timer() { cbindgen_private::slint_timer_destroy(id); }
-
-    /// Starts the timer with the given \a mode and \a interval, in order for the \a callback to
-    /// called when the timer fires. If the timer has been started previously and not fired yet,
-    /// then it will be restarted.
-    template<typename F>
-    void start(TimerMode mode, std::chrono::milliseconds interval, F callback)
-    {
-        id = cbindgen_private::slint_timer_start(
-                id, mode, interval.count(), [](void *data) { (*reinterpret_cast<F *>(data))(); },
-                new F(std::move(callback)), [](void *data) { delete reinterpret_cast<F *>(data); });
-    }
-    /// Stops the previously started timer. Does nothing if the timer has never been started. A
-    /// stopped timer cannot be restarted with restart() -- instead you need to call start().
-    void stop() { cbindgen_private::slint_timer_stop(id); }
-    /// Restarts the timer. If the timer was previously started by calling [`Self::start()`]
-    /// with a duration and callback, then the time when the callback will be next invoked
-    /// is re-calculated to be in the specified duration relative to when this function is called.
-    ///
-    /// Does nothing if the timer was never started.
-    void restart() { cbindgen_private::slint_timer_restart(id); }
-    /// Returns true if the timer is running; false otherwise.
-    bool running() const { return cbindgen_private::slint_timer_running(id); }
-
-    /// Call the callback after the given duration.
-    template<typename F>
-    static void single_shot(std::chrono::milliseconds duration, F callback)
-    {
-        cbindgen_private::slint_timer_singleshot(
-                duration.count(), [](void *data) { (*reinterpret_cast<F *>(data))(); },
-                new F(std::move(callback)), [](void *data) { delete reinterpret_cast<F *>(data); });
-    }
-
-private:
-    int64_t id;
-};
-
 namespace cbindgen_private {
 inline LayoutInfo LayoutInfo::merge(const LayoutInfo &other) const
 {
@@ -535,9 +207,26 @@ inline LayoutInfo LayoutInfo::merge(const LayoutInfo &other) const
                         std::max(preferred, other.preferred),
                         std::min(stretch, other.stretch) };
 }
+inline bool operator==(const EasingCurve &a, const EasingCurve &b)
+{
+    if (a.tag != b.tag) {
+        return false;
+    } else if (a.tag == EasingCurve::Tag::CubicBezier) {
+        return std::equal(a.cubic_bezier._0, a.cubic_bezier._0 + 4, b.cubic_bezier._0);
+    }
+    return true;
+}
 }
 
 namespace private_api {
+
+inline static void register_item_tree(const vtable::VRc<ItemTreeVTable> *c,
+                                      const std::optional<slint::Window> &maybe_window)
+{
+    const cbindgen_private::WindowAdapterRcOpaque *window_ptr =
+            maybe_window.has_value() ? &maybe_window->window_handle().handle() : nullptr;
+    cbindgen_private::slint_register_item_tree(c, window_ptr);
+}
 
 inline SharedVector<float> solve_box_layout(const cbindgen_private::BoxLayoutData &data,
                                             cbindgen_private::Slice<int> repeater_indexes)
@@ -578,16 +267,6 @@ box_layout_info_ortho(cbindgen_private::Slice<cbindgen_private::BoxLayoutCellDat
     return cbindgen_private::slint_box_layout_info_ortho(cells, &padding);
 }
 
-inline SharedVector<float> solve_path_layout(const cbindgen_private::PathLayoutData &data,
-                                             cbindgen_private::Slice<int> repeater_indexes)
-{
-    SharedVector<float> result;
-    cbindgen_private::Slice<uint32_t> ri { reinterpret_cast<uint32_t *>(repeater_indexes.ptr),
-                                           repeater_indexes.len };
-    cbindgen_private::slint_solve_path_layout(&data, ri, &result);
-    return result;
-}
-
 /// Access the layout cache of an item within a repeater
 inline float layout_cache_access(const SharedVector<float> &cache, int offset, int repeater_index)
 {
@@ -599,20 +278,33 @@ inline float layout_cache_access(const SharedVector<float> &cache, int offset, i
 struct ModelChangeListener
 {
     virtual ~ModelChangeListener() = default;
-    virtual void row_added(int index, int count) = 0;
-    virtual void row_removed(int index, int count) = 0;
-    virtual void row_changed(int index) = 0;
+    virtual void row_added(size_t index, size_t count) = 0;
+    virtual void row_removed(size_t index, size_t count) = 0;
+    virtual void row_changed(size_t index) = 0;
     virtual void reset() = 0;
 };
 using ModelPeer = std::weak_ptr<ModelChangeListener>;
 
 template<typename M>
-auto access_array_index(const M &model, int index)
+auto access_array_index(const std::shared_ptr<M> &model, size_t index)
 {
-    if (const auto v = model->row_data_tracked(index)) {
+    if (!model) {
+        return decltype(*model->row_data_tracked(index)) {};
+    } else if (const auto v = model->row_data_tracked(index)) {
         return *v;
     } else {
         return decltype(*v) {};
+    }
+}
+
+template<typename M>
+long int model_length(const std::shared_ptr<M> &model)
+{
+    if (!model) {
+        return 0;
+    } else {
+        model->track_row_count_changes();
+        return model->row_count();
     }
 }
 
@@ -632,10 +324,10 @@ public:
     Model &operator=(const Model &) = delete;
 
     /// The amount of row in the model
-    virtual int row_count() const = 0;
+    virtual size_t row_count() const = 0;
     /// Returns the data for a particular row. This function should be called with `row <
     /// row_count()`.
-    virtual std::optional<ModelData> row_data(int i) const = 0;
+    virtual std::optional<ModelData> row_data(size_t i) const = 0;
     /// Sets the data for a particular row.
     ///
     /// This function should only be called with `row < row_count()`.
@@ -644,9 +336,11 @@ public:
     /// The default implementation will print a warning to stderr.
     ///
     /// If the model can update the data, it should also call `row_changed`
-    virtual void set_row_data(int, const ModelData &)
+    virtual void set_row_data(size_t, const ModelData &)
     {
+#ifndef SLINT_FEATURE_FREESTANDING
         std::cerr << "Model::set_row_data was called on a read-only model" << std::endl;
+#endif
     };
 
     /// \private
@@ -661,7 +355,7 @@ public:
     /// \private
     /// Internal function called from within bindings to register with the currently
     /// evaluating dependency and get notified when this model's row data changes.
-    void track_row_data_changes(int row) const
+    void track_row_data_changes(size_t row) const
     {
         auto it = std::lower_bound(tracked_rows.begin(), tracked_rows.end(), row);
         if (it == tracked_rows.end() || row < *it) {
@@ -672,7 +366,7 @@ public:
 
     /// \private
     /// Convenience function that calls `track_row_data_changes` before returning `row_data`
-    std::optional<ModelData> row_data_tracked(int row) const
+    std::optional<ModelData> row_data_tracked(size_t row) const
     {
         track_row_data_changes(row);
         return row_data(row);
@@ -680,7 +374,7 @@ public:
 
 protected:
     /// Notify the views that a specific row was changed
-    void row_changed(int row)
+    void row_changed(size_t row)
     {
         if (std::binary_search(tracked_rows.begin(), tracked_rows.end(), row)) {
             model_row_data_dirty_property.mark_dirty();
@@ -688,7 +382,7 @@ protected:
         for_each_peers([=](auto peer) { peer->row_changed(row); });
     }
     /// Notify the views that rows were added
-    void row_added(int index, int count)
+    void row_added(size_t index, size_t count)
     {
         model_row_count_dirty_property.mark_dirty();
         tracked_rows.clear();
@@ -696,7 +390,7 @@ protected:
         for_each_peers([=](auto peer) { peer->row_added(index, count); });
     }
     /// Notify the views that rows were removed
-    void row_removed(int index, int count)
+    void row_removed(size_t index, size_t count)
     {
         model_row_count_dirty_property.mark_dirty();
         tracked_rows.clear();
@@ -731,7 +425,7 @@ private:
     std::vector<private_api::ModelPeer> peers;
     private_api::Property<bool> model_row_count_dirty_property;
     private_api::Property<bool> model_row_data_dirty_property;
-    mutable std::vector<int> tracked_rows;
+    mutable std::vector<size_t> tracked_rows;
 };
 
 namespace private_api {
@@ -748,14 +442,14 @@ public:
     ArrayModel(A &&...a) : data { std::forward<A>(a)... }
     {
     }
-    int row_count() const override { return Count; }
-    std::optional<ModelData> row_data(int i) const override
+    size_t row_count() const override { return Count; }
+    std::optional<ModelData> row_data(size_t i) const override
     {
         if (i >= row_count())
             return {};
         return data[i];
     }
-    void set_row_data(int i, const ModelData &value) override
+    void set_row_data(size_t i, const ModelData &value) override
     {
         if (i < row_count()) {
             data[i] = value;
@@ -764,20 +458,29 @@ public:
     }
 };
 
+// Specialize for the empty array. We can't have a Model<void>, but `int` will work for our purpose
+template<>
+class ArrayModel<0, void> : public Model<int>
+{
+public:
+    size_t row_count() const override { return 0; }
+    std::optional<int> row_data(size_t) const override { return {}; }
+};
+
 /// Model to be used when we just want to repeat without data.
-struct IntModel : Model<int>
+struct UIntModel : Model<int>
 {
     /// Constructs a new IntModel with \a d rows.
-    IntModel(int d) : data(d) { }
+    UIntModel(uint32_t d) : data(d) { }
     /// \private
-    int data;
+    uint32_t data;
     /// \copydoc Model::row_count
-    int row_count() const override { return data; }
-    std::optional<int> row_data(int value) const override
+    size_t row_count() const override { return data; }
+    std::optional<int> row_data(size_t value) const override
     {
         if (value >= row_count())
             return {};
-        return value;
+        return static_cast<int>(value);
     }
 };
 } // namespace private_api
@@ -793,14 +496,14 @@ public:
     VectorModel() = default;
     /// Constructs a new VectorModel from \a array.
     VectorModel(std::vector<ModelData> array) : data(std::move(array)) { }
-    int row_count() const override { return int(data.size()); }
-    std::optional<ModelData> row_data(int i) const override
+    size_t row_count() const override { return data.size(); }
+    std::optional<ModelData> row_data(size_t i) const override
     {
         if (i >= row_count())
             return {};
         return std::optional<ModelData> { data[i] };
     }
-    void set_row_data(int i, const ModelData &value) override
+    void set_row_data(size_t i, const ModelData &value) override
     {
         if (i < row_count()) {
             data[i] = value;
@@ -812,11 +515,11 @@ public:
     void push_back(const ModelData &value)
     {
         data.push_back(value);
-        this->row_added(int(data.size()) - 1, 1);
+        this->row_added(data.size() - 1, 1);
     }
 
     /// Remove the row at the given index from the model
-    void erase(int index)
+    void erase(size_t index)
     {
         data.erase(data.begin() + index);
         this->row_removed(index, 1);
@@ -826,7 +529,23 @@ public:
     void insert(size_t index, const ModelData &value)
     {
         data.insert(data.begin() + index, value);
-        this->row_added(int(index), 1);
+        this->row_added(index, 1);
+    }
+
+    /// Erases all rows from the VectorModel.
+    void clear()
+    {
+        if (!data.empty()) {
+            data.clear();
+            this->reset();
+        }
+    }
+
+    /// Replaces the underlying VectorModel's vector with \a array.
+    void set_vector(std::vector<ModelData> array)
+    {
+        data = std::move(array);
+        this->reset();
     }
 };
 
@@ -842,17 +561,21 @@ struct FilterModelInner : private_api::ModelChangeListener
                      slint::FilterModel<ModelData> &target_model)
         : source_model(source_model), filter_fn(filter_fn), target_model(target_model)
     {
-        update_mapping();
     }
 
-    void row_added(int index, int count) override
+    void row_added(size_t index, size_t count) override
     {
+        if (filtered_rows_dirty) {
+            reset();
+            return;
+        }
+
         if (count == 0) {
             return;
         }
 
-        std::vector<int> added_accepted_rows;
-        for (int i = index; i < index + count; ++i) {
+        std::vector<size_t> added_accepted_rows;
+        for (auto i = index; i < index + count; ++i) {
             if (auto data = source_model->row_data(i)) {
                 if (filter_fn(*data)) {
                     added_accepted_rows.push_back(i);
@@ -875,8 +598,13 @@ struct FilterModelInner : private_api::ModelChangeListener
 
         target_model.row_added(insertion_point - accepted_rows.begin(), added_accepted_rows.size());
     }
-    void row_changed(int index) override
+    void row_changed(size_t index) override
     {
+        if (filtered_rows_dirty) {
+            reset();
+            return;
+        }
+
         auto existing_row = std::lower_bound(accepted_rows.begin(), accepted_rows.end(), index);
         auto existing_row_index = std::distance(accepted_rows.begin(), existing_row);
         bool is_contained = existing_row != accepted_rows.end() && *existing_row == index;
@@ -892,8 +620,13 @@ struct FilterModelInner : private_api::ModelChangeListener
             target_model.row_removed(existing_row_index, 1);
         }
     }
-    void row_removed(int index, int count) override
+    void row_removed(size_t index, size_t count) override
     {
+        if (filtered_rows_dirty) {
+            reset();
+            return;
+        }
+
         auto mapped_row_start = std::lower_bound(accepted_rows.begin(), accepted_rows.end(), index);
         auto mapped_row_end =
                 std::lower_bound(accepted_rows.begin(), accepted_rows.end(), index + count);
@@ -916,25 +649,33 @@ struct FilterModelInner : private_api::ModelChangeListener
     }
     void reset() override
     {
+        filtered_rows_dirty = true;
         update_mapping();
-        target_model.reset();
+        target_model.Model<ModelData>::reset();
     }
 
     void update_mapping()
     {
+        if (!filtered_rows_dirty) {
+            return;
+        }
+
         accepted_rows.clear();
-        for (int i = 0, count = source_model->row_count(); i < count; ++i) {
+        for (size_t i = 0, count = source_model->row_count(); i < count; ++i) {
             if (auto data = source_model->row_data(i)) {
                 if (filter_fn(*data)) {
                     accepted_rows.push_back(i);
                 }
             }
         }
+
+        filtered_rows_dirty = false;
     }
 
+    bool filtered_rows_dirty = true;
     std::shared_ptr<slint::Model<ModelData>> source_model;
     std::function<bool(const ModelData &)> filter_fn;
-    std::vector<int> accepted_rows;
+    std::vector<size_t> accepted_rows;
     slint::FilterModel<ModelData> &target_model;
 };
 }
@@ -954,22 +695,28 @@ public:
     FilterModel(std::shared_ptr<Model<ModelData>> source_model,
                 std::function<bool(const ModelData &)> filter_fn)
         : inner(std::make_shared<private_api::FilterModelInner<ModelData>>(
-                std::move(source_model), std::move(filter_fn), *this))
+                  std::move(source_model), std::move(filter_fn), *this))
     {
         inner->source_model->attach_peer(inner);
     }
 
-    int row_count() const override { return inner->accepted_rows.size(); }
-
-    std::optional<ModelData> row_data(int i) const override
+    size_t row_count() const override
     {
-        if (i < 0 || size_t(i) >= inner->accepted_rows.size())
+        inner->update_mapping();
+        return inner->accepted_rows.size();
+    }
+
+    std::optional<ModelData> row_data(size_t i) const override
+    {
+        inner->update_mapping();
+        if (i >= inner->accepted_rows.size())
             return {};
         return inner->source_model->row_data(inner->accepted_rows[i]);
     }
 
-    void set_row_data(int i, const ModelData &value) override
+    void set_row_data(size_t i, const ModelData &value) override
     {
+        inner->update_mapping();
         inner->source_model->set_row_data(inner->accepted_rows[i], value);
     }
 
@@ -979,7 +726,11 @@ public:
 
     /// Given the \a filtered_row index, this function returns the corresponding row index in the
     /// source model.
-    int unfiltered_row(int filtered_row) const { return inner->accepted_rows[filtered_row]; }
+    int unfiltered_row(int filtered_row) const
+    {
+        inner->update_mapping();
+        return inner->accepted_rows[filtered_row];
+    }
 
     /// Returns the source model of this filter model.
     std::shared_ptr<Model<ModelData>> source_model() const { return inner->source_model; }
@@ -1000,10 +751,13 @@ struct MapModelInner : private_api::ModelChangeListener
     {
     }
 
-    void row_added(int index, int count) override { target_model.row_added(index, count); }
-    void row_changed(int index) override { target_model.row_changed(index); }
-    void row_removed(int index, int count) override { target_model.row_removed(index, count); }
-    void reset() override { target_model.reset(); }
+    void row_added(size_t index, size_t count) override { target_model.row_added(index, count); }
+    void row_changed(size_t index) override { target_model.row_changed(index); }
+    void row_removed(size_t index, size_t count) override
+    {
+        target_model.row_removed(index, count);
+    }
+    void reset() override { target_model.Model<MappedModelData>::reset(); }
 
     slint::MapModel<SourceModelData, MappedModelData> &target_model;
 };
@@ -1029,16 +783,16 @@ public:
     MapModel(std::shared_ptr<Model<SourceModelData>> source_model,
              std::function<MappedModelData(const SourceModelData &)> map_fn)
         : inner(std::make_shared<private_api::MapModelInner<SourceModelData, MappedModelData>>(
-                *this)),
+                  *this)),
           model(source_model),
           map_fn(map_fn)
     {
         model->attach_peer(inner);
     }
 
-    int row_count() const override { return model->row_count(); }
+    size_t row_count() const override { return model->row_count(); }
 
-    std::optional<MappedModelData> row_data(int i) const override
+    std::optional<MappedModelData> row_data(size_t i) const override
     {
         if (auto source_data = model->row_data(i))
             return map_fn(*source_data);
@@ -1048,6 +802,10 @@ public:
 
     /// Returns the source model of this filter model.
     std::shared_ptr<Model<SourceModelData>> source_model() const { return model; }
+
+    /// Re-applies the model's mapping function on each row of the source model. Use this if state
+    /// external to the mapping function has changed.
+    void reset() { inner->reset(); }
 
 private:
     std::shared_ptr<private_api::MapModelInner<SourceModelData, MappedModelData>> inner;
@@ -1069,7 +827,7 @@ struct SortModelInner : private_api::ModelChangeListener
     {
     }
 
-    void row_added(int first_inserted_row, int count) override
+    void row_added(size_t first_inserted_row, size_t count) override
     {
         if (sorted_rows_dirty) {
             reset();
@@ -1082,12 +840,12 @@ struct SortModelInner : private_api::ModelChangeListener
                 row += count;
         }
 
-        for (int row = first_inserted_row; row < first_inserted_row + count; ++row) {
+        for (size_t row = first_inserted_row; row < first_inserted_row + count; ++row) {
 
             ModelData inserted_value = *source_model->row_data(row);
             auto insertion_point =
                     std::lower_bound(sorted_rows.begin(), sorted_rows.end(), inserted_value,
-                                     [this](int sorted_row, const ModelData &inserted_value) {
+                                     [this](size_t sorted_row, const ModelData &inserted_value) {
                                          auto sorted_elem = source_model->row_data(sorted_row);
                                          return comp(*sorted_elem, inserted_value);
                                      });
@@ -1096,7 +854,7 @@ struct SortModelInner : private_api::ModelChangeListener
             target_model.row_added(std::distance(sorted_rows.begin(), insertion_point), 1);
         }
     }
-    void row_changed(int changed_row) override
+    void row_changed(size_t changed_row) override
     {
         if (sorted_rows_dirty) {
             reset();
@@ -1110,7 +868,7 @@ struct SortModelInner : private_api::ModelChangeListener
         ModelData changed_value = *source_model->row_data(changed_row);
         auto insertion_point =
                 std::lower_bound(sorted_rows.begin(), sorted_rows.end(), changed_value,
-                                 [this](int sorted_row, const ModelData &changed_value) {
+                                 [this](size_t sorted_row, const ModelData &changed_value) {
                                      auto sorted_elem = source_model->row_data(sorted_row);
                                      return comp(*sorted_elem, changed_value);
                                  });
@@ -1125,14 +883,14 @@ struct SortModelInner : private_api::ModelChangeListener
             target_model.row_added(inserted_row, 1);
         }
     }
-    void row_removed(int first_removed_row, int count) override
+    void row_removed(size_t first_removed_row, size_t count) override
     {
         if (sorted_rows_dirty) {
             reset();
             return;
         }
 
-        std::vector<int> removed_rows;
+        std::vector<size_t> removed_rows;
         removed_rows.reserve(count);
 
         for (auto it = sorted_rows.begin(); it != sorted_rows.end();) {
@@ -1148,14 +906,15 @@ struct SortModelInner : private_api::ModelChangeListener
             ++it;
         }
 
-        for (int removed_row : removed_rows) {
+        for (auto removed_row : removed_rows) {
             target_model.row_removed(removed_row, 1);
         }
     }
+
     void reset() override
     {
         sorted_rows_dirty = true;
-        target_model.reset();
+        target_model.Model<ModelData>::reset();
     }
 
     void ensure_sorted()
@@ -1168,7 +927,7 @@ struct SortModelInner : private_api::ModelChangeListener
         for (size_t i = 0; i < sorted_rows.size(); ++i)
             sorted_rows[i] = i;
 
-        std::sort(sorted_rows.begin(), sorted_rows.end(), [this](int lhs_index, int rhs_index) {
+        std::sort(sorted_rows.begin(), sorted_rows.end(), [this](auto lhs_index, auto rhs_index) {
             auto lhs_elem = source_model->row_data(lhs_index);
             auto rhs_elem = source_model->row_data(rhs_index);
             return comp(*lhs_elem, *rhs_elem);
@@ -1180,7 +939,7 @@ struct SortModelInner : private_api::ModelChangeListener
     std::shared_ptr<slint::Model<ModelData>> source_model;
     std::function<bool(const ModelData &, const ModelData &)> comp;
     slint::SortModel<ModelData> &target_model;
-    std::vector<int> sorted_rows;
+    std::vector<size_t> sorted_rows;
     bool sorted_rows_dirty = true;
 };
 }
@@ -1204,18 +963,19 @@ public:
         inner->source_model->attach_peer(inner);
     }
 
-    int row_count() const override { return inner->source_model->row_count(); }
+    size_t row_count() const override { return inner->source_model->row_count(); }
 
-    std::optional<ModelData> row_data(int i) const override
+    std::optional<ModelData> row_data(size_t i) const override
     {
         inner->ensure_sorted();
         return inner->source_model->row_data(inner->sorted_rows[i]);
     }
 
-    void set_row_data(int i, const ModelData &value) override
+    void set_row_data(size_t i, const ModelData &value) override
     {
         inner->source_model->set_row_data(inner->sorted_rows[i], value);
     }
+
     /// Re-applies the model's sort function on each row of the source model. Use this if state
     /// external to the sort function has changed.
     void reset() { inner->reset(); }
@@ -1235,6 +995,83 @@ private:
     std::shared_ptr<private_api::SortModelInner<ModelData>> inner;
 };
 
+template<typename ModelData>
+class ReverseModel;
+
+namespace private_api {
+template<typename ModelData>
+struct ReverseModelInner : private_api::ModelChangeListener
+{
+    ReverseModelInner(std::shared_ptr<slint::Model<ModelData>> source_model,
+                      slint::ReverseModel<ModelData> &target_model)
+        : source_model(source_model), target_model(target_model)
+    {
+    }
+
+    void row_added(size_t first_inserted_row, size_t count) override
+    {
+        auto row_count = source_model->row_count();
+        auto old_row_count = row_count - count;
+        auto row = old_row_count - first_inserted_row;
+
+        target_model.row_added(row, count);
+    }
+
+    void row_changed(size_t changed_row) override
+    {
+        target_model.row_changed(source_model->row_count() - 1 - changed_row);
+    }
+
+    void row_removed(size_t first_removed_row, size_t count) override
+    {
+        target_model.row_removed(source_model->row_count() - first_removed_row, count);
+    }
+
+    void reset() override { target_model.reset(); }
+
+    std::shared_ptr<slint::Model<ModelData>> source_model;
+    slint::ReverseModel<ModelData> &target_model;
+};
+}
+
+/// The ReverseModel acts as an adapter model for a given source model by reserving all rows.
+/// This means that the first row in the source model is the last row of this model, the second
+/// row is the second last, and so on.
+template<typename ModelData>
+class ReverseModel : public Model<ModelData>
+{
+    friend struct private_api::ReverseModelInner<ModelData>;
+
+public:
+    /// Constructs a new ReverseModel that provides a reversed view on the \a source_model.
+    ReverseModel(std::shared_ptr<Model<ModelData>> source_model)
+        : inner(std::make_shared<private_api::ReverseModelInner<ModelData>>(std::move(source_model),
+                                                                            *this))
+    {
+        inner->source_model->attach_peer(inner);
+    }
+
+    size_t row_count() const override { return inner->source_model->row_count(); }
+
+    std::optional<ModelData> row_data(size_t i) const override
+    {
+        auto count = inner->source_model->row_count();
+        return inner->source_model->row_data(count - i - 1);
+    }
+
+    void set_row_data(size_t i, const ModelData &value) override
+    {
+        auto count = inner->source_model->row_count();
+        inner->source_model->set_row_data(count - i - 1, value);
+    }
+
+    /// Returns the source model of this reserve model.
+    std::shared_ptr<Model<ModelData>> source_model() const { return inner->source_model; }
+
+private:
+    std::shared_ptr<private_api::ReverseModelInner<ModelData>> inner;
+};
+
 namespace private_api {
 
 template<typename C, typename ModelData>
@@ -1245,26 +1082,36 @@ class Repeater
     struct RepeaterInner : ModelChangeListener
     {
         enum class State { Clean, Dirty };
-        struct ComponentWithState
+        struct RepeatedInstanceWithState
         {
             State state = State::Dirty;
             std::optional<ComponentHandle<C>> ptr;
         };
-        std::vector<ComponentWithState> data;
+        std::vector<RepeatedInstanceWithState> data;
         private_api::Property<bool> is_dirty { true };
+        std::shared_ptr<Model<ModelData>> model;
 
-        void row_added(int index, int count) override
+        void row_added(size_t index, size_t count) override
         {
             is_dirty.set(true);
             data.resize(data.size() + count);
             std::rotate(data.begin() + index, data.end() - count, data.end());
+            for (std::size_t i = index; i < data.size(); ++i) {
+                // all the indexes are dirty
+                data[i].state = State::Dirty;
+            }
         }
-        void row_changed(int index) override
+        void row_changed(size_t index) override
         {
-            is_dirty.set(true);
-            data[index].state = State::Dirty;
+            auto &c = data[index];
+            if (model && c.ptr) {
+                (*c.ptr)->update_data(index, *model->row_data(index));
+                c.state = State::Clean;
+            } else {
+                c.state = State::Dirty;
+            }
         }
-        void row_removed(int index, int count) override
+        void row_removed(size_t index, size_t count) override
         {
             is_dirty.set(true);
             data.erase(data.begin() + index, data.begin() + index + count);
@@ -1296,6 +1143,7 @@ public:
         if (model.is_dirty()) {
             inner = std::make_shared<RepeaterInner>();
             if (auto m = model.get()) {
+                inner->model = m;
                 m->attach_peer(inner);
             }
         }
@@ -1303,15 +1151,20 @@ public:
         if (inner && inner->is_dirty.get()) {
             inner->is_dirty.set(false);
             if (auto m = model.get()) {
-                int count = m->row_count();
+                auto count = m->row_count();
                 inner->data.resize(count);
-                for (int i = 0; i < count; ++i) {
+                for (size_t i = 0; i < count; ++i) {
                     auto &c = inner->data[i];
+                    bool created = false;
                     if (!c.ptr) {
                         c.ptr = C::create(parent);
+                        created = true;
                     }
                     if (c.state == RepeaterInner::State::Dirty) {
                         (*c.ptr)->update_data(i, *m->row_data(i));
+                    }
+                    if (created) {
+                        (*c.ptr)->init();
                     }
                 }
             } else {
@@ -1338,10 +1191,10 @@ public:
         viewport_height->set(h);
     }
 
-    uintptr_t visit(TraversalOrder order, private_api::ItemVisitorRefMut visitor) const
+    uint64_t visit(TraversalOrder order, private_api::ItemVisitorRefMut visitor) const
     {
         for (std::size_t i = 0; i < inner->data.size(); ++i) {
-            int index = order == TraversalOrder::BackToFront ? i : inner->data.size() - 1 - i;
+            auto index = order == TraversalOrder::BackToFront ? i : inner->data.size() - 1 - i;
             auto ref = item_at(index);
             if (ref.vtable->visit_children_item(ref, -1, order, visitor)
                 != std::numeric_limits<uint64_t>::max()) {
@@ -1351,16 +1204,19 @@ public:
         return std::numeric_limits<uint64_t>::max();
     }
 
-    vtable::VRef<private_api::ComponentVTable> item_at(int i) const
+    vtable::VRef<private_api::ItemTreeVTable> item_at(int i) const
     {
         const auto &x = inner->data.at(i);
         return { &C::static_vtable, const_cast<C *>(&(**x.ptr)) };
     }
 
-    vtable::VWeak<private_api::ComponentVTable> component_at(int i) const
+    vtable::VWeak<private_api::ItemTreeVTable> instance_at(std::size_t i) const
     {
+        if (i >= inner->data.size()) {
+            return {};
+        }
         const auto &x = inner->data.at(i);
-        return vtable::VWeak<private_api::ComponentVTable> { x.ptr->into_dyn() };
+        return vtable::VWeak<private_api::ItemTreeVTable> { x.ptr->into_dyn() };
     }
 
     private_api::IndexRange index_range() const
@@ -1381,7 +1237,7 @@ public:
         return offset;
     }
 
-    void model_set_row_data(int row, const ModelData &data) const
+    void model_set_row_data(size_t row, const ModelData &data) const
     {
         if (model.is_dirty()) {
             std::abort();
@@ -1389,18 +1245,40 @@ public:
         if (auto m = model.get()) {
             if (row < m->row_count()) {
                 m->set_row_data(row, data);
-                if (inner && inner->is_dirty.get()) {
-                    auto &c = inner->data[row];
-                    if (c.state == RepeaterInner::State::Dirty && c.ptr) {
-                        (*c.ptr)->update_data(row, *m->row_data(row));
-                    }
-                }
             }
         }
     }
 };
 
+inline SharedString translate(const SharedString &original, const SharedString &context,
+                              const SharedString &domain,
+                              cbindgen_private::Slice<SharedString> arguments, int n,
+                              const SharedString &plural)
+{
+    SharedString result = original;
+    cbindgen_private::slint_translate(&result, &context, &domain, arguments, n, &plural);
+    return result;
+}
+
 } // namespace private_api
+
+#ifdef SLINT_FEATURE_GETTEXT
+/// Forces all the strings that are translated with `@tr(...)` to be re-evaluated.
+/// This is useful if the language is changed at runtime.
+/// The function is only available when Slint is compiled with `SLINT_FEATURE_GETTEXT`.
+///
+/// Example
+/// ```cpp
+///     my_ui->global<LanguageSettings>().on_french_selected([] {
+///        setenv("LANGUAGE", langs[l], true);
+///        slint::update_all_translations();
+///    });
+/// ```
+inline void update_all_translations()
+{
+    cbindgen_private::slint_translations_mark_dirty();
+}
+#endif
 
 #if !defined(DOXYGEN)
 cbindgen_private::Flickable::Flickable()
@@ -1421,25 +1299,49 @@ cbindgen_private::NativeStyleMetrics::~NativeStyleMetrics()
 {
     slint_native_style_metrics_deinit(this);
 }
+
+cbindgen_private::NativePalette::NativePalette(void *)
+{
+    slint_native_palette_init(this);
+}
+
+cbindgen_private::NativePalette::~NativePalette()
+{
+    slint_native_palette_deinit(this);
+}
 #endif // !defined(DOXYGEN)
 
 namespace private_api {
-// Code generated by Slint <= 0.1.5 uses this enum with VersionCheckHelper
-enum class [[deprecated]] VersionCheck { Major = SLINT_VERSION_MAJOR, Minor = SLINT_VERSION_MINOR,
-                                         Patch = SLINT_VERSION_PATCH };
+// Was used in Slint <= 1.1.0 to have an error message in case of mismatch
 template<int Major, int Minor, int Patch>
-struct VersionCheckHelper
+struct [[deprecated]] VersionCheckHelper
 {
 };
 }
 
+/// Enum for the event loop mode parameter of the slint::run_event_loop() function.
+/// It is used to determine when the event loop quits.
+enum class EventLoopMode {
+    /// The event loop will quit when the last window is closed
+    /// or when slint::quit_event_loop() is called.
+    QuitOnLastWindowClosed,
+
+    /// The event loop will keep running until slint::quit_event_loop() is called,
+    /// even when all windows are closed.
+    RunUntilQuit
+};
+
 /// Enters the main event loop. This is necessary in order to receive
 /// events from the windowing system in order to render to the screen
 /// and react to user input.
-inline void run_event_loop()
+///
+/// The mode parameter determines the behavior of the event loop when all windows are closed.
+/// By default, it is set to QuitOnLastWindowClose, which means the event loop will
+/// quit when the last window is closed.
+inline void run_event_loop(EventLoopMode mode = EventLoopMode::QuitOnLastWindowClosed)
 {
     private_api::assert_main_thread();
-    cbindgen_private::slint_run_event_loop();
+    cbindgen_private::slint_run_event_loop(mode == EventLoopMode::QuitOnLastWindowClosed);
 }
 
 /// Schedules the main event loop for termination. This function is meant
@@ -1488,13 +1390,15 @@ inline void quit_event_loop()
 /// ```
 ///
 /// See also blocking_invoke_from_event_loop() for a blocking version of this function
-template<typename Functor>
+template<std::invocable Functor>
 void invoke_from_event_loop(Functor f)
 {
     cbindgen_private::slint_post_event(
             [](void *data) { (*reinterpret_cast<Functor *>(data))(); }, new Functor(std::move(f)),
             [](void *data) { delete reinterpret_cast<Functor *>(data); });
 }
+
+#if !defined(SLINT_FEATURE_FREESTANDING) || defined(DOXYGEN)
 
 /// Blocking version of invoke_from_event_loop()
 ///
@@ -1531,8 +1435,7 @@ void invoke_from_event_loop(Functor f)
 ///     ...
 /// }
 /// ```
-template<typename Functor,
-         typename = std::enable_if_t<!std::is_void_v<std::invoke_result_t<Functor>>>>
+template<std::invocable Functor>
 auto blocking_invoke_from_event_loop(Functor f) -> std::invoke_result_t<Functor>
 {
     std::optional<std::invoke_result_t<Functor>> result;
@@ -1549,9 +1452,12 @@ auto blocking_invoke_from_event_loop(Functor f) -> std::invoke_result_t<Functor>
     return std::move(*result);
 }
 
-template<typename Functor,
-         typename = std::enable_if_t<std::is_void_v<std::invoke_result_t<Functor>>>>
-auto blocking_invoke_from_event_loop(Functor f) -> void
+#    if !defined(DOXYGEN) // Doxygen doesn't see this as an overload of the previous one
+// clang-format off
+template<std::invocable Functor>
+    requires(std::is_void_v<std::invoke_result_t<Functor>>)
+void blocking_invoke_from_event_loop(Functor f)
+// clang-format on
 {
     std::mutex mtx;
     std::condition_variable cv;
@@ -1565,5 +1471,7 @@ auto blocking_invoke_from_event_loop(Functor f) -> void
     std::unique_lock lock(mtx);
     cv.wait(lock, [&] { return ok; });
 }
+#    endif
+#endif
 
 } // namespace slint

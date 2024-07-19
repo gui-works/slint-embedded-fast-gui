@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Pass that lowers synthetic `drop-shadow-*` properties to proper shadow elements
 // At the moment only shadows on `Rectangle` elements are supported, i.e. the drop shadow
@@ -21,15 +21,10 @@ fn create_box_shadow_element(
     type_register: &TypeRegister,
     diag: &mut BuildDiagnostics,
 ) -> Option<Element> {
-    if matches!(sibling_element.borrow().native_class(), Some(native)
-       if native.class_name != "Rectangle" && native.class_name != "BorderRectangle" && native.class_name != "Clip")
-    {
+    if matches!(sibling_element.borrow().builtin_type(), Some(b) if b.name != "Rectangle") {
         for (shadow_prop_name, shadow_prop_binding) in shadow_property_bindings {
             diag.push_error(
-                format!(
-                    "The {} property is only supported on Rectangle and Clip elements right now",
-                    shadow_prop_name
-                ),
+                format!("The {shadow_prop_name} property is only supported on Rectangle elements right now"),
                 &shadow_prop_binding,
             );
         }
@@ -38,7 +33,7 @@ fn create_box_shadow_element(
 
     let mut element = Element {
         id: format!("{}-shadow", sibling_element.borrow().id),
-        base_type: type_register.lookup_element("BoxShadow").unwrap(),
+        base_type: type_register.lookup_builtin_element("BoxShadow").unwrap(),
         enclosing_component: sibling_element.borrow().enclosing_component.clone(),
         bindings: shadow_property_bindings
             .into_iter()
@@ -89,7 +84,7 @@ fn inject_shadow_element_in_repeated_element(
 
     crate::object_tree::inject_element_as_repeated_element(
         repeated_element,
-        ElementRc::new(RefCell::new(shadow_element)),
+        Element::make_rc(shadow_element),
     );
 }
 
@@ -162,21 +157,14 @@ pub fn lower_shadow_properties(
                     diag,
                 ) {
                     Some(element) => element,
-                    None => continue,
+                    None => {
+                        elem.borrow_mut().children.push(child);
+                        continue;
+                    }
                 };
 
-                // Install bindings from the remaining properties of the shadow element to the
-                // original, such as x/y/width/height.
-                for (prop, _) in crate::typeregister::RESERVED_GEOMETRY_PROPERTIES.iter() {
-                    let prop = prop.to_string();
-                    shadow_elem.bindings.entry(prop.clone()).or_insert_with(|| {
-                        let binding_ref =
-                            Expression::PropertyReference(NamedReference::new(&child, &prop));
-                        RefCell::new(binding_ref.into())
-                    });
-                }
-
-                elem.borrow_mut().children.push(ElementRc::new(RefCell::new(shadow_elem)));
+                shadow_elem.geometry_props.clone_from(&child.borrow().geometry_props);
+                elem.borrow_mut().children.push(ElementRc::new(shadow_elem.into()));
             }
             elem.borrow_mut().children.push(child);
         }

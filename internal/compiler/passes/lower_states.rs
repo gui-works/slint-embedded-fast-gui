@@ -1,10 +1,11 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Pass that create a state property, and change all the binding to depend on that property
 
 use crate::diagnostics::BuildDiagnostics;
 use crate::diagnostics::SourceLocation;
+use crate::diagnostics::Spanned;
 use crate::expression_tree::*;
 use crate::langtype::ElementType;
 use crate::langtype::Type;
@@ -136,7 +137,12 @@ fn lower_transitions_in_element(
         let state = states_id.get(&transition.state_id).unwrap_or_else(|| {
             diag.push_error(
                 format!("State '{}' does not exist", transition.state_id),
-                &transition.node,
+                transition
+                    .node
+                    .DeclaredIdentifier()
+                    .as_ref()
+                    .map(|x| x as &dyn Spanned)
+                    .unwrap_or(&transition.node as &dyn Spanned),
             );
             &0
         });
@@ -198,25 +204,28 @@ enum ExpressionForProperty {
 fn expression_for_property(element: &ElementRc, name: &str) -> ExpressionForProperty {
     let mut element_it = Some(element.clone());
     let mut in_base = false;
-    while let Some(element) = element_it {
-        if let Some(e) = element.borrow().bindings.get(name) {
+    while let Some(elem) = element_it {
+        if let Some(e) = elem.borrow().bindings.get(name) {
             let e = e.borrow();
             if !e.two_way_bindings.is_empty() {
                 return ExpressionForProperty::TwoWayBinding;
             }
-            if !matches!(e.expression, Expression::Invalid) {
+            let mut expr = e.expression.clone();
+            if !matches!(expr, Expression::Invalid) {
                 if in_base {
                     // Check that the expresison is valid in the new scope
                     let mut has_invalid = false;
-                    e.expression.visit_recursive(&mut |ex| match ex {
-                        Expression::CallbackReference(nr) | Expression::PropertyReference(nr) => {
+                    expr.visit_recursive_mut(&mut |ex| match ex {
+                        Expression::CallbackReference(nr, _)
+                        | Expression::PropertyReference(nr)
+                        | Expression::FunctionReference(nr, _) => {
                             let e = nr.element();
-                            if !Rc::ptr_eq(&e, &element)
-                                && Weak::ptr_eq(
-                                    &e.borrow().enclosing_component,
-                                    &element.borrow().enclosing_component,
-                                )
-                            {
+                            if Rc::ptr_eq(&e, &elem) {
+                                *nr = NamedReference::new(element, nr.name());
+                            } else if Weak::ptr_eq(
+                                &e.borrow().enclosing_component,
+                                &elem.borrow().enclosing_component,
+                            ) {
                                 has_invalid = true;
                             }
                         }
@@ -227,10 +236,10 @@ fn expression_for_property(element: &ElementRc, name: &str) -> ExpressionForProp
                     }
                 }
 
-                return ExpressionForProperty::Expression(e.expression.clone());
+                return ExpressionForProperty::Expression(expr);
             }
         }
-        element_it = if let ElementType::Component(base) = &element.borrow().base_type {
+        element_it = if let ElementType::Component(base) = &elem.borrow().base_type {
             in_base = true;
             Some(base.root_element.clone())
         } else {

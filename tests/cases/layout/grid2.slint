@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 TestCase := Window {
     width: 200phx;
@@ -66,7 +66,7 @@ assert(instance.get_y_ok());
 
 
 ```rust
-let instance = TestCase::new();
+let instance = TestCase::new().unwrap();
 assert!(instance.get_size_ok());
 assert!(instance.get_x_ok());
 assert!(instance.get_y_ok());
@@ -74,7 +74,7 @@ assert!(instance.get_y_ok());
 
 ```js
 var instance = new slint.TestCase();
-instance.send_mouse_click(5., 5.);
+slintlib.private_api.send_mouse_click(instance, 5., 5.);
 assert(instance.size_ok);
 assert(instance.x_ok);
 assert(instance.y_ok);

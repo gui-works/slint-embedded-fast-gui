@@ -1,15 +1,15 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::Path;
 
 fn main() -> std::io::Result<()> {
-    let mut generated_file = std::fs::File::create(
+    let mut generated_file = BufWriter::new(std::fs::File::create(
         Path::new(&std::env::var_os("OUT_DIR").unwrap()).join("generated.rs"),
-    )?;
+    )?);
 
-    for testcase in test_driver_lib::collect_test_cases()? {
+    for testcase in test_driver_lib::collect_test_cases("cases")? {
         println!("cargo:rerun-if-changed={}", testcase.absolute_path.display());
         let mut module_name = testcase.identifier();
         if module_name.starts_with(|c: char| !c.is_ascii_alphabetic()) {
@@ -17,10 +17,11 @@ fn main() -> std::io::Result<()> {
         }
         writeln!(generated_file, "#[path=\"{0}.rs\"] mod r#{0};", module_name)?;
         let source = std::fs::read_to_string(&testcase.absolute_path)?;
+        let ignored = testcase.is_ignored("rust");
 
-        let mut output = std::fs::File::create(
+        let mut output = BufWriter::new(std::fs::File::create(
             Path::new(&std::env::var_os("OUT_DIR").unwrap()).join(format!("{}.rs", module_name)),
-        )?;
+        )?);
 
         #[cfg(not(feature = "build-time"))]
         if !generate_macro(&source, &mut output, testcase)? {
@@ -36,12 +37,13 @@ fn main() -> std::io::Result<()> {
             write!(
                 output,
                 r"
-#[test] fn t_{}() -> Result<(), Box<dyn std::error::Error>> {{
+#[test] {} fn t_{}() -> std::result::Result<(), std::boxed::Box<dyn std::error::Error>> {{
     use i_slint_backend_testing as slint_testing;
-    slint_testing::init();
+    slint_testing::init_no_event_loop();
     {}
     Ok(())
 }}",
+                if ignored { "#[ignore]" } else { "" },
                 i,
                 x.source.replace('\n', "\n    ")
             )?;
@@ -54,14 +56,15 @@ fn main() -> std::io::Result<()> {
 
     //Make sure to use a consistent style
     println!("cargo:rustc-env=SLINT_STYLE=fluent");
-
+    println!("cargo:rustc-env=SLINT_ENABLE_EXPERIMENTAL_FEATURES=1");
+    println!("cargo:rustc-env=SLINT_EMIT_DEBUG_INFO=1");
     Ok(())
 }
 
 #[cfg(not(feature = "build-time"))]
 fn generate_macro(
     source: &str,
-    output: &mut std::fs::File,
+    output: &mut dyn Write,
     testcase: test_driver_lib::TestCase,
 ) -> Result<bool, std::io::Error> {
     if source.contains("\\{") {
@@ -69,7 +72,10 @@ fn generate_macro(
         output.write_all(b"#[test] #[ignore] fn ignored_because_string_template() {{}}")?;
         return Ok(false);
     }
+    // to silence all the warnings in .slint files that would be turned into errors
+    output.write_all(b"#![allow(deprecated)]")?;
     let include_paths = test_driver_lib::extract_include_paths(source);
+    let library_paths = test_driver_lib::extract_library_paths(source);
     output.write_all(b"slint::slint!{")?;
     for path in include_paths {
         let mut abs_path = testcase.absolute_path.clone();
@@ -82,6 +88,26 @@ fn generate_macro(
 
         println!("cargo:rerun-if-changed={}", abs_path.to_string_lossy());
     }
+    for (lib, path) in library_paths {
+        let mut abs_path = testcase.absolute_path.clone();
+        abs_path.pop();
+        abs_path.push(path);
+
+        output.write_all(b"#[library_path(")?;
+        output.write_all(lib.as_bytes())?;
+        output.write_all(b")=r#\"")?;
+        output.write_all(abs_path.to_string_lossy().as_bytes())?;
+        output.write_all(b"\"#]\n")?;
+
+        println!("cargo:rerun-if-changed={}", abs_path.to_string_lossy());
+    }
+
+    if let Some(style) = testcase.requested_style {
+        output.write_all(b"#[style=\"")?;
+        output.write_all(style.as_bytes())?;
+        output.write_all(b"\"#]\n")?;
+    }
+
     let mut abs_path = testcase.absolute_path;
     abs_path.pop();
     output.write_all(b"#[include_path=r#\"")?;
@@ -95,7 +121,7 @@ fn generate_macro(
 #[cfg(feature = "build-time")]
 fn generate_source(
     source: &str,
-    output: &mut std::fs::File,
+    output: &mut impl Write,
     testcase: test_driver_lib::TestCase,
 ) -> Result<(), std::io::Error> {
     use i_slint_compiler::{diagnostics::BuildDiagnostics, *};
@@ -103,16 +129,23 @@ fn generate_source(
     let include_paths = test_driver_lib::extract_include_paths(source)
         .map(std::path::PathBuf::from)
         .collect::<Vec<_>>();
+    let library_paths = test_driver_lib::extract_library_paths(source)
+        .map(|(k, v)| (k.to_string(), std::path::PathBuf::from(v)))
+        .collect::<std::collections::HashMap<_, _>>();
 
     let mut diag = BuildDiagnostics::default();
-    let syntax_node = parser::parse(source.to_owned(), Some(&testcase.absolute_path), &mut diag);
+    let syntax_node =
+        parser::parse(source.to_owned(), Some(&testcase.absolute_path), None, &mut diag);
     let mut compiler_config = CompilerConfiguration::new(generator::OutputFormat::Rust);
+    compiler_config.enable_experimental = true;
     compiler_config.include_paths = include_paths;
-    compiler_config.style = Some("fluent".to_string());
-    let (root_component, diag) =
+    compiler_config.library_paths = library_paths;
+    compiler_config.style = Some(testcase.requested_style.unwrap_or("fluent").to_string());
+    compiler_config.debug_info = true;
+    let (root_component, diag, loader) =
         spin_on::spin_on(compile_syntax_node(syntax_node, diag, compiler_config));
 
-    if diag.has_error() {
+    if diag.has_errors() {
         diag.print_warnings_and_exit_on_error();
         return Err(std::io::Error::new(
             std::io::ErrorKind::Other,
@@ -122,6 +155,11 @@ fn generate_source(
         diag.print();
     }
 
-    generator::generate(generator::OutputFormat::Rust, output, &root_component)?;
+    generator::generate(
+        generator::OutputFormat::Rust,
+        output,
+        &root_component,
+        &loader.compiler_config,
+    )?;
     Ok(())
 }

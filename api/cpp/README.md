@@ -1,13 +1,15 @@
+<!-- Copyright © SixtyFPS GmbH <info@slint.dev> ; SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 -->
+
 # Slint-cpp
 
 ## A C++ UI toolkit
 
-[Slint](https://slint-ui.com/) is a UI toolkit that supports different programming languages.
+[Slint](https://slint.dev/) is a UI toolkit that supports different programming languages.
 Slint.cpp is the C++ API to interact with a Slint UI from C++.
 
-The complete C++ documentation can be viewed online at https://slint-ui.com/docs/cpp/.
+The complete C++ documentation can be viewed online at https://slint.dev/docs/cpp/.
 
-If you are new to Slint, you might also consider going through our [Walk-through tutorial](https://slint-ui.com/docs/tutorial/cpp).
+If you are new to Slint, you might also consider going through our [Walk-through tutorial](https://slint.dev/docs/quickstart/cpp).
 
 ## Installing or Building Slint
 
@@ -15,7 +17,7 @@ Slint comes with a CMake integration that automates the compilation step of the 
 offers a CMake target for convenient linkage.
 
 *Note*: We recommend using the Ninja generator of CMake for the most efficient build and `.slint` dependency tracking.
-You can select the CMake Ninja backend by passing `-GNinja` or setting the `CMAKE_GENERATOR` environment variable to `Ninja`.
+Install [Ninja](https://ninja-build.org) and select the CMake Ninja backend by passing `-GNinja` or setting the `CMAKE_GENERATOR` environment variable to `Ninja`.
 
 ### Building from Sources
 
@@ -25,7 +27,7 @@ First you need to install the prerequisites:
 
 * Install Rust by following the [Rust Getting Started Guide](https://www.rust-lang.org/learn/get-started). Once this is done,
   you should have the ```rustc``` compiler and the ```cargo``` build system installed in your path.
-* **[cmake](https://cmake.org/download/)** (3.19 or newer)
+* **[cmake](https://cmake.org/download/)** (3.21 or newer)
 * A C++ compiler that supports C++20 (e.g., **MSVC 2019 16.6** on Windows)
 
 You can include Slint in your CMake project using CMake's `FetchContent` feature. Insert the following snippet into your
@@ -36,7 +38,9 @@ include(FetchContent)
 FetchContent_Declare(
     Slint
     GIT_REPOSITORY https://github.com/slint-ui/slint.git
-    GIT_TAG release/0.3
+    # `release/1` will auto-upgrade to the latest Slint >= 1.0.0 and < 2.0.0
+    # `release/1.0` will auto-upgrade to the latest Slint >= 1.0.0 and < 1.1.0
+    GIT_TAG release/1
     SOURCE_SUBDIR api/cpp
 )
 FetchContent_MakeAvailable(Slint)
@@ -96,14 +100,16 @@ You can download one of our pre-built binaries for Linux or Windows on x86-64 ar
 4. Uncompress the downloaded archive or run the installer.
 
 
-After extracting the artifact or running the installer, you can place the `lib` sub-directory into your `CMAKE_PREFIX_PATH` and `find_package(Slint)` should succeed in locating the package.
+After extracting the artifact or running the installer, you can place the installation directory into your
+`CMAKE_PREFIX_PATH` and `find_package(Slint)` should succeed in locating the package.
+
 
 ## Usage via CMake
 
 A typical example looks like this:
 
 ```cmake
-cmake_minimum_required(VERSION 3.19)
+cmake_minimum_required(VERSION 3.21)
 project(my_application LANGUAGES CXX)
 
 # Note: Use find_package(Slint) instead of the following three commands, if you prefer the package
@@ -112,7 +118,9 @@ include(FetchContent)
 FetchContent_Declare(
     Slint
     GIT_REPOSITORY https://github.com/slint-ui/slint.git
-    GIT_TAG release/0.3
+    # `release/1` will auto-upgrade to the latest Slint >= 1.0.0 and < 2.0.0
+    # `release/1.0` will auto-upgrade to the latest Slint >= 1.0.0 and < 1.1.0
+    GIT_TAG release/1
     SOURCE_SUBDIR api/cpp
 )
 FetchContent_MakeAvailable(Slint)
@@ -120,6 +128,10 @@ FetchContent_MakeAvailable(Slint)
 add_executable(my_application main.cpp)
 target_link_libraries(my_application PRIVATE Slint::Slint)
 slint_target_sources(my_application my_application_ui.slint)
+# On Windows, copy the Slint DLL next to the application binary so that it's found.
+if (WIN32)
+    add_custom_command(TARGET my_application POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_RUNTIME_DLLS:my_application> $<TARGET_FILE_DIR:my_application> COMMAND_EXPAND_LISTS)
+endif()
 ```
 
 The `slint_target_sources` cmake command allows you to add .slint files to your build. Finally it is
@@ -134,12 +146,12 @@ Hopefully this should be self explanatory. Check out the documentation of the la
 // file: my_application_ui.slint
 import { CheckBox, Button, ListView, LineEdit } from "std-widgets.slint";
 
-export struct TodoItem := {
+export struct TodoItem {
     title: string,
     checked: bool,
 }
 
-export MainWindow := Window {
+export component MainWindow {
     callback todo_added(string);
     property <[TodoItem]> todo_model;
 
@@ -165,7 +177,7 @@ export MainWindow := Window {
                         text: todo.title;
                         checked: todo.checked;
                         toggled => {
-                            todo.checked = checked;
+                            todo.checked = self.checked;
                         }
                     }
                 }
@@ -191,8 +203,8 @@ This will generate a `my_application_ui.h` header file. It basically contains th
 #include <slint.h>
 
 struct TodoItem {
-    bool checked;
     slint::SharedString title;
+    bool checked;
 };
 
 struct MainWindow {
@@ -238,7 +250,7 @@ int main() {
 
 That's it.
 
-For more details, check the [Online documentation](https://slint-ui.com/docs/cpp) and the full
-  [Walk-through tutorial](https://slint-ui.com/docs/tutorial/cpp).
+For more details, check the [Online documentation](https://slint.dev/docs/cpp) and the full
+  [Walk-through tutorial](https://slint.dev/docs/quickstart/cpp).
 We also have a [Getting Started Template](https://github.com/slint-ui/slint-cpp-template) repository with
 the code of a minimal C++ application using Slint that can be used as a starting point to your program.

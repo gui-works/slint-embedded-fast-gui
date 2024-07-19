@@ -1,15 +1,15 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 struct Struct := { def: int, }
 
-SuperSimple := Rectangle {
+export SuperSimple := Rectangle {
     DoesNotExist {
 //  ^error{Unknown type DoesNotExist}
     }
 
     dd := DoesNotExist2 {
-//       ^error{Unknown type DoesNotExist2}
+//        ^error{Unknown type DoesNotExist2}
         abc: 42;
         Hallo {}
 //      ^error{Unknown type Hallo}
@@ -17,6 +17,7 @@ SuperSimple := Rectangle {
             background: blue;
             foo_bar: blue;
 //          ^error{Unknown property foo-bar in Rectangle}
+//                   ^^error{Unknown unqualified identifier 'blue'}
         }
     }
 
@@ -29,7 +30,7 @@ SuperSimple := Rectangle {
     }
 
     s := Struct {
-//      ^error{'Struct' cannot be used as an element}
+//       ^error{'Struct' cannot be used as an element}
         def: "42";
         xyz: "42";
         Hallo {}
@@ -39,6 +40,7 @@ SuperSimple := Rectangle {
     Rectangle {
         foo_bar: blue;
 //      ^error{Unknown property foo-bar in Rectangle}
+//               ^^error{Unknown unqualified identifier 'blue'}
     }
 
     NativeLineEdit { }

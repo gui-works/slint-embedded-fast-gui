@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Passe that apply the default property from the style.
 //!
@@ -22,7 +22,7 @@ pub fn apply_default_properties_from_style(
         &(),
         &mut |elem, _| {
             let mut elem = elem.borrow_mut();
-            match elem.base_type.to_string().as_str() {
+            match elem.builtin_type().as_ref().map_or("", |b| b.name.as_str()) {
                 "TextInput" => {
                     elem.set_binding_if_not_set("text-cursor-width".into(), || {
                         Expression::PropertyReference(NamedReference::new(
@@ -49,7 +49,7 @@ pub fn apply_default_properties_from_style(
                         to: Type::Brush,
                     });
                 }
-                "Dialog" | "Window" | "WindowItem" => {
+                "Dialog" | "Window" => {
                     elem.set_binding_if_not_set("background".into(), || Expression::Cast {
                         from: Expression::PropertyReference(NamedReference::new(
                             &style_metrics.root_element,
@@ -58,6 +58,31 @@ pub fn apply_default_properties_from_style(
                         .into(),
                         to: Type::Brush,
                     });
+
+                    let mut bind_style_property_if_exists = |property_name, property_type| {
+                        if !matches!(
+                            style_metrics
+                                .root_element
+                                .borrow()
+                                .lookup_property(property_name)
+                                .property_type,
+                            Type::Invalid,
+                        ) {
+                            elem.set_binding_if_not_set(property_name.into(), || {
+                                Expression::Cast {
+                                    from: Expression::PropertyReference(NamedReference::new(
+                                        &style_metrics.root_element,
+                                        property_name,
+                                    ))
+                                    .into(),
+                                    to: property_type,
+                                }
+                            });
+                        }
+                    };
+
+                    bind_style_property_if_exists("default-font-size", Type::LogicalLength);
+                    bind_style_property_if_exists("default-font-family", Type::String);
                 }
 
                 _ => {}

@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 
 TestCase := Rectangle {
@@ -43,7 +43,7 @@ TestCase := Rectangle {
 
 /*
 ```rust
-let instance = TestCase::new();
+let instance = TestCase::new().unwrap();
 
 // there should be nothing there
 slint_testing::send_mouse_click(&instance, 25., 5.);
@@ -96,6 +96,52 @@ assert_eq!(instance.get_clicked_internal_state(), 2);
 assert_eq!(instance.get_clicked_index(), 1);
 
 ```
+
+
+```rust
+// Test a broken model
+// The behavior is not really defined, but at least it shouldn't panic
+
+let instance = TestCase::new().unwrap();
+
+type ModelData = (slint::SharedString, slint::SharedString, f32);
+struct BrokenModel;
+
+impl slint::Model for BrokenModel {
+    type Data = ModelData;
+    fn row_count(&self) -> usize { 3 }
+
+    fn row_data(&self, row: usize) -> Option<Self::Data> {
+        // The model is "broken" because it doesn't return anything for when row == 1
+        if row == 0 || row == 2 {
+            Some(("Hello".into(), "World".into(), row as f32 + 42.))
+        } else {
+            None
+        }
+    }
+    fn model_tracker(&self) -> &dyn slint::ModelTracker {
+        &()
+    }
+}
+
+slint_testing::send_mouse_click(&instance, 15., 5.);
+assert_eq!(instance.get_clicked_score(), 789000);
+assert_eq!(instance.get_clicked_internal_state(), 1);
+
+instance.set_model(slint::ModelRc::new(BrokenModel));
+
+slint_testing::send_mouse_click(&instance, 25., 5.);
+assert_eq!(instance.get_clicked_index(), 2);
+assert_eq!(instance.get_clicked_score(), 44000);
+
+// At position 0 there is the invalid item
+slint_testing::send_mouse_click(&instance, 5., 5.);
+assert_eq!(instance.get_clicked_score(), 0);
+assert_eq!(instance.get_clicked_index(), 0);
+
+```
+
+
 
 ```cpp
 auto handle = TestCase::create();
@@ -153,11 +199,11 @@ assert_eq(instance.get_clicked_index(), 1);
 var instance = new slint.TestCase({});
 
 // there should be nothing there
-instance.send_mouse_click(25., 5.);
+slintlib.private_api.send_mouse_click(instance, 25., 5.);
 assert.equal(instance.clicked_score, 0);
 assert.equal(instance.clicked_internal_state, 0);
 
-instance.send_mouse_click(15., 5.);
+slintlib.private_api.send_mouse_click(instance, 15., 5.);
 assert.equal(instance.clicked_score, 789000);
 assert.equal(instance.clicked_internal_state, 1);
 
@@ -171,31 +217,31 @@ instance.model = another_model;
 let roundtripped_model = instance.model;
 assert.equal(another_model, roundtripped_model);
 
-instance.send_mouse_click(25., 5.);
+slintlib.private_api.send_mouse_click(instance, 25., 5.);
 assert.equal(instance.clicked_score, 333000);
 assert.equal(instance.clicked_internal_state, 1);
 assert.equal(instance.clicked_index, 2);
 
-instance.send_mouse_click(15., 5.);
+slintlib.private_api.send_mouse_click(instance, 15., 5.);
 assert.equal(instance.clicked_score, 222000);
 assert.equal(instance.clicked_name, "cruel");
 assert.equal(instance.clicked_internal_state, 1);
 
 another_model.push({account: "a4", name: "!", score: 444.});
-instance.send_mouse_click(35., 5.);
+slintlib.private_api.send_mouse_click(instance, 35., 5.);
 assert.equal(instance.clicked_score, 444000);
 assert.equal(instance.clicked_name, "!");
 assert.equal(instance.clicked_internal_state, 1);
 
 another_model.setRowData(1, {account: "a2", name: "idyllic", score: 555.});
-instance.send_mouse_click(15., 5.);
+slintlib.private_api.send_mouse_click(instance, 15., 5.);
 assert.equal(instance.clicked_score, 555000);
 assert.equal(instance.clicked_name, "idyllic");
 assert.equal(instance.clicked_internal_state, 2);
 assert.equal(instance.clicked_index, 1);
 
 another_model.remove(1, 1);
-instance.send_mouse_click(15., 5.);
+slintlib.private_api.send_mouse_click(instance, 15., 5.);
 assert.equal(instance.clicked_score, 333000);
 assert.equal(instance.clicked_name, "world");
 assert.equal(instance.clicked_internal_state, 2);

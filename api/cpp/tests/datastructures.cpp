@@ -1,12 +1,12 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
+#include <ranges>
 #include <chrono>
 #define CATCH_CONFIG_MAIN
 #include "catch2/catch.hpp"
 
 #include <slint.h>
-#include <slint_image.h>
 
 SCENARIO("SharedString API")
 {
@@ -38,6 +38,12 @@ SCENARIO("SharedString API")
         str += slint::SharedString("🦊") + slint::SharedString("!");
         REQUIRE(str == "Hello 🦊!");
         REQUIRE(std::string_view(str.data()) == "Hello 🦊!");
+    }
+
+    SECTION("begin/end")
+    {
+        str = "Hello";
+        REQUIRE(str.begin() + std::string_view(str).size() == str.end());
     }
 }
 
@@ -161,7 +167,8 @@ TEST_CASE("Image")
         REQUIRE(!img.path().has_value());
     }
 
-    img = Image::load_from_path(SOURCE_DIR "/../../logo/slint-logo-square-light-128x128.png");
+#ifndef SLINT_FEATURE_FREESTANDING
+    img = Image::load_from_path(SOURCE_DIR "/../../../logo/slint-logo-square-light-128x128.png");
     {
         auto size = img.size();
         REQUIRE(size.width == 128.);
@@ -170,7 +177,26 @@ TEST_CASE("Image")
     {
         auto actual_path = img.path();
         REQUIRE(actual_path.has_value());
-        REQUIRE(*actual_path == SOURCE_DIR "/../../logo/slint-logo-square-light-128x128.png");
+        REQUIRE(*actual_path == SOURCE_DIR "/../../../logo/slint-logo-square-light-128x128.png");
+    }
+#endif
+
+    img = Image(SharedPixelBuffer<Rgba8Pixel> {});
+    {
+        auto size = img.size();
+        REQUIRE(size.width == 0);
+        REQUIRE(size.height == 0);
+        REQUIRE(!img.path().has_value());
+    }
+    auto red = Rgb8Pixel { 0xff, 0, 0 };
+    auto blu = Rgb8Pixel { 0, 0, 0xff };
+    Rgb8Pixel some_data[] = { red, red, blu, red, blu, blu };
+    img = Image(SharedPixelBuffer<Rgb8Pixel>(3, 2, some_data));
+    {
+        auto size = img.size();
+        REQUIRE(size.width == 3);
+        REQUIRE(size.height == 2);
+        REQUIRE(!img.path().has_value());
     }
 }
 
@@ -190,6 +216,7 @@ TEST_CASE("SharedVector")
     REQUIRE(vec.size() == 4);
     auto orig_cap = vec.capacity();
     REQUIRE(orig_cap >= vec.size());
+
     vec.clear();
     REQUIRE(vec.size() == 0);
     REQUIRE(vec.capacity() == 0); // vec was shared, so start with new empty vector.
@@ -199,6 +226,27 @@ TEST_CASE("SharedVector")
 
     REQUIRE(copy.size() == 4);
     REQUIRE(copy.capacity() == orig_cap);
+
+    SharedVector<SharedString> vec2 { "Hello", "World", "of", "Vectors" };
+    REQUIRE(copy == vec2);
+    REQUIRE(copy != vec);
+
     copy.clear(); // copy is not shared (anymore), retain capacity.
     REQUIRE(copy.capacity() == orig_cap);
+
+    SharedVector<SharedString> vec3(2, "Welcome back");
+    REQUIRE(vec3.size() == 2);
+    REQUIRE(vec3[1] == "Welcome back");
+    REQUIRE(vec3 != vec);
+
+    vec.push_back("Welcome back");
+    REQUIRE(vec3 == vec);
+
+    SharedVector<int> vec4(5);
+    REQUIRE(vec4.size() == 5);
+    REQUIRE(vec4[3] == 0);
+
+    std::vector<SharedString> std_v(vec2.begin(), vec2.end());
+    SharedVector<SharedString> vec6(std_v.begin(), std_v.end());
+    REQUIRE(vec6 == vec2);
 }

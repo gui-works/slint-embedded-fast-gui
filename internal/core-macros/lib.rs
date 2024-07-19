@@ -1,8 +1,8 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 #![doc = include_str!("README.md")]
-#![doc(html_logo_url = "https://slint-ui.com/logo/slint-logo-square-light.svg")]
+#![doc(html_logo_url = "https://slint.dev/logo/slint-logo-square-light.svg")]
 
 extern crate proc_macro;
 use proc_macro::TokenStream;
@@ -56,21 +56,13 @@ pub fn slint_element(input: TokenStream) -> TokenStream {
         .iter()
         .filter(|f| {
             f.attrs.iter().any(|attr| {
-                attr.parse_meta()
-                    .ok()
-                    .map(|meta| match meta {
-                        syn::Meta::Path(path) => {
-                            path.get_ident().map(|ident| *ident == "rtti_field").unwrap_or(false)
-                        }
-                        _ => false,
-                    })
-                    .unwrap_or(false)
+                matches!(&attr.meta, syn::Meta::Path(path) if path.get_ident().map(|ident| *ident == "rtti_field").unwrap_or(false))
             })
         })
         .map(|f| (f.ident.as_ref().unwrap(), &f.ty))
         .unzip();
     let plain_field_names_normalized =
-        plain_field_names.iter().map(|f| normalize_identifier(*f)).collect::<Vec<_>>();
+        plain_field_names.iter().map(|f| normalize_identifier(f)).collect::<Vec<_>>();
 
     let mut callback_field_names = Vec::new();
     let mut callback_field_names_normalized = Vec::new();

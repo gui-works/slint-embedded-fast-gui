@@ -1,62 +1,111 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 #![doc = include_str!("README.md")]
-#![doc(html_logo_url = "https://slint-ui.com/logo/slint-logo-square-light.svg")]
-#![cfg_attr(not(any(feature = "i-slint-backend-qt", feature = "i-slint-backend-winit")), no_std)]
+#![doc(html_logo_url = "https://slint.dev/logo/slint-logo-square-light.svg")]
+#![cfg_attr(
+    not(any(
+        feature = "i-slint-backend-qt",
+        feature = "i-slint-backend-winit",
+        feature = "i-slint-backend-linuxkms"
+    )),
+    no_std
+)]
+#![allow(unused)]
 
 extern crate alloc;
 
 use alloc::boxed::Box;
 use i_slint_core::platform::Platform;
+use i_slint_core::platform::PlatformError;
+
+#[cfg(all(feature = "i-slint-backend-qt", not(no_qt), not(target_os = "android")))]
+fn create_qt_backend() -> Result<Box<dyn Platform + 'static>, PlatformError> {
+    Ok(Box::new(default_backend::Backend::new()))
+}
+
+#[cfg(all(feature = "i-slint-backend-winit", not(target_os = "android")))]
+fn create_winit_backend() -> Result<Box<dyn Platform + 'static>, PlatformError> {
+    Ok(Box::new(i_slint_backend_winit::Backend::new()?))
+}
+
+#[cfg(all(feature = "i-slint-backend-linuxkms", target_os = "linux"))]
+fn create_linuxkms_backend() -> Result<Box<dyn Platform + 'static>, PlatformError> {
+    Ok(Box::new(i_slint_backend_linuxkms::Backend::new()?))
+}
 
 cfg_if::cfg_if! {
-    if #[cfg(all(feature = "i-slint-backend-qt", not(no_qt)))] {
+    if #[cfg(target_os = "android")] {
+    } else if #[cfg(all(feature = "i-slint-backend-qt", not(no_qt)))] {
         use i_slint_backend_qt as default_backend;
-
-        fn create_default_backend() -> Box<dyn Platform + 'static> {
-            Box::new(default_backend::Backend)
-        }
     } else if #[cfg(feature = "i-slint-backend-winit")] {
         use i_slint_backend_winit as default_backend;
-        fn create_default_backend() -> Box<dyn Platform + 'static> {
-            Box::new(i_slint_backend_winit::Backend::new(None))
-        }
+    } else if #[cfg(all(feature = "i-slint-backend-linuxkms", target_os = "linux"))] {
+        use i_slint_backend_linuxkms as default_backend;
     } else {
 
     }
 }
 
 cfg_if::cfg_if! {
-    if #[cfg(any(
+    if #[cfg(all(not(target_os = "android"), any(
             all(feature = "i-slint-backend-qt", not(no_qt)),
-            feature = "i-slint-backend-winit"
-        ))] {
-        pub fn create_backend() -> Box<dyn Platform + 'static>  {
+            feature = "i-slint-backend-winit",
+            all(feature = "i-slint-backend-linuxkms", target_os = "linux")
+        )))] {
+        fn create_default_backend() -> Result<Box<dyn Platform + 'static>, PlatformError> {
+            use alloc::borrow::Cow;
 
-            let backend_config = std::env::var("SLINT_BACKEND").or_else(|_| {
-                let legacy_fallback = std::env::var("SIXTYFPS_BACKEND");
-                if legacy_fallback.is_ok() {
-                    eprintln!("Using `SIXTYFPS_BACKEND` environment variable for dynamic backend selection. This is deprecated, use `SLINT_BACKEND` instead.")
+            let backends = [
+                #[cfg(all(feature = "i-slint-backend-qt", not(no_qt)))]
+                ("Qt", create_qt_backend as fn() -> Result<Box<(dyn Platform + 'static)>, PlatformError>),
+                #[cfg(feature = "i-slint-backend-winit")]
+                ("Winit", create_winit_backend as fn() -> Result<Box<(dyn Platform + 'static)>, PlatformError>),
+                #[cfg(all(feature = "i-slint-backend-linuxkms", target_os = "linux"))]
+                ("LinuxKMS", create_linuxkms_backend as fn() -> Result<Box<(dyn Platform + 'static)>, PlatformError>),
+                ("", || Err(PlatformError::NoPlatform)),
+            ];
+
+            let mut backend_errors: Vec<Cow<str>> = Vec::new();
+
+            for (backend_name, backend_factory) in backends {
+                match backend_factory() {
+                    Ok(platform) => return Ok(platform),
+                    Err(err) => {
+                        backend_errors.push(if !backend_name.is_empty() {
+                            format!("Error from {} backend: {}", backend_name, err).into()
+                        } else {
+                            "No backends configured.".into()
+                        });
+                    },
                 }
-                legacy_fallback
-            }).unwrap_or_default();
+            }
+
+            Err(PlatformError::Other(format!("Could not initialize backend.\n{}", backend_errors.join("\n"))))
+        }
+
+        pub fn create_backend() -> Result<Box<dyn Platform + 'static>, PlatformError>  {
+
+            let backend_config = std::env::var("SLINT_BACKEND").unwrap_or_default();
 
             let backend_config = backend_config.to_lowercase();
-            let (event_loop, _renderer) = backend_config.split_once('-').unwrap_or_else(|| match backend_config.as_str() {
+            let (event_loop, _renderer) = backend_config.split_once('-').unwrap_or(match backend_config.as_str() {
                 "qt" => ("qt", ""),
                 "gl" | "winit" => ("winit", ""),
                 "femtovg" => ("winit", "femtovg"),
                 "skia" => ("winit", "skia"),
                 "sw" | "software" => ("winit", "software"),
+                "linuxkms" => ("linuxkms", ""),
                 x => (x, ""),
             });
 
             match event_loop {
                 #[cfg(all(feature = "i-slint-backend-qt", not(no_qt)))]
-                "qt" => return Box::new(i_slint_backend_qt::Backend),
+                "qt" => return Ok(Box::new(i_slint_backend_qt::Backend::new())),
                 #[cfg(feature = "i-slint-backend-winit")]
-                "winit" => return Box::new(i_slint_backend_winit::Backend::new((!_renderer.is_empty()).then(|| _renderer))),
+                "winit" => return i_slint_backend_winit::Backend::new_with_renderer_by_name((!_renderer.is_empty()).then_some(_renderer)).map(|b| Box::new(b) as Box<dyn Platform + 'static>),
+                #[cfg(all(feature = "i-slint-backend-linuxkms", target_os = "linux"))]
+                "linuxkms" => return i_slint_backend_linuxkms::Backend::new_with_renderer_by_name((!_renderer.is_empty()).then(|| _renderer)).map(|b| Box::new(b) as Box<dyn Platform + 'static>),
                 _ => {},
             }
 
@@ -69,8 +118,8 @@ cfg_if::cfg_if! {
             native_widgets, Backend, NativeGlobals, NativeWidgets, HAS_NATIVE_STYLE,
         };
     } else {
-        pub fn create_backend() -> Box<dyn Platform + 'static> {
-            panic!("no default backend configured, the backend must be initialized manually")
+        pub fn create_backend() -> Result<Box<dyn Platform + 'static>, PlatformError> {
+            Err(PlatformError::NoPlatform)
         }
         pub mod native_widgets {}
         pub type NativeWidgets = ();
@@ -81,17 +130,23 @@ cfg_if::cfg_if! {
 
 /// Run the callback with the platform abstraction.
 /// Create the backend if it does not exist yet
-pub fn with_platform<R>(f: impl FnOnce(&dyn Platform) -> R) -> R {
-    i_slint_core::with_platform(create_backend, f)
-}
+pub fn with_platform<R>(
+    f: impl FnOnce(&dyn Platform) -> Result<R, PlatformError>,
+) -> Result<R, PlatformError> {
+    let mut platform_created = false;
+    let result = i_slint_core::with_platform(
+        || {
+            let backend = create_backend();
+            platform_created = backend.is_ok();
+            backend
+        },
+        f,
+    );
 
-#[doc(hidden)]
-#[cold]
-#[cfg(not(target_arch = "wasm32"))]
-pub fn use_modules() {
-    i_slint_core::use_modules();
-    #[cfg(feature = "i-slint-backend-qt")]
-    i_slint_backend_qt::use_modules();
-    #[cfg(feature = "i-slint-backend-winit")]
-    i_slint_backend_winit::use_modules();
+    #[cfg(feature = "system-testing")]
+    if result.is_ok() && platform_created {
+        i_slint_backend_testing::systest::init();
+    }
+
+    result
 }

@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // cSpell: ignore deinit
 
@@ -35,6 +35,7 @@ pub struct NativeStyleMetrics {
     pub text_cursor_width: Property<LogicalLength>,
     pub window_background: Property<Color>,
     pub default_text_color: Property<Color>,
+    pub default_font_size: Property<LogicalLength>,
     pub textedit_background: Property<Color>,
     pub textedit_text_color: Property<Color>,
     pub textedit_background_disabled: Property<Color>,
@@ -65,6 +66,7 @@ impl NativeStyleMetrics {
             text_cursor_width: Default::default(),
             window_background: Default::default(),
             default_text_color: Default::default(),
+            default_font_size: Default::default(),
             textedit_background: Default::default(),
             textedit_text_color: Default::default(),
             textedit_background_disabled: Default::default(),
@@ -117,11 +119,15 @@ impl NativeStyleMetrics {
             return qApp->palette().color(QPalette::Window).rgba();
         });
         let window_background = Color::from_argb_encoded(window_background);
-        self.window_background.set(window_background.into());
+        self.window_background.set(window_background);
         let default_text_color = cpp!(unsafe[] -> u32 as "QRgb" {
             return qApp->palette().color(QPalette::WindowText).rgba();
         });
         self.default_text_color.set(Color::from_argb_encoded(default_text_color));
+        let default_font_size = cpp!(unsafe[] -> i32 as "int" {
+            return QFontInfo(qApp->font()).pixelSize();
+        });
+        self.default_font_size.set(LogicalLength::new(default_font_size as f32));
         let textedit_text_color = cpp!(unsafe[] -> u32 as "QRgb" {
             return qApp->palette().color(QPalette::Text).rgba();
         });
@@ -149,6 +155,9 @@ impl NativeStyleMetrics {
         });
         self.placeholder_color_disabled.set(Color::from_argb_encoded(placeholder_color_disabled));
 
+        // This is sub-optimal: It should really be a binding to Palette.color-scheme == ColorScheme.dark, so that
+        // writes to Palette.color-scheme are reflected, but we can't access the other global singleton here and
+        // this is just a backwards-compat property that was never documented to be public.
         self.dark_color_scheme.set(
             (window_background.red() as u32
                 + window_background.green() as u32

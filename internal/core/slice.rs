@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! FFI-friendly slice
 
@@ -53,7 +53,7 @@ impl<'a, T> Copy for Slice<'a, T> {}
 
 impl<'a, T> Clone for Slice<'a, T> {
     fn clone(&self) -> Self {
-        Self { ptr: self.ptr, len: self.len, phantom: PhantomData }
+        *self
     }
 }
 

@@ -1,9 +1,9 @@
 #!/bin/bash -e
-# Copyright © SixtyFPS GmbH <info@slint-ui.com>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 if [ $# -lt 1 ]; then
-    echo "usage: $0 path/to/target/binary_package --with-qt"
+    echo "usage: $0 path/to/target/binary_package"
     echo
     echo "This prepares the specified binary_package folder for distribution"
     echo "by adding the legal copyright and license notices."
@@ -11,9 +11,6 @@ if [ $# -lt 1 ]; then
     echo "All files will be copied/created under the licenses folder"
     echo "along with an index.html"
     echo
-    echo "If the --with-qt option is specified, it is assumed that Qt is bundled"
-    echo "with the binary package and license attribution is also copied into the"
-    echo "target path"
     exit 1
 fi
 
@@ -70,11 +67,6 @@ cat > about.hbs <<EOT
             </li>
             {{/each}}
         </ul>
-
-        <h2>Qt License attribution</h2>
-        <p>This program also uses the Qt library, which is licensed under the
-        <a href="LICENSE.QT">LGPL v3</a></p>.
-        <p>Qt may include additional third-party components: <a href="QtThirdPartySoftware_Listing.txt">QtThirdPartySoftware_Listing.txt</a></p>
     <main></body></html>
 EOT
 
@@ -90,6 +82,9 @@ accepted = [
     "BSL-1.0",
     "ISC",
     "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "OpenSSL",
+    "WTFPL",
     "GPL-3.0", # That's only for Slint
 ]
 targets = [
@@ -99,10 +94,7 @@ targets = [
 ]
 ignore-build-dependencies = true
 ignore-dev-dependencies = true
+filter-noassertion = true
 EOT
 
 cargo about generate about.hbs -o $target_path/index.html
-
-if [ "$2x" == "--with-qtx" ]; then
-    cp internal/backends/qt/LICENSE.QT internal/backends/qt/QtThirdPartySoftware_Listing.txt $target_path/
-fi

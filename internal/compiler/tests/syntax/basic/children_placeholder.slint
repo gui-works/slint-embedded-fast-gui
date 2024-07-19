@@ -1,5 +1,23 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+export NotInIf := Rectangle {
+    if true: Rectangle {
+        @children
+//      ^error{The @children placeholder cannot appear in a conditional element}
+    }
+}
+
+export NotInFor := Rectangle {
+    HorizontalLayout {
+        for xxx in 12: Rectangle {
+            VerticalLayout {
+                @children
+//              ^error{The @children placeholder cannot appear in a repeated element}
+            }
+        }
+    }
+}
 
 TestBox := Rectangle {
     @children
@@ -7,7 +25,7 @@ TestBox := Rectangle {
 //  ^error{The @children placeholder can only appear once in an element}
 }
 
-TestBox2 := Rectangle {
+export TestBox2 := Rectangle {
     Rectangle {
         @children
     }
@@ -15,9 +33,8 @@ TestBox2 := Rectangle {
 //  ^error{The @children placeholder can only appear once in an element hierarchy}
 }
 
-Final := TestBox {
+export Final := TestBox {
     Rectangle {
         @children
-//      ^error{children placeholder not allowed in the final component}
     }
 }

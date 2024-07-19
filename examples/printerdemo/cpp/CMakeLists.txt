@@ -1,7 +1,7 @@
-# Copyright © SixtyFPS GmbH <info@slint-ui.com>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: MIT
 
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.21)
 project(slint_cpp_printer_demo LANGUAGES CXX)
 
 if (NOT TARGET Slint::Slint)
@@ -9,8 +9,11 @@ if (NOT TARGET Slint::Slint)
 endif()
 
 add_executable(printerdemo main.cpp)
-if (MSVC)
-    target_compile_options(printerdemo PRIVATE /bigobj)
-endif()
 target_link_libraries(printerdemo PRIVATE Slint::Slint)
 slint_target_sources(printerdemo ../ui/printerdemo.slint)
+
+find_package(Intl)
+if(Intl_FOUND)
+    target_compile_definitions(printerdemo PRIVATE HAVE_GETTEXT SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(printerdemo PRIVATE Intl::Intl)
+endif()

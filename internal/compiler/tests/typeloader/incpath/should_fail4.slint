@@ -1,15 +1,15 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 export Unused := Rectangle {
-   // FIXME: looks like binding loop is not diagnozed in exports if the properties are not used
+   // FIXME: looks like binding loop is not diagnosed in exports if the properties are not used
     property <int> a1: a2;
     property <int> a2: a1;
 }
 
 export Z := Rectangle {
     property <int> b1: b2;
-                    //^error{loop}
+                     //^error{loop}
     property <int> b2: b1;
-                    //^error{loop}
+                     //^error{loop}
 }

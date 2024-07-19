@@ -1,9 +1,9 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 #pragma once
 
-#include <slint_interpreter.h>
+#include <slint-interpreter.h>
 
 #include <optional>
 #include <string_view>
@@ -27,15 +27,15 @@ struct PropertyDeclaration
    properties() function are forwarded. For example two instances of a "Clock" element become this
    in .slint:
 
-   export MainWindow := Window {
+   export component MainWindow inherits Window {
        ...
        widget_1 := Clock {
        }
        widget_2 := Clock {
        }
 
-       property <string> widget_1__time <=> widget_1.time;
-       property <string> widget_2__time <=> widget_2.time;
+       in-out property <string> widget_1__time <=> widget_1.time;
+       in-out property <string> widget_2__time <=> widget_2.time;
    }
 
    The DashboardBuilder calls connect_ui() to inform the instance about the "widget_1__" and

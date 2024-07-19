@@ -1,7 +1,7 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
-#include <slint_interpreter.h>
+#include <slint-interpreter.h>
 
 #include <ctime>
 
@@ -9,8 +9,8 @@ using slint::interpreter::Value;
 
 struct InkLevelModel : slint::Model<Value>
 {
-    int row_count() const override { return m_data.size(); }
-    std::optional<Value> row_data(int i) const override
+    size_t row_count() const override { return m_data.size(); }
+    std::optional<Value> row_data(size_t i) const override
     {
         if (i < m_data.size())
             return { m_data[i] };
@@ -76,7 +76,7 @@ int main()
         char time_buf[100] = { 0 };
         std::strftime(time_buf, sizeof(time_buf), "%H:%M:%S %d/%m/%Y", std::localtime(&now));
 
-        slint::interpreter::Struct item { { "status", Value(slint::SharedString("WAITING...")) },
+        slint::interpreter::Struct item { { "status", Value(slint::SharedString("waiting")) },
                                           { "progress", Value(0.) },
                                           { "title", args[0] },
                                           { "owner", slint::SharedString("joe@example.com") },
@@ -98,7 +98,7 @@ int main()
             auto top_item = *(*printer_queue->row_data(0)).to_struct();
             auto progress = *top_item.get_field("progress")->to_number() + 1.;
             top_item.set_field("progress", progress);
-            top_item.set_field("status", slint::SharedString("PRINTING"));
+            top_item.set_field("status", slint::SharedString("printing"));
             if (progress > 100) {
                 printer_queue->erase(0);
             } else {

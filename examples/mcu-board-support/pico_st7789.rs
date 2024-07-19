@@ -1,19 +1,20 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::vec;
-use alloc_cortex_m::CortexMHeap;
 use core::cell::RefCell;
 use core::convert::Infallible;
 use cortex_m::interrupt::Mutex;
 use cortex_m::singleton;
 pub use cortex_m_rt::entry;
 use defmt_rtt as _;
-use embedded_hal::digital::v2::OutputPin;
+use embedded_alloc::Heap;
+use embedded_hal::blocking::spi::Transfer;
+use embedded_hal::digital::v2::{InputPin, OutputPin};
 use embedded_hal::spi::FullDuplex;
 use fugit::{Hertz, RateExtU32};
 use hal::dma::{DMAExt, SingleChannel, WriteTarget};
@@ -22,16 +23,12 @@ use rp_pico::hal::gpio::{self, Interrupt as GpioInterrupt};
 use rp_pico::hal::pac::interrupt;
 use rp_pico::hal::timer::{Alarm, Alarm0};
 use rp_pico::hal::{self, pac, prelude::*, Timer};
+use shared_bus::BusMutex;
 use slint::platform::software_renderer as renderer;
-use slint::{PointerEventButton, WindowEvent};
+use slint::platform::{PointerEventButton, WindowEvent};
 
 #[cfg(feature = "panic-probe")]
 use panic_probe as _;
-
-#[alloc_error_handler]
-fn oom(layout: core::alloc::Layout) -> ! {
-    panic!("Out of memory {:?}", layout);
-}
 
 mod display_interface_spi;
 
@@ -39,9 +36,9 @@ const HEAP_SIZE: usize = 200 * 1024;
 static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
 
 #[global_allocator]
-static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
+static ALLOCATOR: Heap = Heap::empty();
 
-type IrqPin = gpio::Pin<gpio::bank0::Gpio17, gpio::PullUpInput>;
+type IrqPin = gpio::Pin<gpio::bank0::Gpio17, gpio::FunctionSio<gpio::SioInput>, gpio::PullUp>;
 static IRQ_PIN: Mutex<RefCell<Option<IrqPin>>> = Mutex::new(RefCell::new(None));
 
 static ALARM0: Mutex<RefCell<Option<Alarm0>>> = Mutex::new(RefCell::new(None));
@@ -55,136 +52,193 @@ const DISPLAY_SIZE: slint::PhysicalSize = slint::PhysicalSize::new(320, 240);
 /// The Pixel type of the backing store
 pub type TargetPixel = Rgb565Pixel;
 
+type SpiPins = (
+    gpio::Pin<gpio::bank0::Gpio11, gpio::FunctionSpi, gpio::PullDown>,
+    gpio::Pin<gpio::bank0::Gpio12, gpio::FunctionSpi, gpio::PullDown>,
+    gpio::Pin<gpio::bank0::Gpio10, gpio::FunctionSpi, gpio::PullDown>,
+);
+
+type EnabledSpi = hal::Spi<hal::spi::Enabled, pac::SPI1, SpiPins, 8>;
+
+#[derive(Clone)]
+struct SharedSpiWithFreq {
+    mutex: &'static shared_bus::NullMutex<(EnabledSpi, Hertz<u32>)>,
+    freq: Hertz<u32>,
+}
+
+impl SharedSpiWithFreq {
+    fn lock<R, F: FnOnce(&mut EnabledSpi) -> R>(&self, f: F) -> R {
+        self.mutex.lock(|(spi, old_freq)| {
+            if *old_freq != self.freq {
+                // the touchscreen and the LCD have different frequencies
+                spi.set_baudrate(125_000_000u32.Hz(), self.freq);
+                *old_freq = self.freq;
+            }
+            f(spi)
+        })
+    }
+}
+
+impl Transfer<u8> for SharedSpiWithFreq {
+    type Error = <EnabledSpi as Transfer<u8>>::Error;
+
+    fn transfer<'w>(&mut self, words: &'w mut [u8]) -> Result<&'w [u8], Self::Error> {
+        self.lock(move |bus| bus.transfer(words))
+    }
+}
+
 pub fn init() {
-    unsafe { ALLOCATOR.init(&mut HEAP as *const u8 as usize, core::mem::size_of_val(&HEAP)) }
-    slint::platform::set_platform(Box::new(PicoBackend::default()))
-        .expect("backend already initialized");
+    let mut pac = pac::Peripherals::take().unwrap();
+    let core = pac::CorePeripherals::take().unwrap();
+
+    let mut watchdog = hal::watchdog::Watchdog::new(pac.WATCHDOG);
+    let clocks = hal::clocks::init_clocks_and_plls(
+        rp_pico::XOSC_CRYSTAL_FREQ,
+        pac.XOSC,
+        pac.CLOCKS,
+        pac.PLL_SYS,
+        pac.PLL_USB,
+        &mut pac.RESETS,
+        &mut watchdog,
+    )
+    .ok()
+    .unwrap();
+
+    unsafe { ALLOCATOR.init(core::ptr::addr_of_mut!(HEAP) as usize, HEAP_SIZE) }
+
+    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().raw());
+
+    let sio = hal::sio::Sio::new(pac.SIO);
+    let pins = rp_pico::Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
+
+    let rst = pins.gpio15.into_push_pull_output();
+    let bl = pins.gpio13.into_push_pull_output();
+
+    let dc = pins.gpio8.into_push_pull_output();
+    let cs = pins.gpio9.into_push_pull_output();
+
+    let spi_sclk = pins.gpio10.into_function::<gpio::FunctionSpi>();
+    let spi_mosi = pins.gpio11.into_function::<gpio::FunctionSpi>();
+    let spi_miso = pins.gpio12.into_function::<gpio::FunctionSpi>();
+
+    let spi = hal::Spi::new(pac.SPI1, (spi_mosi, spi_miso, spi_sclk));
+    let spi = spi.init(
+        &mut pac.RESETS,
+        clocks.peripheral_clock.freq(),
+        SPI_ST7789VW_MAX_FREQ,
+        &embedded_hal::spi::MODE_3,
+    );
+
+    // SAFETY: This is not safe :-(  But we need to access the SPI and its control pins for the PIO
+    let (dc_copy, cs_copy) =
+        unsafe { (core::ptr::read(&dc as *const _), core::ptr::read(&cs as *const _)) };
+    let stolen_spi = unsafe { core::ptr::read(&spi as *const _) };
+
+    let spi_mutex =
+        singleton!(:shared_bus::NullMutex<(EnabledSpi, Hertz<u32>)> = shared_bus::NullMutex::create((spi, 0.Hz())))
+            .unwrap();
+
+    let display_spi = SharedSpiWithFreq { mutex: spi_mutex, freq: SPI_ST7789VW_MAX_FREQ };
+    let di = display_interface_spi::SPIInterface::new(display_spi.clone(), dc, cs);
+
+    let mut display = st7789::ST7789::new(
+        di,
+        Some(rst),
+        Some(bl),
+        DISPLAY_SIZE.width as _,
+        DISPLAY_SIZE.height as _,
+    );
+    display.init(&mut delay).unwrap();
+    display.set_orientation(st7789::Orientation::Landscape).unwrap();
+
+    let touch_irq = pins.gpio17.into_pull_up_input();
+    touch_irq.set_interrupt_enabled(GpioInterrupt::LevelLow, true);
+
+    cortex_m::interrupt::free(|cs| {
+        IRQ_PIN.borrow(cs).replace(Some(touch_irq));
+    });
+    let touch = xpt2046::XPT2046::new(
+        &IRQ_PIN,
+        pins.gpio16.into_push_pull_output(),
+        SharedSpiWithFreq { mutex: spi_mutex, freq: xpt2046::SPI_FREQ },
+    )
+    .unwrap();
+
+    let mut timer = Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
+    let mut alarm0 = timer.alarm_0().unwrap();
+    alarm0.enable_interrupt();
+
+    cortex_m::interrupt::free(|cs| {
+        ALARM0.borrow(cs).replace(Some(alarm0));
+        TIMER.borrow(cs).replace(Some(timer));
+    });
+
+    unsafe {
+        pac::NVIC::unmask(pac::Interrupt::IO_IRQ_BANK0);
+        pac::NVIC::unmask(pac::Interrupt::TIMER_IRQ_0);
+    }
+
+    let dma = pac.DMA.split(&mut pac.RESETS);
+    let pio = PioTransfer::Idle(
+        dma.ch0,
+        vec![Rgb565Pixel::default(); DISPLAY_SIZE.width as _].leak(),
+        stolen_spi,
+    );
+    let buffer_provider = DrawBuffer {
+        display,
+        buffer: vec![Rgb565Pixel::default(); DISPLAY_SIZE.width as _].leak(),
+        pio: Some(pio),
+        stolen_pin: (dc_copy, cs_copy),
+    };
+
+    slint::platform::set_platform(Box::new(PicoBackend {
+        window: Default::default(),
+        buffer_provider: buffer_provider.into(),
+        touch: touch.into(),
+    }))
+    .expect("backend already initialized");
 }
 
-#[derive(Default)]
-struct PicoBackend {
-    window: RefCell<Option<Rc<renderer::MinimalSoftwareWindow<1>>>>,
+struct PicoBackend<DrawBuffer, Touch> {
+    window: RefCell<Option<Rc<renderer::MinimalSoftwareWindow>>>,
+    buffer_provider: RefCell<DrawBuffer>,
+    touch: RefCell<Touch>,
 }
 
-impl slint::platform::Platform for PicoBackend {
-    fn create_window_adapter(&self) -> Rc<dyn slint::platform::WindowAdapter> {
-        let window = renderer::MinimalSoftwareWindow::new();
+impl<
+        DI: display_interface::WriteOnlyDataCommand,
+        RST: OutputPin<Error = Infallible>,
+        BL: OutputPin<Error = Infallible>,
+        TO: WriteTarget<TransmittedWord = u8> + FullDuplex<u8>,
+        CH: SingleChannel,
+        DC_: OutputPin<Error = Infallible>,
+        CS_: OutputPin<Error = Infallible>,
+        IRQ: InputPin<Error = Infallible>,
+        CS: OutputPin<Error = Infallible>,
+        SPI: Transfer<u8>,
+    > slint::platform::Platform
+    for PicoBackend<
+        DrawBuffer<st7789::ST7789<DI, RST, BL>, PioTransfer<TO, CH>, (DC_, CS_)>,
+        xpt2046::XPT2046<IRQ, CS, SPI>,
+    >
+{
+    fn create_window_adapter(
+        &self,
+    ) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+        let window =
+            renderer::MinimalSoftwareWindow::new(renderer::RepaintBufferType::ReusedBuffer);
         self.window.replace(Some(window.clone()));
-        window
+        Ok(window)
     }
 
     fn duration_since_start(&self) -> core::time::Duration {
         let counter = cortex_m::interrupt::free(|cs| {
-            TIMER.borrow(cs).borrow().as_ref().map(|t| t.get_counter()).unwrap_or_default()
+            TIMER.borrow(cs).borrow().as_ref().map(|t| t.get_counter().ticks()).unwrap_or_default()
         });
         core::time::Duration::from_micros(counter)
     }
 
-    fn run_event_loop(&self) {
-        let mut pac = pac::Peripherals::take().unwrap();
-        let core = pac::CorePeripherals::take().unwrap();
-
-        let mut watchdog = hal::watchdog::Watchdog::new(pac.WATCHDOG);
-
-        let clocks = hal::clocks::init_clocks_and_plls(
-            rp_pico::XOSC_CRYSTAL_FREQ,
-            pac.XOSC,
-            pac.CLOCKS,
-            pac.PLL_SYS,
-            pac.PLL_USB,
-            &mut pac.RESETS,
-            &mut watchdog,
-        )
-        .ok()
-        .unwrap();
-
-        let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().raw());
-
-        let sio = hal::sio::Sio::new(pac.SIO);
-        let pins =
-            rp_pico::Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
-
-        let _spi_sclk = pins.gpio10.into_mode::<hal::gpio::FunctionSpi>();
-        let _spi_mosi = pins.gpio11.into_mode::<hal::gpio::FunctionSpi>();
-        let _spi_miso = pins.gpio12.into_mode::<hal::gpio::FunctionSpi>();
-
-        let spi = hal::spi::Spi::<_, _, 8>::new(pac.SPI1);
-        let spi = spi.init(
-            &mut pac.RESETS,
-            clocks.peripheral_clock.freq(),
-            SPI_ST7789VW_MAX_FREQ,
-            &embedded_hal::spi::MODE_3,
-        );
-        let spi = singleton!(:shared_bus::BusManagerSimple<hal::Spi<hal::spi::Enabled,  pac::SPI1, 8>> = shared_bus::BusManagerSimple::new(spi)).unwrap();
-
-        let rst = pins.gpio15.into_push_pull_output();
-        let bl = pins.gpio13.into_push_pull_output();
-
-        let dc = pins.gpio8.into_push_pull_output();
-        let cs = pins.gpio9.into_push_pull_output();
-
-        let (dc_copy, cs_copy) =
-            unsafe { (core::ptr::read(&dc as *const _), core::ptr::read(&cs as *const _)) };
-
-        let di = display_interface_spi::SPIInterface::new(spi.acquire_spi(), dc, cs);
-
-        let mut display = st7789::ST7789::new(
-            di,
-            Some(rst),
-            Some(bl),
-            DISPLAY_SIZE.width as _,
-            DISPLAY_SIZE.height as _,
-        );
-
-        display.init(&mut delay).unwrap();
-        display.set_orientation(st7789::Orientation::Landscape).unwrap();
-
-        let touch_irq = pins.gpio17.into_pull_up_input();
-        touch_irq.set_interrupt_enabled(GpioInterrupt::LevelLow, true);
-
-        cortex_m::interrupt::free(|cs| {
-            IRQ_PIN.borrow(cs).replace(Some(touch_irq));
-        });
-        let mut touch =
-            xpt2046::XPT2046::new(&IRQ_PIN, pins.gpio16.into_push_pull_output(), spi.acquire_spi())
-                .unwrap();
-
-        let mut timer = Timer::new(pac.TIMER, &mut pac.RESETS);
-        let mut alarm0 = timer.alarm_0().unwrap();
-        alarm0.enable_interrupt();
-
-        cortex_m::interrupt::free(|cs| {
-            ALARM0.borrow(cs).replace(Some(alarm0));
-            TIMER.borrow(cs).replace(Some(timer));
-        });
-
-        unsafe {
-            pac::NVIC::unmask(pac::Interrupt::IO_IRQ_BANK0);
-            pac::NVIC::unmask(pac::Interrupt::TIMER_IRQ_0);
-        }
-
-        let dma = pac.DMA.split(&mut pac.RESETS);
-        // SAFETY: This is not safe :-(
-        let stolen_spi = unsafe {
-            hal::spi::Spi::<_, _, 8>::new(rp_pico::hal::pac::Peripherals::steal().SPI1).init(
-                &mut pac.RESETS,
-                clocks.peripheral_clock.freq(),
-                SPI_ST7789VW_MAX_FREQ,
-                &embedded_hal::spi::MODE_3,
-            )
-        };
-        let pio = PioTransfer::Idle(
-            dma.ch0,
-            vec![Rgb565Pixel::default(); DISPLAY_SIZE.width as _].leak(),
-            stolen_spi,
-        );
-        let mut buffer_provider = DrawBuffer {
-            display,
-            buffer: vec![Rgb565Pixel::default(); DISPLAY_SIZE.width as _].leak(),
-            pio: Some(pio),
-            stolen_pin: (dc_copy, cs_copy),
-        };
-
+    fn run_event_loop(&self) -> Result<(), slint::PlatformError> {
         let mut last_touch = None;
 
         self.window.borrow().as_ref().unwrap().set_size(DISPLAY_SIZE);
@@ -194,13 +248,16 @@ impl slint::platform::Platform for PicoBackend {
 
             if let Some(window) = self.window.borrow().clone() {
                 window.draw_if_needed(|renderer| {
-                    renderer.render_by_line(&mut buffer_provider);
+                    let mut buffer_provider = self.buffer_provider.borrow_mut();
+                    renderer.render_by_line(&mut *buffer_provider);
                     buffer_provider.flush_frame();
                 });
 
                 // handle touch event
                 let button = PointerEventButton::Left;
-                if let Some(event) = touch
+                if let Some(event) = self
+                    .touch
+                    .borrow_mut()
                     .read()
                     .map_err(|_| ())
                     .unwrap()
@@ -221,10 +278,13 @@ impl slint::platform::Platform for PicoBackend {
                             .map(|position| WindowEvent::PointerReleased { position, button })
                     })
                 {
+                    let is_pointer_release_event =
+                        matches!(event, WindowEvent::PointerReleased { .. });
+
                     window.dispatch_event(event);
 
                     // removes hover state on widgets
-                    if matches!(event, WindowEvent::PointerReleased { .. }) {
+                    if is_pointer_release_event {
                         window.dispatch_event(WindowEvent::PointerExited);
                     }
                     // Don't go to sleep after a touch event that forces a redraw
@@ -273,7 +333,7 @@ impl slint::platform::Platform for PicoBackend {
 
 enum PioTransfer<TO: WriteTarget, CH: SingleChannel> {
     Idle(CH, &'static mut [TargetPixel], TO),
-    Running(hal::dma::SingleBuffering<CH, PartialReadBuffer, TO>),
+    Running(hal::dma::single_buffer::Transfer<CH, PartialReadBuffer, TO>),
 }
 
 impl<TO: WriteTarget<TransmittedWord = u8> + FullDuplex<u8>, CH: SingleChannel>
@@ -321,7 +381,7 @@ impl<
     ) {
         render_fn(&mut self.buffer[range.clone()]);
 
-        // convert from little to big indian before sending to the DMA channel
+        // convert from little to big endian before sending to the DMA channel
         for x in &mut self.buffer[range.clone()] {
             *x = Rgb565Pixel(x.0.to_be())
         }
@@ -354,7 +414,7 @@ impl<
 
         self.stolen_pin.1.set_low().unwrap();
         self.stolen_pin.0.set_high().unwrap();
-        let mut dma = hal::dma::SingleBufferingConfig::new(ch, PartialReadBuffer(b, range), spi);
+        let mut dma = hal::dma::single_buffer::Config::new(ch, PartialReadBuffer(b, range), spi);
         dma.pace(hal::dma::Pace::PreferSink);
         self.pio = Some(PioTransfer::Running(dma.start()));
         /*let (a, b, c) = dma.start().wait();
@@ -395,7 +455,9 @@ mod xpt2046 {
     use embedded_hal::blocking::spi::Transfer;
     use embedded_hal::digital::v2::{InputPin, OutputPin};
     use euclid::default::Point2D;
-    use fugit::RateExtU32;
+    use fugit::Hertz;
+
+    pub const SPI_FREQ: Hertz<u32> = Hertz::<u32>::Hz(3_000_000);
 
     pub struct XPT2046<IRQ: InputPin + 'static, CS: OutputPin, SPI: Transfer<u8>> {
         irq: &'static Mutex<RefCell<Option<IRQ>>>,
@@ -438,9 +500,6 @@ mod xpt2046 {
                 const MIN_Y: u32 = 2300;
                 const MAX_Y: u32 = 30300;
 
-                // FIXME! how else set the frequency to this device
-                unsafe { set_spi_freq(3_000_000u32.Hz()) };
-
                 self.cs.set_low().map_err(|e| Error::Pin(e))?;
 
                 macro_rules! xchg {
@@ -463,7 +522,6 @@ mod xpt2046 {
                 if z < threshold {
                     xchg!(0);
                     self.cs.set_high().map_err(|e| Error::Pin(e))?;
-                    unsafe { set_spi_freq(super::SPI_ST7789VW_MAX_FREQ) };
                     return Ok(None);
                 }
 
@@ -482,7 +540,6 @@ mod xpt2046 {
 
                 xchg!(0);
                 self.cs.set_high().map_err(|e| Error::Pin(e))?;
-                unsafe { set_spi_freq(super::SPI_ST7789VW_MAX_FREQ) };
 
                 if z < RELEASE_THRESHOLD {
                     return Ok(None);
@@ -504,13 +561,6 @@ mod xpt2046 {
         Pin(PinE),
         Transfer(TransferE),
         InternalError,
-    }
-
-    unsafe fn set_spi_freq(freq: impl Into<super::Hertz<u32>>) {
-        use rp_pico::hal;
-        // FIXME: the touchscreen and the LCD have different frequencies, but we cannot really set different frequencies to different SpiProxy without this hack
-        hal::spi::Spi::<_, _, 8>::new(hal::pac::Peripherals::steal().SPI1)
-            .set_baudrate(125_000_000u32.Hz(), freq);
     }
 }
 
@@ -557,11 +607,11 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     .ok()
     .unwrap();
 
-    let _spi_sclk = pins.gpio10.into_mode::<hal::gpio::FunctionSpi>();
-    let _spi_mosi = pins.gpio11.into_mode::<hal::gpio::FunctionSpi>();
-    let _spi_miso = pins.gpio12.into_mode::<hal::gpio::FunctionSpi>();
+    let spi_sclk = pins.gpio10.into_function::<gpio::FunctionSpi>();
+    let spi_mosi = pins.gpio11.into_function::<gpio::FunctionSpi>();
+    let spi_miso = pins.gpio12.into_function::<gpio::FunctionSpi>();
 
-    let spi = hal::spi::Spi::<_, _, 8>::new(pac.SPI1);
+    let spi = hal::Spi::<_, _, _, 8>::new(pac.SPI1, (spi_mosi, spi_miso, spi_sclk));
     let spi = spi.init(
         &mut pac.RESETS,
         clocks.peripheral_clock.freq(),

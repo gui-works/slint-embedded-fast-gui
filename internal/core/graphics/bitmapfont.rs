@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use crate::slice::Slice;
 
@@ -59,4 +59,8 @@ pub struct BitmapFont {
     /// A vector of pre-rendered glyph sets. Each glyph set must have the same number of glyphs,
     /// which must be at least as big as the largest glyph index in the character map.
     pub glyphs: Slice<'static, BitmapGlyphs>,
+    /// The weight of the font in CSS units (400 is normal).
+    pub weight: u16,
+    /// Whether the type-face is rendered italic.
+    pub italic: bool,
 }

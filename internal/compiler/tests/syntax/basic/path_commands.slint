@@ -1,19 +1,19 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 Test2 := Path {
     width: 640px;
     height: 480px;
     commands: "M 0 0 M -100 0 A 100 100 0 1 0 100 0 Å 100 100 0 1 0 100 0 Z";
-    //       ^error{Error parsing SVG commands}
+    //        ^error{Error parsing SVG commands}
 }
 
-TestCase := Rectangle {
+export TestCase := Rectangle {
     Path {
         width: 100px;
         height: 100px;
         commands: "hello world";
-        //       ^error{Error parsing SVG commands}
+        //        ^error{Error parsing SVG commands}
         stroke: red;
         stroke-width: 1px;
     }
@@ -28,8 +28,13 @@ TestCase := Rectangle {
         width: 640px;
         height: 480px;
         commands: "M 0 0 M -100 0 A 100 100 0 1 0 0 A 100 100 0 1 0 100 0 Z";
-        //       ^error{Error parsing SVG commands}
+        //        ^error{Error parsing SVG commands}
     }
 
     Test2 {}
+
+    property <[{commands: string}]> model: [{commands: "M 0 0 L 0 100 A 1 1 0 0 0 100 100 L 100 0 Z"}];
+    for entry in model: Path {
+        commands: entry.commands; // Don't panic
+    }
 }

@@ -1,9 +1,11 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+
+use crate::parser::TextSize;
 
 /// Span represent an error location within a file.
 ///
@@ -60,6 +62,8 @@ pub trait Spanned {
     }
 }
 
+pub type SourceFileVersion = Option<i32>;
+
 #[derive(Default)]
 pub struct SourceFileInner {
     path: PathBuf,
@@ -69,17 +73,21 @@ pub struct SourceFileInner {
 
     /// The offset of each linebreak
     line_offsets: once_cell::unsync::OnceCell<Vec<usize>>,
+
+    /// The version of the source file. `None` means "as seen on disk"
+    version: SourceFileVersion,
 }
 
 impl std::fmt::Debug for SourceFileInner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self.path)
+        let v = if let Some(v) = self.version { format!("@{v}") } else { String::new() };
+        write!(f, "{:?}{v}", self.path)
     }
 }
 
 impl SourceFileInner {
-    pub fn new(path: PathBuf, source: String) -> Self {
-        Self { path, source: Some(source), line_offsets: Default::default() }
+    pub fn new(path: PathBuf, source: String, version: SourceFileVersion) -> Self {
+        Self { path, source: Some(source), line_offsets: Default::default(), version }
     }
 
     pub fn path(&self) -> &Path {
@@ -91,6 +99,42 @@ impl SourceFileInner {
         Rc::new(Self { path, ..Default::default() })
     }
 
+    /// Returns a tuple with the line (starting at 1) and column number (starting at 1)
+    pub fn line_column(&self, offset: usize) -> (usize, usize) {
+        let line_offsets = self.line_offsets();
+        line_offsets.binary_search(&offset).map_or_else(
+            |line| {
+                if line == 0 {
+                    (1, offset + 1)
+                } else {
+                    (line + 1, line_offsets.get(line - 1).map_or(0, |x| offset - x + 1))
+                }
+            },
+            |line| (line + 2, 1),
+        )
+    }
+
+    pub fn text_size_to_file_line_column(
+        &self,
+        size: TextSize,
+    ) -> (String, usize, usize, usize, usize) {
+        let file_name = self.path().to_string_lossy().to_string();
+        let (start_line, start_column) = self.line_column(size.into());
+        (file_name, start_line, start_column, start_line, start_column)
+    }
+
+    /// Returns the offset that corresponds to the line/column
+    pub fn offset(&self, line: usize, column: usize) -> usize {
+        let col_offset = column.saturating_sub(1);
+        if line <= 1 {
+            // line == 0 is actually invalid!
+            return col_offset;
+        }
+        let offsets = self.line_offsets();
+        let index = std::cmp::min(line.saturating_sub(1), offsets.len());
+        offsets.get(index.saturating_sub(1)).unwrap_or(&0).saturating_add(col_offset)
+    }
+
     fn line_offsets(&self) -> &[usize] {
         self.line_offsets.get_or_init(|| {
             self.source
@@ -98,7 +142,9 @@ impl SourceFileInner {
                 .map(|s| {
                     s.bytes()
                         .enumerate()
-                        .filter_map(|(i, c)| if c == b'\n' { Some(i) } else { None })
+                        // Add the offset one past the '\n' into the index: That's the first char
+                        // of the new line!
+                        .filter_map(|(i, c)| if c == b'\n' { Some(i + 1) } else { None })
                         .collect()
                 })
                 .unwrap_or_default()
@@ -106,14 +152,18 @@ impl SourceFileInner {
     }
 
     pub fn source(&self) -> Option<&str> {
-        self.source.as_ref().map(|s| s.as_str())
+        self.source.as_deref()
+    }
+
+    pub fn version(&self) -> SourceFileVersion {
+        self.version
     }
 }
 
 pub type SourceFile = Rc<SourceFileInner>;
 
 pub fn load_from_path(path: &Path) -> Result<String, Diagnostic> {
-    (if path == Path::new("-") {
+    let string = (if path == Path::new("-") {
         let mut buffer = Vec::new();
         let r = std::io::stdin().read_to_end(&mut buffer);
         r.and_then(|_| {
@@ -130,7 +180,20 @@ pub fn load_from_path(path: &Path) -> Result<String, Diagnostic> {
             span: Default::default(),
         },
         level: DiagnosticLevel::Error,
-    })
+    })?;
+
+    if path.extension().map_or(false, |e| e == "rs") {
+        return crate::lexer::extract_rust_macro(string).ok_or_else(|| Diagnostic {
+            message: "No `slint!` macro".into(),
+            span: SourceLocation {
+                source_file: Some(SourceFileInner::from_path_only(path.to_owned())),
+                span: Default::default(),
+            },
+            level: DiagnosticLevel::Error,
+        });
+    }
+
+    Ok(string)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -160,19 +223,14 @@ impl Spanned for Option<SourceLocation> {
 }
 
 /// This enum describes the level or severity of a diagnostic message produced by the compiler.
-#[derive(Debug, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Copy, Clone, Default)]
 #[non_exhaustive]
 pub enum DiagnosticLevel {
     /// The diagnostic found is an error that prevents successful compilation.
+    #[default]
     Error,
     /// The diagnostic found is a warning.
     Warning,
-}
-
-impl Default for DiagnosticLevel {
-    fn default() -> Self {
-        Self::Error
-    }
 }
 
 #[cfg(feature = "display-diagnostics")]
@@ -196,6 +254,7 @@ pub struct Diagnostic {
     level: DiagnosticLevel,
 }
 
+//NOTE! Diagnostic is re-exported in the public API of the interpreter
 impl Diagnostic {
     /// Return the level for this diagnostic
     pub fn level(&self) -> DiagnosticLevel {
@@ -207,23 +266,19 @@ impl Diagnostic {
         &self.message
     }
 
-    /// Returns a tuple with the line (starting at 1) and column number (starting at 0)
+    /// Returns a tuple with the line (starting at 1) and column number (starting at 1)
+    ///
+    /// Can also return (0, 0) if the span is invalid
     pub fn line_column(&self) -> (usize, usize) {
+        if !self.span.span.is_valid() {
+            return (0, 0);
+        }
         let offset = self.span.span.offset;
-        let line_offsets = match &self.span.source_file {
-            None => return (0, 0),
-            Some(sl) => sl.line_offsets(),
-        };
-        line_offsets.binary_search(&offset).map_or_else(
-            |line| {
-                if line == 0 {
-                    (line + 1, offset)
-                } else {
-                    (line + 1, line_offsets.get(line - 1).map_or(0, |x| offset - x))
-                }
-            },
-            |line| (line + 1, 0),
-        )
+
+        match &self.span.source_file {
+            None => (0, 0),
+            Some(sl) => sl.line_column(offset),
+        }
     }
 
     /// return the path of the source file where this error is attached
@@ -246,6 +301,9 @@ impl std::fmt::Display for Diagnostic {
 #[derive(Default)]
 pub struct BuildDiagnostics {
     inner: Vec<Diagnostic>,
+
+    /// When false, throw error for experimental features
+    pub enable_experimental: bool,
 
     /// This is the list of all loaded files (with or without diagnostic)
     /// does not include the main file.
@@ -309,7 +367,7 @@ impl BuildDiagnostics {
     }
 
     /// Return true if there is at least one compilation error for this file
-    pub fn has_error(&self) -> bool {
+    pub fn has_errors(&self) -> bool {
         self.inner.iter().any(|diag| diag.level == DiagnosticLevel::Error)
     }
 
@@ -375,8 +433,10 @@ impl BuildDiagnostics {
             })
             .collect();
 
-        let mut emitter = emitter_factory(output, Some(&codemap));
-        emitter.emit(&diags);
+        if !diags.is_empty() {
+            let mut emitter = emitter_factory(output, Some(&codemap));
+            emitter.emit(&diags);
+        }
     }
 
     #[cfg(feature = "display-diagnostics")]
@@ -407,7 +467,7 @@ impl BuildDiagnostics {
         span_map: &[crate::parser::Token],
     ) -> proc_macro::TokenStream {
         let mut result = proc_macro::TokenStream::default();
-        let mut needs_error = self.has_error();
+        let mut needs_error = self.has_errors();
         self.call_diagnostics(
             &mut (),
             Some(&mut |diag| {
@@ -430,13 +490,18 @@ impl BuildDiagnostics {
                     DiagnosticLevel::Error => {
                         needs_error = false;
                         result.extend(proc_macro::TokenStream::from(if let Some(span) = span {
-                            quote::quote_spanned!(span.into() => compile_error!{ #message })
+                            quote::quote_spanned!(span.into()=> compile_error!{ #message })
                         } else {
                             quote::quote!(compile_error! { #message })
                         }));
                     }
-                    // FIXME: find a way to report warnings.
-                    DiagnosticLevel::Warning => (),
+                    DiagnosticLevel::Warning => {
+                        result.extend(proc_macro::TokenStream::from(if let Some(span) = span {
+                            quote::quote_spanned!(span.into()=> const _ : () = { #[deprecated(note = #message)] const WARNING: () = (); WARNING };)
+                        } else {
+                            quote::quote!(const _ : () = { #[deprecated(note = #message)] const WARNING: () = (); WARNING };)
+                        }));
+                    },
                 }
             }),
             |_, codemap| {
@@ -478,7 +543,7 @@ impl BuildDiagnostics {
     #[cfg(feature = "display-diagnostics")]
     #[must_use]
     pub fn check_and_exit_on_error(self) -> Self {
-        if self.has_error() {
+        if self.has_errors() {
             self.print();
             std::process::exit(-1);
         }
@@ -487,10 +552,60 @@ impl BuildDiagnostics {
 
     #[cfg(feature = "display-diagnostics")]
     pub fn print_warnings_and_exit_on_error(self) {
-        let has_error = self.has_error();
+        let has_error = self.has_errors();
         self.print();
         if has_error {
             std::process::exit(-1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_source_file_offset_line_column_mapping() {
+        let content = r#"import { LineEdit, Button, Slider, HorizontalBox, VerticalBox } from "std-widgets.slint";
+
+component MainWindow inherits Window {
+    property <duration> total-time: slider.value * 1s;
+
+    callback tick(duration);
+    VerticalBox {
+        HorizontalBox {
+            padding-left: 0;
+            Text { text: "Elapsed Time:"; }
+            Rectangle {
+                Rectangle {
+                    height: 100%;
+                    background: lightblue;
+                }
+            }
+        }
+    }
+
+
+}
+
+
+    "#.to_string();
+        let sf = SourceFileInner::new(PathBuf::from("foo.slint"), content.clone(), None);
+
+        let mut line = 1;
+        let mut column = 1;
+        for offset in 0..content.len() {
+            let b = *content.as_bytes().get(offset).unwrap();
+
+            assert_eq!(sf.offset(line, column), offset);
+            assert_eq!(sf.line_column(offset), (line, column));
+
+            if b == b'\n' {
+                line += 1;
+                column = 1;
+            } else {
+                column += 1;
+            }
         }
     }
 }

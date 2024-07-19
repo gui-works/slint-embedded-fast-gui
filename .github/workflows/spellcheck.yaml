@@ -1,18 +1,18 @@
-# Copyright © SixtyFPS GmbH <info@slint-ui.com>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-name: 'Check spelling'
+name: "Check spelling"
 on:
-#  push:
-#  pull_request:
-  workflow_dispatch:
+    #  push:
+    #  pull_request:
+    workflow_dispatch:
 
 jobs:
-  spellcheck:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v2
-    - uses: streetsidesoftware/cspell-action@v1.2.4
-      with:
-        config: './cspell.json'
-        strict: false
+    spellcheck:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: streetsidesoftware/cspell-action@v5
+              with:
+                  config: "./cspell.json"
+                  strict: false

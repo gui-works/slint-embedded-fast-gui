@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // Test for manual visual verification of rotation
 //
@@ -54,5 +54,12 @@ TestCase := Window {
             rotation-angle: 315deg;
             source: @image-url("../../../logo/slint-logo-square-light-128x128.png");
         }
+    }
+
+    Text {
+        x: 150px;
+        y: 200px;
+        text: "Hello World";
+        rotation-angle: 360deg * animation-tick() / 3s;
     }
 }

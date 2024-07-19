@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
-<!-- Copyright © SixtyFPS GmbH <info@slint-ui.com> -->
-<!-- # SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial -->
+<!-- Copyright © SixtyFPS GmbH <info@slint.dev> -->
+<!-- # SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Software-3.0 -->
 
-<language name="Slint" version="1" kateversion="5.0" section="Sources" extensions="*.slint" mimetype="text/slint" indenter="cstyle" license="GPL" author="info@slint-ui.com" priority="6">
+<language name="Slint" version="1" kateversion="5.0" section="Sources" extensions="*.slint" mimetype="text/slint" indenter="cstyle" license="GPL" author="info@slint.dev" priority="6">
 <highlighting>
     <list name="types">
       <item>int</item>
@@ -17,6 +17,7 @@
       <item>color</item>
       <item>length</item>
       <item>physical-length</item>
+      <item>relative-font-size</item>
     </list>
     <list name="keywords">
       <item>import</item>
@@ -24,12 +25,16 @@
       <item>export</item>
       <item>global</item>
       <item>struct</item>
+      <item>enum</item>
       <item>component</item>
       <item>inherits</item>
       <item>property</item>
-      <item>inout</item>
-      <item>input</item>
-      <item>output</item>
+      <item>in</item>
+      <item>out</item>
+      <item>in-out</item>
+      <item>function</item>
+      <item>private</item>
+      <item>public</item>
       <item>callback</item>
       <item>animate</item>
       <item>states</item>
@@ -37,6 +42,13 @@
       <item>if</item>
       <item>for</item>
       <item>return</item>
+      <item>changed</item>
+      <item>pure</item>
+      <item>@tr</item>
+      <item>@children</item>
+      <item>@image-url</item>
+      <item>@linear-gradient</item>
+      <item>@radial-gradient</item>
     </list>
   <contexts>
     <context attribute="Normal Text" lineEndContext="#stay" name="Normal Text">

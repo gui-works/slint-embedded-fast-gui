@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! module for basic text layout
 //!
@@ -12,7 +12,7 @@
 //! 3. Loop over all glyph clusters as well as the line break opportunities produced by the unicode line break algorithm:
 //!     Sum up the width of all glyph clusters until the next line break opportunity (encapsulated in FragmentIterator), record separately the width of
 //!     trailing space within the fragment.
-//!     If the width of the current line (including trailing whitespace) and the new fragment of glyph clusters (without trailing whitepace) is less or
+//!     If the width of the current line (including trailing whitespace) and the new fragment of glyph clusters (without trailing whitespace) is less or
 //!         equal to the available width:
 //!         Add fragment of glyph clusters to the current line
 //!     Else:
@@ -21,6 +21,7 @@
 //!         Emit current line as new line
 //!
 
+#[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
 use euclid::num::{One, Zero};
@@ -61,6 +62,7 @@ impl<'a, Font: AbstractFont> TextLayout<'a, Font> {
         &self,
         text: &str,
         max_width: Option<Font::Length>,
+        text_wrap: TextWrap,
     ) -> (Font::Length, Font::Length)
     where
         Font::Length: core::fmt::Debug,
@@ -69,7 +71,7 @@ impl<'a, Font: AbstractFont> TextLayout<'a, Font> {
         let mut line_count: i16 = 0;
         let shape_buffer = ShapeBuffer::new(self, text);
 
-        for line in TextLineBreaker::<Font>::new(text, &shape_buffer, max_width) {
+        for line in TextLineBreaker::<Font>::new(text, &shape_buffer, max_width, None, text_wrap) {
             max_line_width = euclid::approxord::max(max_line_width, line.text_width);
             line_count += 1;
         }
@@ -78,10 +80,12 @@ impl<'a, Font: AbstractFont> TextLayout<'a, Font> {
     }
 }
 
-pub struct PositionedGlyph<'a, Length, PlatformGlyphData> {
+pub struct PositionedGlyph<Length> {
     pub x: Length,
     pub y: Length,
-    pub platform_glyph: &'a PlatformGlyphData,
+    pub advance: Length,
+    pub glyph_id: core::num::NonZeroU16,
+    pub text_byte_offset: usize,
 }
 
 pub struct TextParagraphLayout<'a, Font: AbstractFont> {
@@ -98,24 +102,28 @@ pub struct TextParagraphLayout<'a, Font: AbstractFont> {
 
 impl<'a, Font: AbstractFont> TextParagraphLayout<'a, Font> {
     /// Layout the given string in lines, and call the `layout_line` callback with the line to draw at position y.
-    /// The signature of the `layout_line` function is: `(glyph_iterator, line_x, line_y)`.
-    /// Returns the baseline y coordinate.
-    pub fn layout_lines(
+    /// The signature of the `layout_line` function is: `(glyph_iterator, line_x, line_y, text_line, selection)`.
+    /// Returns the baseline y coordinate as Ok, or the break value if `line_callback` returns `core::ops::ControlFlow::Break`.
+    pub fn layout_lines<R>(
         &self,
         mut line_callback: impl FnMut(
-            &mut dyn Iterator<Item = PositionedGlyph<'_, Font::Length, Font::PlatformGlyphData>>,
+            &mut dyn Iterator<Item = PositionedGlyph<Font::Length>>,
             Font::Length,
             Font::Length,
-        ),
-    ) -> Font::Length {
-        let wrap = self.wrap == TextWrap::WordWrap;
-        let elide_glyph = if self.overflow == TextOverflow::Elide {
-            self.layout.font.glyph_for_char('…')
+            &TextLine<Font::Length>,
+            Option<core::ops::Range<Font::Length>>,
+        ) -> core::ops::ControlFlow<R>,
+        selection: Option<core::ops::Range<usize>>,
+    ) -> Result<Font::Length, R> {
+        let wrap = self.wrap != TextWrap::NoWrap;
+        let elide = self.overflow == TextOverflow::Elide;
+        let elide_glyph = if elide {
+            self.layout.font.glyph_for_char('…').filter(|glyph| glyph.glyph_id.is_some())
         } else {
             None
         };
-        let max_width_without_elision =
-            self.max_width - elide_glyph.as_ref().map_or(Font::Length::zero(), |g| g.advance);
+        let elide_width = elide_glyph.as_ref().map_or(Font::Length::zero(), |g| g.advance);
+        let max_width_without_elision = self.max_width - elide_width;
 
         let shape_buffer = ShapeBuffer::new(&self.layout, self.string);
 
@@ -124,6 +132,8 @@ impl<'a, Font: AbstractFont> TextParagraphLayout<'a, Font> {
                 self.string,
                 &shape_buffer,
                 if wrap { Some(self.max_width) } else { None },
+                if elide { Some(self.layout.font.max_lines(self.max_height)) } else { None },
+                self.wrap,
             )
         };
         let mut text_lines = None;
@@ -147,61 +157,195 @@ impl<'a, Font: AbstractFont> TextParagraphLayout<'a, Font> {
 
         let mut y = baseline_y;
 
-        let mut process_line =
-            |line: &TextLine<Font::Length>,
-             glyphs: &[Glyph<Font::Length, Font::PlatformGlyphData>]| {
-                let x = match self.horizontal_alignment {
-                    TextHorizontalAlignment::Left => Font::Length::zero(),
-                    TextHorizontalAlignment::Center => {
-                        self.max_width / two
-                            - euclid::approxord::min(self.max_width, line.text_width) / two
-                    }
-                    TextHorizontalAlignment::Right => {
-                        self.max_width - euclid::approxord::min(self.max_width, line.text_width)
-                    }
-                };
+        let mut process_line = |line: &TextLine<Font::Length>, glyphs: &[Glyph<Font::Length>]| {
+            let elide_long_line =
+                elide && (self.single_line || !wrap) && line.text_width > self.max_width;
+            let elide_last_line = elide
+                && line.glyph_range.end < glyphs.len()
+                && y + self.layout.font.height() * two > self.max_height;
 
-                let mut elide_glyph = elide_glyph.as_ref().clone();
-
-                let glyph_it = glyphs[line.glyph_range.clone()].iter();
-                let mut glyph_x = Font::Length::zero();
-                let mut positioned_glyph_it = glyph_it.map_while(|glyph| {
-                    // TODO: cut off at grapheme boundaries
-                    if glyph_x > max_width_without_elision {
-                        if let Some(elide_glyph) = elide_glyph.take() {
-                            return Some(PositionedGlyph {
-                                x: glyph_x,
-                                y: Font::Length::zero(),
-                                platform_glyph: &elide_glyph.platform_glyph,
-                            });
-                        } else {
-                            return None;
+            let text_width = || {
+                if elide_long_line || elide_last_line {
+                    let mut text_width = Font::Length::zero();
+                    for glyph in &glyphs[line.glyph_range.clone()] {
+                        if text_width + glyph.advance > max_width_without_elision {
+                            break;
                         }
+                        text_width += glyph.advance;
                     }
-                    let positioned_glyph = PositionedGlyph {
-                        x: glyph_x,
-                        y: Font::Length::zero(),
-                        platform_glyph: &glyph.platform_glyph,
-                    };
-                    glyph_x += glyph.advance;
-                    Some(positioned_glyph)
+                    return text_width + elide_width;
+                }
+                euclid::approxord::min(self.max_width, line.text_width)
+            };
+
+            let x = match self.horizontal_alignment {
+                TextHorizontalAlignment::Left => Font::Length::zero(),
+                TextHorizontalAlignment::Center => self.max_width / two - text_width() / two,
+                TextHorizontalAlignment::Right => self.max_width - text_width(),
+            };
+
+            let mut elide_glyph = elide_glyph.as_ref();
+
+            let selection = selection
+                .as_ref()
+                .filter(|selection| {
+                    line.byte_range.start < selection.end && selection.start < line.byte_range.end
+                })
+                .map(|selection| {
+                    let mut begin = Font::Length::zero();
+                    let mut end = Font::Length::zero();
+                    for glyph in glyphs[line.glyph_range.clone()].iter() {
+                        if glyph.text_byte_offset < selection.start {
+                            begin += glyph.advance;
+                        }
+                        if glyph.text_byte_offset >= selection.end {
+                            break;
+                        }
+                        end += glyph.advance;
+                    }
+                    begin..end
                 });
 
-                line_callback(&mut positioned_glyph_it, x, y);
-                y += self.layout.font.height();
-            };
+            let glyph_it = glyphs[line.glyph_range.clone()].iter();
+            let mut glyph_x = Font::Length::zero();
+            let mut positioned_glyph_it = glyph_it.enumerate().filter_map(|(index, glyph)| {
+                // TODO: cut off at grapheme boundaries
+                if glyph_x > self.max_width {
+                    return None;
+                }
+                let elide_long_line = (elide_long_line || elide_last_line)
+                    && x + glyph_x + glyph.advance > max_width_without_elision;
+                let elide_last_line =
+                    elide_last_line && line.glyph_range.start + index == line.glyph_range.end - 1;
+                if elide_long_line || elide_last_line {
+                    if let Some(elide_glyph) = elide_glyph.take() {
+                        let x = glyph_x;
+                        glyph_x += elide_glyph.advance;
+                        return Some(PositionedGlyph {
+                            x,
+                            y: Font::Length::zero(),
+                            advance: elide_glyph.advance,
+                            glyph_id: elide_glyph.glyph_id.unwrap(), // checked earlier when initializing elide_glyph
+                            text_byte_offset: glyph.text_byte_offset,
+                        });
+                    } else {
+                        return None;
+                    }
+                }
+                let x = glyph_x;
+                glyph_x += glyph.advance;
+
+                glyph.glyph_id.map(|existing_glyph_id| PositionedGlyph {
+                    x,
+                    y: Font::Length::zero(),
+                    advance: glyph.advance,
+                    glyph_id: existing_glyph_id,
+                    text_byte_offset: glyph.text_byte_offset,
+                })
+            });
+
+            if let core::ops::ControlFlow::Break(break_val) =
+                line_callback(&mut positioned_glyph_it, x, y, line, selection)
+            {
+                return core::ops::ControlFlow::Break(break_val);
+            }
+            y += self.layout.font.height();
+
+            core::ops::ControlFlow::Continue(())
+        };
 
         if let Some(lines_vec) = text_lines.take() {
             for line in lines_vec {
-                process_line(&line, &shape_buffer.glyphs);
+                if let core::ops::ControlFlow::Break(break_val) =
+                    process_line(&line, &shape_buffer.glyphs)
+                {
+                    return Err(break_val);
+                }
             }
         } else {
             for line in new_line_break_iter() {
-                process_line(&line, &shape_buffer.glyphs);
+                if let core::ops::ControlFlow::Break(break_val) =
+                    process_line(&line, &shape_buffer.glyphs)
+                {
+                    return Err(break_val);
+                }
             }
         }
 
-        baseline_y
+        Ok(baseline_y)
+    }
+
+    /// Returns the leading edge of the glyph at the given byte offset
+    pub fn cursor_pos_for_byte_offset(&self, byte_offset: usize) -> (Font::Length, Font::Length) {
+        let mut last_glyph_right_edge = Font::Length::zero();
+        let mut last_line_y = Font::Length::zero();
+
+        match self.layout_lines(
+            |glyphs, line_x, line_y, line, _| {
+                last_glyph_right_edge = euclid::approxord::min(
+                    self.max_width,
+                    line_x + line.width_including_trailing_whitespace(),
+                );
+                last_line_y = line_y;
+                if byte_offset >= line.byte_range.end + line.trailing_whitespace_bytes {
+                    return core::ops::ControlFlow::Continue(());
+                }
+
+                for positioned_glyph in glyphs {
+                    if positioned_glyph.text_byte_offset == byte_offset {
+                        return core::ops::ControlFlow::Break((
+                            euclid::approxord::min(self.max_width, line_x + positioned_glyph.x),
+                            last_line_y,
+                        ));
+                    }
+                }
+
+                core::ops::ControlFlow::Break((last_glyph_right_edge, last_line_y))
+            },
+            None,
+        ) {
+            Ok(_) => (last_glyph_right_edge, last_line_y),
+            Err(position) => position,
+        }
+    }
+
+    /// Returns the bytes offset for the given position
+    pub fn byte_offset_for_position(&self, (pos_x, pos_y): (Font::Length, Font::Length)) -> usize {
+        let mut byte_offset = 0;
+        let two = Font::LengthPrimitive::one() + Font::LengthPrimitive::one();
+
+        match self.layout_lines(
+            |glyphs, line_x, line_y, line, _| {
+                if pos_y >= line_y + self.layout.font.height() {
+                    byte_offset = line.byte_range.end;
+                    return core::ops::ControlFlow::Continue(());
+                }
+
+                if line.is_empty() {
+                    return core::ops::ControlFlow::Break(line.byte_range.start);
+                }
+
+                while let Some(positioned_glyph) = glyphs.next() {
+                    if pos_x >= line_x + positioned_glyph.x
+                        && pos_x <= line_x + positioned_glyph.x + positioned_glyph.advance
+                    {
+                        if pos_x < line_x + positioned_glyph.x + positioned_glyph.advance / two {
+                            return core::ops::ControlFlow::Break(
+                                positioned_glyph.text_byte_offset,
+                            );
+                        } else if let Some(next_glyph) = glyphs.next() {
+                            return core::ops::ControlFlow::Break(next_glyph.text_byte_offset);
+                        }
+                    }
+                }
+
+                core::ops::ControlFlow::Break(line.byte_range.end)
+            },
+            None,
+        ) {
+            Ok(_) => byte_offset,
+            Err(position) => position,
+        }
     }
 }
 
@@ -220,45 +364,43 @@ pub struct FixedTestFont;
 impl TextShaper for FixedTestFont {
     type LengthPrimitive = f32;
     type Length = f32;
-    type PlatformGlyphData = shaping::TestGlyphData;
-    fn shape_text<GlyphStorage: std::iter::Extend<Glyph<f32, Self::PlatformGlyphData>>>(
+    fn shape_text<GlyphStorage: std::iter::Extend<Glyph<f32>>>(
         &self,
         text: &str,
         glyphs: &mut GlyphStorage,
     ) {
-        let glyph_iter = text.char_indices().map(|(byte_offset, char)| Glyph {
-            offset_x: 0.,
-            offset_y: 0.,
-            platform_glyph: Self::PlatformGlyphData {
-                bearing_x: 0.,
-                bearing_y: 0.,
-                width: 10.,
-                height: 10.,
-                glyph_id: None,
-                char: Some(char),
-            },
-            advance: 10.,
-            text_byte_offset: byte_offset,
+        let glyph_iter = text.char_indices().map(|(byte_offset, char)| {
+            let mut utf16_buf = [0; 2];
+            let utf16_char_as_glyph_id = char.encode_utf16(&mut utf16_buf)[0];
+
+            Glyph {
+                offset_x: 0.,
+                offset_y: 0.,
+                glyph_id: core::num::NonZeroU16::new(utf16_char_as_glyph_id),
+                advance: 10.,
+                text_byte_offset: byte_offset,
+            }
         });
         glyphs.extend(glyph_iter);
     }
 
-    fn glyph_for_char(&self, ch: char) -> Option<Glyph<f32, Self::PlatformGlyphData>> {
+    fn glyph_for_char(&self, ch: char) -> Option<Glyph<f32>> {
+        let mut utf16_buf = [0; 2];
+        let utf16_char_as_glyph_id = ch.encode_utf16(&mut utf16_buf)[0];
+
         Glyph {
             offset_x: 0.,
             offset_y: 0.,
-            platform_glyph: Self::PlatformGlyphData {
-                bearing_x: 0.,
-                bearing_y: 0.,
-                width: 10.,
-                height: 10.,
-                glyph_id: None,
-                char: Some(ch),
-            },
+            glyph_id: core::num::NonZeroU16::new(utf16_char_as_glyph_id),
             advance: 10.,
             text_byte_offset: 0,
         }
         .into()
+    }
+
+    fn max_lines(&self, max_height: f32) -> usize {
+        let height = self.ascent() - self.descent();
+        (max_height / height).floor() as _
     }
 }
 
@@ -291,18 +433,28 @@ fn test_elision() {
         overflow: TextOverflow::Elide,
         single_line: true,
     };
-    paragraph.layout_lines(|glyphs, _, _| {
-        lines.push(
-            glyphs
-                .map(|positioned_glyph| positioned_glyph.platform_glyph.clone())
-                .collect::<Vec<_>>(),
-        );
-    });
+    paragraph
+        .layout_lines::<()>(
+            |glyphs, _, _, _, _| {
+                lines.push(
+                    glyphs.map(|positioned_glyph| positioned_glyph.glyph_id).collect::<Vec<_>>(),
+                );
+                core::ops::ControlFlow::Continue(())
+            },
+            None,
+        )
+        .unwrap();
 
     assert_eq!(lines.len(), 1);
-    let rendered_text =
-        lines[0].iter().map(|platform_glyph| platform_glyph.char.unwrap()).collect::<String>();
-    debug_assert_eq!(rendered_text, "This is a lon…")
+    let rendered_text = lines[0]
+        .iter()
+        .flat_map(|glyph_id| {
+            core::char::decode_utf16(core::iter::once(glyph_id.get()))
+                .map(|r| r.unwrap())
+                .collect::<Vec<char>>()
+        })
+        .collect::<String>();
+    debug_assert_eq!(rendered_text, "This is a lo…")
 }
 
 #[test]
@@ -323,17 +475,27 @@ fn test_exact_fit() {
         overflow: TextOverflow::Elide,
         single_line: true,
     };
-    paragraph.layout_lines(|glyphs, _, _| {
-        lines.push(
-            glyphs
-                .map(|positioned_glyph| positioned_glyph.platform_glyph.clone())
-                .collect::<Vec<_>>(),
-        );
-    });
+    paragraph
+        .layout_lines::<()>(
+            |glyphs, _, _, _, _| {
+                lines.push(
+                    glyphs.map(|positioned_glyph| positioned_glyph.glyph_id).collect::<Vec<_>>(),
+                );
+                core::ops::ControlFlow::Continue(())
+            },
+            None,
+        )
+        .unwrap();
 
     assert_eq!(lines.len(), 1);
-    let rendered_text =
-        lines[0].iter().map(|platform_glyph| platform_glyph.char.unwrap()).collect::<String>();
+    let rendered_text = lines[0]
+        .iter()
+        .flat_map(|glyph_id| {
+            core::char::decode_utf16(core::iter::once(glyph_id.get()))
+                .map(|r| r.unwrap())
+                .collect::<Vec<char>>()
+        })
+        .collect::<String>();
     debug_assert_eq!(rendered_text, "Fits")
 }
 
@@ -355,13 +517,17 @@ fn test_no_line_separators_characters_rendered() {
         overflow: TextOverflow::Clip,
         single_line: true,
     };
-    paragraph.layout_lines(|glyphs, _, _| {
-        lines.push(
-            glyphs
-                .map(|positioned_glyph| positioned_glyph.platform_glyph.clone())
-                .collect::<Vec<_>>(),
-        );
-    });
+    paragraph
+        .layout_lines::<()>(
+            |glyphs, _, _, _, _| {
+                lines.push(
+                    glyphs.map(|positioned_glyph| positioned_glyph.glyph_id).collect::<Vec<_>>(),
+                );
+                core::ops::ControlFlow::Continue(())
+            },
+            None,
+        )
+        .unwrap();
 
     assert_eq!(lines.len(), 2);
     let rendered_text = lines
@@ -369,9 +535,160 @@ fn test_no_line_separators_characters_rendered() {
         .map(|glyphs_per_line| {
             glyphs_per_line
                 .iter()
-                .map(|platform_glyph| platform_glyph.char.unwrap())
+                .flat_map(|glyph_id| {
+                    core::char::decode_utf16(core::iter::once(glyph_id.get()))
+                        .map(|r| r.unwrap())
+                        .collect::<Vec<char>>()
+                })
                 .collect::<String>()
         })
         .collect::<Vec<_>>();
     debug_assert_eq!(rendered_text, vec!["Hello", "World"]);
+}
+
+#[test]
+fn test_cursor_position() {
+    let font = FixedTestFont;
+    let text = "Hello                    World";
+
+    let paragraph = TextParagraphLayout {
+        string: text,
+        layout: TextLayout { font: &font, letter_spacing: None },
+        max_width: 10. * 10.,
+        max_height: 10.,
+        horizontal_alignment: TextHorizontalAlignment::Left,
+        vertical_alignment: TextVerticalAlignment::Top,
+        wrap: TextWrap::WordWrap,
+        overflow: TextOverflow::Clip,
+        single_line: false,
+    };
+
+    assert_eq!(paragraph.cursor_pos_for_byte_offset(0), (0., 0.));
+
+    let e_offset = text
+        .char_indices()
+        .find_map(|(offset, ch)| if ch == 'e' { Some(offset) } else { None })
+        .unwrap();
+    assert_eq!(paragraph.cursor_pos_for_byte_offset(e_offset), (10., 0.));
+
+    let w_offset = text
+        .char_indices()
+        .find_map(|(offset, ch)| if ch == 'W' { Some(offset) } else { None })
+        .unwrap();
+    assert_eq!(paragraph.cursor_pos_for_byte_offset(w_offset + 1), (10., 10.));
+
+    assert_eq!(paragraph.cursor_pos_for_byte_offset(text.len()), (10. * 5., 10.));
+
+    let first_space_offset =
+        text.char_indices().find_map(|(offset, ch)| ch.is_whitespace().then_some(offset)).unwrap();
+    assert_eq!(paragraph.cursor_pos_for_byte_offset(first_space_offset), (5. * 10., 0.));
+    assert_eq!(paragraph.cursor_pos_for_byte_offset(first_space_offset + 15), (10. * 10., 0.));
+    assert_eq!(paragraph.cursor_pos_for_byte_offset(first_space_offset + 16), (10. * 10., 0.));
+}
+
+#[test]
+fn test_cursor_position_with_newline() {
+    let font = FixedTestFont;
+    let text = "Hello\nWorld";
+
+    let paragraph = TextParagraphLayout {
+        string: text,
+        layout: TextLayout { font: &font, letter_spacing: None },
+        max_width: 100. * 10.,
+        max_height: 10.,
+        horizontal_alignment: TextHorizontalAlignment::Left,
+        vertical_alignment: TextVerticalAlignment::Top,
+        wrap: TextWrap::WordWrap,
+        overflow: TextOverflow::Clip,
+        single_line: false,
+    };
+
+    assert_eq!(paragraph.cursor_pos_for_byte_offset(5), (5. * 10., 0.));
+}
+
+#[test]
+fn byte_offset_for_empty_line() {
+    let font = FixedTestFont;
+    let text = "Hello\n\nWorld";
+
+    let paragraph = TextParagraphLayout {
+        string: text,
+        layout: TextLayout { font: &font, letter_spacing: None },
+        max_width: 100. * 10.,
+        max_height: 10.,
+        horizontal_alignment: TextHorizontalAlignment::Left,
+        vertical_alignment: TextVerticalAlignment::Top,
+        wrap: TextWrap::WordWrap,
+        overflow: TextOverflow::Clip,
+        single_line: false,
+    };
+
+    assert_eq!(paragraph.byte_offset_for_position((0., 10.)), 6);
+}
+
+#[test]
+fn test_byte_offset() {
+    let font = FixedTestFont;
+    let text = "Hello                    World";
+    let mut end_helper_text = text.to_string();
+    end_helper_text.push('!');
+
+    let paragraph = TextParagraphLayout {
+        string: text,
+        layout: TextLayout { font: &font, letter_spacing: None },
+        max_width: 10. * 10.,
+        max_height: 10.,
+        horizontal_alignment: TextHorizontalAlignment::Left,
+        vertical_alignment: TextVerticalAlignment::Top,
+        wrap: TextWrap::WordWrap,
+        overflow: TextOverflow::Clip,
+        single_line: false,
+    };
+
+    assert_eq!(paragraph.byte_offset_for_position((0., 0.)), 0);
+
+    let e_offset = text
+        .char_indices()
+        .find_map(|(offset, ch)| if ch == 'e' { Some(offset) } else { None })
+        .unwrap();
+
+    assert_eq!(paragraph.byte_offset_for_position((14., 0.)), e_offset);
+
+    let l_offset = text
+        .char_indices()
+        .find_map(|(offset, ch)| if ch == 'l' { Some(offset) } else { None })
+        .unwrap();
+    assert_eq!(paragraph.byte_offset_for_position((15., 0.)), l_offset);
+
+    let w_offset = text
+        .char_indices()
+        .find_map(|(offset, ch)| if ch == 'W' { Some(offset) } else { None })
+        .unwrap();
+
+    assert_eq!(paragraph.byte_offset_for_position((10., 10.)), w_offset + 1);
+
+    let o_offset = text
+        .char_indices()
+        .rev()
+        .find_map(|(offset, ch)| if ch == 'o' { Some(offset) } else { None })
+        .unwrap();
+
+    assert_eq!(paragraph.byte_offset_for_position((15., 10.)), o_offset + 1);
+
+    let d_offset = text
+        .char_indices()
+        .rev()
+        .find_map(|(offset, ch)| if ch == 'd' { Some(offset) } else { None })
+        .unwrap();
+
+    assert_eq!(paragraph.byte_offset_for_position((40., 10.)), d_offset);
+
+    let end_offset = end_helper_text
+        .char_indices()
+        .rev()
+        .find_map(|(offset, ch)| if ch == '!' { Some(offset) } else { None })
+        .unwrap();
+
+    assert_eq!(paragraph.byte_offset_for_position((45., 10.)), end_offset);
+    assert_eq!(paragraph.byte_offset_for_position((0., 20.)), end_offset);
 }

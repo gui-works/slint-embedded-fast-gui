@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 #[cfg(test)]
 mod interpreter;
@@ -20,7 +20,12 @@ macro_rules! test_example {
                     absolute_path = legacy.into();
                 }
             }
-            interpreter::test(&test_driver_lib::TestCase { absolute_path, relative_path }).unwrap();
+            interpreter::test(&test_driver_lib::TestCase {
+                absolute_path,
+                relative_path,
+                requested_style: None,
+            })
+            .unwrap();
         }
     };
 }
@@ -31,6 +36,10 @@ test_example!(example_memory, "memory/memory.slint");
 test_example!(example_slide_puzzle, "slide_puzzle/slide_puzzle.slint");
 test_example!(example_todo, "todo/ui/todo.slint");
 test_example!(example_gallery, "gallery/gallery.slint");
+test_example!(example_fancy_demo, "fancy_demo/main.slint");
+test_example!(example_bash_sysinfo, "bash/sysinfo.slint");
+test_example!(example_carousel, "carousel/ui/carousel_demo.slint");
+test_example!(example_iot_dashboard, "iot-dashboard/main.slint");
 
 fn main() {
     println!("Nothing to see here, please run me through cargo test :)");

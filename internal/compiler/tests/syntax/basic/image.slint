@@ -1,8 +1,8 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 
-SubElements := Rectangle {
+export SubElements := Rectangle {
 
     background: blue;
 
@@ -12,7 +12,7 @@ SubElements := Rectangle {
 
     Image {
         source: @image-url("builtin:/common/does-not-exist.svg");
-//              ^warning{Cannot find image file builtin:/common/does-not-exist.svg}
+//              ^error{Cannot find image file builtin:/common/does-not-exist.svg}
     }
 
     Rectangle {

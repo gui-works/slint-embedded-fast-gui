@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 use plotters::prelude::*;
 use slint::SharedPixelBuffer;
@@ -11,7 +11,7 @@ use wasm_bindgen::prelude::*;
 mod wasm_backend;
 
 slint::slint! {
-    import { MainWindow } from "plotter.slint";
+    export { MainWindow } from "plotter.slint";
 }
 
 fn pdf(x: f64, y: f64, a: f64) -> f64 {
@@ -76,9 +76,9 @@ pub fn main() {
     #[cfg(all(debug_assertions, target_arch = "wasm32"))]
     console_error_panic_hook::set_once();
 
-    let main_window = MainWindow::new();
+    let main_window = MainWindow::new().unwrap();
 
     main_window.on_render_plot(render_plot);
 
-    main_window.run();
+    main_window.run().unwrap();
 }

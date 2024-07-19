@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 /*
  The design from this file is inspired from the design in
@@ -43,7 +43,8 @@ import { MenuBar, TopBar, Usage, IndoorTemperature, Humidity, MyDevices,
 } from "iot-dashboard.slint";
 
 
-MainContent := VerticalLayout {
+component MainContent inherits VerticalLayout {
+    alignment: start;
     spacing: 24px;
     TopBar {
         Clock {
@@ -80,7 +81,7 @@ MainContent := VerticalLayout {
     }
 }
 
-MainWindow := Window {
+component MainWindow inherits Window {
     title: "IOT dashboard";
     HorizontalLayout {
         padding: 0; spacing: 0;

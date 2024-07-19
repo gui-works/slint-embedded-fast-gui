@@ -1,11 +1,13 @@
-# Copyright © SixtyFPS GmbH <info@slint-ui.com>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
-cmake_minimum_required(VERSION 3.19)
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: MIT
+cmake_minimum_required(VERSION 3.21)
 project(SlintExamples LANGUAGES CXX)
 
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../cmake")
 
+# TODO: Use find_package(OpenGL) when switching to CMake >= 3.27
 find_package(OpenGLES2 QUIET)
+find_package(OpenGLES3 QUIET)
 
 if (NOT TARGET Slint::Slint)
     find_package(Slint REQUIRED)
@@ -24,13 +26,27 @@ if (TARGET Slint::slint-compiler)
     add_subdirectory(todo/cpp/)
     add_subdirectory(gallery/)
     add_subdirectory(memory/)
-endif()
-if (SLINT_FEATURE_INTERPRETER AND SLINT_FEATURE_BACKEND_QT)
-    add_subdirectory(qt_viewer/)
+    add_subdirectory(virtual_keyboard/cpp/)
 endif()
 if (SLINT_FEATURE_INTERPRETER)
     add_subdirectory(iot-dashboard/)
 endif()
-if (TARGET Slint::slint-compiler AND OpenGLES2_FOUND AND(SLINT_FEATURE_BACKEND_WINIT OR SLINT_FEATURE_BACKEND_WINIT_WAYLAND OR SLINT_FEATURE_BACKEND_WINIT_X11) AND SLINT_FEATURE_RENDERER_FEMTOVG)
-    add_subdirectory(opengl_underlay)
+if (TARGET Slint::slint-compiler AND (SLINT_FEATURE_BACKEND_WINIT OR SLINT_FEATURE_BACKEND_WINIT_WAYLAND OR SLINT_FEATURE_BACKEND_WINIT_X11) AND SLINT_FEATURE_RENDERER_FEMTOVG)
+    if (OpenGLES2_FOUND)
+        add_subdirectory(opengl_underlay)
+    endif()
+    if (OpenGLES3_FOUND)
+        add_subdirectory(opengl_texture)
+    endif()
 endif()
+if (SLINT_FEATURE_INTERPRETER AND SLINT_FEATURE_BACKEND_QT)
+add_subdirectory(cpp/qt_viewer)
+endif()
+if(TARGET Slint::slint-compiler AND (SLINT_FEATURE_RENDERER_SKIA OR SLINT_FEATURE_RENDERER_SKIA_OPENGL OR SLINT_FEATURE_RENDERER_SKIA_VULKAN))
+    find_package(Qt6 6.2 QUIET COMPONENTS Core Widgets)
+    if(Qt6_FOUND)
+        add_subdirectory(cpp/platform_qt)
+    endif(Qt6_FOUND)
+    add_subdirectory(cpp/platform_native)
+endif()
+

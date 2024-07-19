@@ -1,26 +1,27 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
+#[cfg(feature = "internal")]
 #[test]
 fn reuse_window() {
-    i_slint_backend_testing::init();
-    use crate::{ComponentCompiler, ComponentHandle, SharedString, Value};
+    i_slint_backend_testing::init_no_event_loop();
+    use crate::{Compiler, ComponentHandle, SharedString, Value};
     let code = r#"
-        MainWindow := Window {
-            property<string> text_text: "foo";
-            property<string> text_alias: input.text;
+        export component MainWindow inherits Window {
+            in-out property<string> text_text: "foo";
+            in-out property<string> text_alias: input.text;
             input := TextInput {
-                text:  enabled ? text_text : text_text;
+                text:  self.enabled ? text_text : text_text;
             }
         }
     "#;
     let handle = {
-        let mut compiler = ComponentCompiler::default();
+        let mut compiler = Compiler::default();
         compiler.set_style("fluent".into());
-        let definition =
-            spin_on::spin_on(compiler.build_from_source(code.into(), Default::default()));
-        assert!(compiler.diagnostics().is_empty(), "{:?}", compiler.diagnostics());
-        let instance = definition.unwrap().create();
+        let result = spin_on::spin_on(compiler.build_from_source(code.into(), Default::default()));
+        assert!(!result.has_errors(), "{:?}", result.diagnostics().collect::<Vec<_>>());
+        let definition = result.component("MainWindow").unwrap();
+        let instance = definition.create().unwrap();
         assert_eq!(
             instance.get_property("text_alias").unwrap(),
             Value::from(SharedString::from("foo"))
@@ -29,12 +30,12 @@ fn reuse_window() {
     };
 
     let _handle2 = {
-        let mut compiler = ComponentCompiler::default();
+        let mut compiler = Compiler::default();
         compiler.set_style("fluent".into());
-        let definition =
-            spin_on::spin_on(compiler.build_from_source(code.into(), Default::default()));
-        assert!(compiler.diagnostics().is_empty(), "{:?}", compiler.diagnostics());
-        let instance = definition.unwrap().create_with_existing_window(handle.window());
+        let result = spin_on::spin_on(compiler.build_from_source(code.into(), Default::default()));
+        assert!(!result.has_errors(), "{:?}", result.diagnostics().collect::<Vec<_>>());
+        let definition = result.component("MainWindow").unwrap();
+        let instance = definition.create_with_existing_window(handle.window()).unwrap();
         drop(handle);
         assert_eq!(
             instance.get_property("text_alias").unwrap(),

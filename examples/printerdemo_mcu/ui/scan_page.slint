@@ -1,10 +1,10 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 import { DemoPalette, Page, SpinBox, Label, ComboBox, PushButton } from "./common.slint";
 import { PrinterQueue } from "./printer_queue.slint";
 
-export ScanPage := Page {
+export component ScanPage inherits Page {
     has-back-button: true;
     header: "Scan";
 

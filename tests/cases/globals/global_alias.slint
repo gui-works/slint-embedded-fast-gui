@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //include_path: ../../helper_components
 
@@ -16,11 +16,11 @@ TestCase := Rectangle {
 
 /*
 ```rust
-let instance = TestCase::new();
+let instance = TestCase::new().unwrap();
 assert!(!instance.get_test_global_prop_value());
 assert_eq!(MyGlobal::get(&instance).get_hello(), 42);
 assert_eq!(GlobalAlias::get(&instance).get_hello(), 42);
-instance.global::<MyGlobal>().set_hello(100);
+instance.global::<MyGlobal<'_>>().set_hello(100);
 assert!(instance.get_test_global_prop_value());
 assert_eq!(MyGlobal::get(&instance).get_hello(), 100);
 assert_eq!(GlobalAlias::get(&instance).get_hello(), 100);
@@ -42,7 +42,12 @@ assert_eq(instance.global<GlobalAlias>().get_hello(), 100);
 ```js
 let instance = new slint.TestCase({});
 assert(!instance.test_global_prop_value);
-// TODO
+assert.equal(instance.MyGlobal.hello, 42);;
+assert.equal(instance.GlobalAlias.hello, 42);;
+instance.MyGlobal.hello = 100;
+assert(instance.test_global_prop_value);
+assert.equal(instance.MyGlobal.hello, 100);
+assert.equal(instance.GlobalAlias.hello, 100);
 ```
 
 */

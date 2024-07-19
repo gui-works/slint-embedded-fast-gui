@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! module for the SharedString and related things
 
@@ -7,9 +7,9 @@
 #![warn(missing_docs)]
 
 use crate::SharedVector;
+#[cfg(not(feature = "std"))]
 use alloc::string::String;
 use core::fmt::{Debug, Display, Write};
-use core::iter::FromIterator;
 use core::ops::Deref;
 
 /// This macro is the same as [`std::format!`], but it returns a [`SharedString`] instead.
@@ -134,6 +134,28 @@ impl AsRef<str> for SharedString {
     }
 }
 
+#[cfg(feature = "serde")]
+impl serde::Serialize for SharedString {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let string = self.as_str();
+        serializer.serialize_str(string)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for SharedString {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let string = String::deserialize(deserializer)?;
+        Ok(SharedString::from(string))
+    }
+}
+
 #[cfg(feature = "std")]
 impl AsRef<std::ffi::CStr> for SharedString {
     #[inline]
@@ -190,6 +212,12 @@ impl From<&String> for SharedString {
     }
 }
 
+impl From<char> for SharedString {
+    fn from(c: char) -> Self {
+        SharedString::from(c.encode_utf8(&mut [0; 6]) as &str)
+    }
+}
+
 impl From<SharedString> for String {
     fn from(s: SharedString) -> String {
         s.as_str().into()
@@ -229,6 +257,12 @@ impl Write for SharedString {
     }
 }
 
+impl core::borrow::Borrow<str> for SharedString {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
 /// Same as [`std::fmt::format()`], but return a [`SharedString`] instead
 pub fn format(args: core::fmt::Arguments<'_>) -> SharedString {
     // unfortunately, the estimated_capacity is unstable
@@ -256,6 +290,8 @@ fn simple_test() {
         (&x as &dyn AsRef<std::ffi::CStr>).as_ref(),
         &*std::ffi::CString::new("hello world!").unwrap()
     );
+    assert_eq!(SharedString::from('h'), "h");
+    assert_eq!(SharedString::from('😎'), "😎");
 }
 
 #[test]
@@ -339,7 +375,7 @@ pub(crate) mod ffi {
     /// The resulting structure must be passed to slint_shared_string_drop
     #[no_mangle]
     pub unsafe extern "C" fn slint_shared_string_from_number(out: *mut SharedString, n: f64) {
-        let str = crate::format!("{}", n);
+        let str = crate::format!("{}", n as f32);
         core::ptr::write(out, str);
     }
 
@@ -361,6 +397,13 @@ pub(crate) mod ffi {
             let mut s = core::mem::MaybeUninit::uninit();
             slint_shared_string_from_number(s.as_mut_ptr(), 0.);
             assert_eq!(s.assume_init(), "0");
+
+            let mut s = core::mem::MaybeUninit::uninit();
+            slint_shared_string_from_number(
+                s.as_mut_ptr(),
+                ((1235.82756f32 * 1000f32).round() / 1000f32) as _,
+            );
+            assert_eq!(s.assume_init(), "1235.828");
         }
     }
 
@@ -389,4 +432,13 @@ pub(crate) mod ffi {
         append("!");
         assert_eq!(s.as_str(), "Hello, world!");
     }
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_serialize_deserialize_sharedstring() {
+    let v = SharedString::from("data");
+    let serialized = serde_json::to_string(&v).unwrap();
+    let deserialized: SharedString = serde_json::from_str(&serialized).unwrap();
+    assert_eq!(v, deserialized);
 }

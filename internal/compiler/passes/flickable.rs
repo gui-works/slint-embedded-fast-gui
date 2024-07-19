@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Flickable pass
 //!
@@ -10,13 +10,11 @@
 //! This pass must be called before the materialize_fake_properties as it going to be generate
 //! binding reference to fake properties
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
-use crate::expression_tree::{BindingExpression, Expression, NamedReference};
+use crate::expression_tree::{BindingExpression, Expression, MinMaxOp, NamedReference};
 use crate::langtype::{ElementType, NativeClass};
 use crate::object_tree::{Component, Element, ElementRc};
 use crate::typeregister::TypeRegister;
+use std::rc::Rc;
 
 pub fn is_flickable_element(element: &ElementRc) -> bool {
     matches!(&element.borrow().base_type, ElementType::Builtin(n) if n.name == "Flickable")
@@ -42,29 +40,24 @@ pub fn handle_flickable(root_component: &Rc<Component>, tr: &TypeRegister) {
     )
 }
 
-fn create_viewport_element(flickable_elem: &ElementRc, native_empty: &Rc<NativeClass>) {
-    let mut flickable = flickable_elem.borrow_mut();
-    let flickable = &mut *flickable;
-    let viewport = Rc::new(RefCell::new(Element {
-        id: format!("{}-viewport", flickable.id),
+fn create_viewport_element(flickable: &ElementRc, native_empty: &Rc<NativeClass>) {
+    let children = std::mem::take(&mut flickable.borrow_mut().children);
+    let viewport = Element::make_rc(Element {
+        id: format!("{}-viewport", flickable.borrow().id),
         base_type: ElementType::Native(native_empty.clone()),
-        children: std::mem::take(&mut flickable.children),
-        enclosing_component: flickable.enclosing_component.clone(),
+        children,
+        enclosing_component: flickable.borrow().enclosing_component.clone(),
         is_flickable_viewport: true,
         ..Element::default()
-    }));
-    for (prop, info) in &flickable.base_type.as_builtin().properties {
+    });
+    let element_type = flickable.borrow().base_type.clone();
+    for prop in element_type.as_builtin().properties.keys() {
         if let Some(vp_prop) = prop.strip_prefix("viewport-") {
-            let nr = NamedReference::new(&viewport, vp_prop);
-            flickable.property_declarations.insert(prop.to_owned(), info.ty.clone().into());
-            match flickable.bindings.entry(prop.to_owned()) {
-                std::collections::btree_map::Entry::Occupied(entry) => {
-                    entry.into_mut().get_mut().two_way_bindings.push(nr);
-                }
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert(BindingExpression::new_two_way(nr).into());
-                }
-            }
+            // bind the viewport's property to the flickable property, such as:  `width <=> parent.viewport-width`
+            viewport.borrow_mut().bindings.insert(
+                vp_prop.to_owned(),
+                BindingExpression::new_two_way(NamedReference::new(flickable, prop)).into(),
+            );
         }
     }
     viewport
@@ -81,11 +74,11 @@ fn create_viewport_element(flickable_elem: &ElementRc, native_empty: &Rc<NativeC
         .entry("x".into())
         .or_default()
         .is_set_externally = true;
-    flickable.children.push(viewport);
+    flickable.borrow_mut().children.push(viewport);
 }
 
 fn fixup_geometry(flickable_elem: &ElementRc) {
-    let forward_minmax_of = |prop: &str, op: char| {
+    let forward_minmax_of = |prop: &str, op: MinMaxOp| {
         set_binding_if_not_explicit(flickable_elem, prop, || {
             flickable_elem
                 .borrow()
@@ -100,12 +93,12 @@ fn fixup_geometry(flickable_elem: &ElementRc) {
     };
 
     if !flickable_elem.borrow().bindings.contains_key("height") {
-        forward_minmax_of("max-height", '<');
-        forward_minmax_of("preferred-height", '<');
+        forward_minmax_of("max-height", MinMaxOp::Min);
+        forward_minmax_of("preferred-height", MinMaxOp::Min);
     }
     if !flickable_elem.borrow().bindings.contains_key("width") {
-        forward_minmax_of("max-width", '<');
-        forward_minmax_of("preferred-width", '<');
+        forward_minmax_of("max-width", MinMaxOp::Min);
+        forward_minmax_of("preferred-width", MinMaxOp::Min);
     }
     set_binding_if_not_explicit(flickable_elem, "viewport-width", || {
         Some(
@@ -119,7 +112,7 @@ fn fixup_geometry(flickable_elem: &ElementRc) {
                 .map(|x| Expression::PropertyReference(NamedReference::new(x, "min-width")))
                 .fold(
                     Expression::PropertyReference(NamedReference::new(flickable_elem, "width")),
-                    |lhs, rhs| crate::builtin_macros::min_max_expression(lhs, rhs, '>'),
+                    |lhs, rhs| crate::builtin_macros::min_max_expression(lhs, rhs, MinMaxOp::Max),
                 ),
         )
     });
@@ -135,7 +128,7 @@ fn fixup_geometry(flickable_elem: &ElementRc) {
                 .map(|x| Expression::PropertyReference(NamedReference::new(x, "min-height")))
                 .fold(
                     Expression::PropertyReference(NamedReference::new(flickable_elem, "height")),
-                    |lhs, rhs| crate::builtin_macros::min_max_expression(lhs, rhs, '>'),
+                    |lhs, rhs| crate::builtin_macros::min_max_expression(lhs, rhs, MinMaxOp::Max),
                 ),
         )
     });
@@ -144,11 +137,7 @@ fn fixup_geometry(flickable_elem: &ElementRc) {
 /// Return true if this type is a layout that has constraints
 fn is_layout(base_type: &ElementType) -> bool {
     if let ElementType::Builtin(be) = base_type {
-        match be.name.as_str() {
-            "GridLayout" | "HorizontalLayout" | "VerticalLayout" => true,
-            "PathLayout" => false,
-            _ => false,
-        }
+        matches!(be.name.as_str(), "GridLayout" | "HorizontalLayout" | "VerticalLayout")
     } else {
         false
     }

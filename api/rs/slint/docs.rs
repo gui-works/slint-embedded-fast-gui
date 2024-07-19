@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 #![cfg(doc)]
 /*!
@@ -8,54 +8,9 @@
 
     - The [`generated_code`] module contains an [commented example](generated_code::SampleComponent)
       of what is generated from the `.slint` file
-    - The [`langref`] module is the reference documentation for the `.slint` language.
-    - The [`widgets`] and [`builtin_elements`] modules contains the documentation of elements usable
-      within the `.slint` files
-    - The [`layouting`] module contains the documentation to position the elements.
 */
 
-pub mod recipes {
-    #![doc = include_str!("docs/recipes/recipes.md")]
-    //!
-    //! #
-    //! Next: [The `.slint` language reference](super::langref)
-
-    // So intra-doc links can refer it as `slint::`
-    use crate as slint;
-}
-
-pub mod langref {
-    #![doc = include_str!("docs/langref.md")]
-    //!
-    //! #
-    //! Next: [Builtin Elements](super::builtin_elements)
-}
-
-pub mod builtin_elements {
-    #![doc = include_str!("docs/builtin_elements.md")]
-    //!
-    //! #
-    //! Next: [Builtin Enums](super::builtin_enums)
-}
-
-pub mod builtin_enums {
-    #![doc = include_str!("docs/builtin_enums.md")]
-    //!
-    //! #
-    //! Next: [Widgets](super::widgets)
-}
-
-pub mod widgets {
-    #![doc = include_str!("docs/widgets.md")]
-    //!
-    //! #
-    //! Next: [Layouting](super::layouting)
-}
-
-pub mod layouting {
-    #![doc = include_str!("docs/layouting.md")]
-    #![doc = ""]
-}
+// cSpell: ignore rustdoc
 
 /// This module exists only to explain the API of the code generated from `.slint` design markup. Its described structure
 /// is not really contained in the compiled crate.
@@ -68,13 +23,16 @@ pub mod generated_code {
 
     /// This an example of the API that is generated for a component in `.slint` design markup. This may help you understand
     /// what functions you can call and how you can pass data in and out.
+    ///
     /// This is the source code:
-    /// ```slint
-    /// SampleComponent := Window {
-    ///     property<int> counter;
+    ///
+    /// ```slint,no-preview
+    /// export component SampleComponent inherits Window {
+    ///     in-out property<int> counter;
     ///     // note that dashes will be replaced by underscores in the generated code
-    ///     property<string> user-name;
-    ///     callback hello();
+    ///     in-out property<string> user-name;
+    ///     callback hello;
+    ///     public function do-something(x: int) -> bool { return x > 0; }
     ///     // ... maybe more elements here
     /// }
     /// ```
@@ -82,7 +40,7 @@ pub mod generated_code {
     pub struct SampleComponent {}
     impl SampleComponent {
         /// Creates a new instance that is reference counted and pinned in memory.
-        pub fn new() -> Self {
+        pub fn new() -> Result<Self, crate::PlatformError> {
             unimplemented!()
         }
 
@@ -102,6 +60,7 @@ pub mod generated_code {
         }
         /// Assigns a new value to the `user_name` property.
         pub fn set_user_name(&self, value: crate::SharedString) {}
+
         /// For each callback declared at the root of the component, a function to call that
         /// callback is generated. This is the function that calls the `hello` callback declared
         /// in the `.slint` design markup.
@@ -113,7 +72,7 @@ pub mod generated_code {
         /// [`ComponentHandle::as_weak`]
         /// and then upgrade it to a strong reference when the callback is run:
         /// ```ignore
-        ///     let sample = SampleComponent::new();
+        ///     let sample = SampleComponent::new().unwrap();
         ///     let sample_weak = sample.as_weak();
         ///     sample.as_ref().on_hello(move || {
         ///         let sample = sample_weak.unwrap();
@@ -121,6 +80,13 @@ pub mod generated_code {
         ///     });
         /// ```
         pub fn on_hello(&self, f: impl Fn() + 'static) {}
+
+        /// For each public function declared at the root of the component, a function to call
+        /// that function is generated. This is the function that calls the `do-something` function
+        /// declared in the `.slint` design markup.
+        pub fn invoke_do_something(&self, d: i32) -> bool {
+            unimplemented!()
+        }
     }
 
     impl ComponentHandle for SampleComponent {
@@ -139,22 +105,23 @@ pub mod generated_code {
 
         #[doc(hidden)]
         fn from_inner(
-            _: vtable::VRc<crate::private_unstable_api::re_exports::ComponentVTable, Self::Inner>,
+            _: vtable::VRc<crate::private_unstable_api::re_exports::ItemTreeVTable, Self::Inner>,
         ) -> Self {
             unimplemented!();
         }
 
-        /// Marks the window of this component to be shown on the screen. This registers
-        /// the window with the windowing system. In order to react to events from the windowing system,
-        /// such as draw requests or mouse/touch input, it is still necessary to spin the event loop,
-        /// using [`crate::run_event_loop`].
-        fn show(&self) {
+        /// Convenience function for [`crate::Window::show()`]. This shows the window on the screen
+        /// and maintains an extra strong reference while the window is visible. To react
+        /// to events from the windowing system, such as draw requests or mouse/touch input, it is
+        /// still necessary to spin the event loop, using [`crate::run_event_loop`].
+        fn show(&self) -> Result<(), crate::PlatformError> {
             unimplemented!();
         }
 
-        /// Marks the window of this component to be hidden on the screen. This de-registers
-        /// the window from the windowing system and it will not receive any further events.
-        fn hide(&self) {
+        /// Convenience function for [`crate::Window::hide()`]. Hides the window, so that it is not
+        /// visible anymore. The additional strong reference on the associated component, that was
+        /// created when show() was called, is dropped.
+        fn hide(&self) -> Result<(), crate::PlatformError> {
             unimplemented!();
         }
 
@@ -167,7 +134,7 @@ pub mod generated_code {
 
         /// This is a convenience function that first calls [`Self::show`], followed by [`crate::run_event_loop()`]
         /// and [`Self::hide`].
-        fn run(&self) {
+        fn run(&self) -> Result<(), crate::PlatformError> {
             unimplemented!();
         }
 
@@ -178,11 +145,6 @@ pub mod generated_code {
     }
 }
 
-pub mod debugging_techniques {
-    #![doc = include_str!("docs/debugging_techniques.md")]
-    #![doc = ""]
-}
-
 pub mod mcu {
     #![doc = include_str!("mcu.md")]
     use crate::platform::software_renderer::*;
@@ -190,4 +152,20 @@ pub mod mcu {
     mod slint {
         pub use crate::*;
     }
+}
+
+pub mod cargo_features {
+    //! # Feature flags and backend selection.
+    //! Use the following feature flags in your Cargo.toml to enable additional features.
+    //!
+    #![cfg_attr(feature = "document-features", doc = document_features::document_features!())]
+    //!
+    //! More information about the backend and renderers is available in the
+    #![doc = concat!("[Slint Documentation](https://slint.dev/releases/", env!("CARGO_PKG_VERSION"), "/docs/slint/src/advanced/backends_and_renderers.html)")]
+    use crate::*;
+}
+
+pub mod type_mappings {
+    #![doc = include_str!("type-mappings.md")]
+    use crate::*;
 }

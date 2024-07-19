@@ -1,5 +1,24 @@
+<!-- Copyright © SixtyFPS GmbH <info@slint.dev> ; SPDX-License-Identifier: MIT OR Apache-2.0 -->
+
 # Changelog
 All notable changes to this crate will be documented in this file.
+
+## [0.2.0] - 2024-03-14
+
+ - Make `Dyn` not Send or Sync, thereby fixing a soundness hole
+
+## [0.1.12] - 2024-02-26
+
+ - Fix error reported by miri
+ - Fix compiler and clippy warnings
+
+## [0.1.11] - 2023-09-04
+
+ - Use portable_atomic instead of deprecated atomic_polyfill.
+
+## [0.1.10] - 2023-04-03
+
+ - updated syn to syn 2.0
 
 ## [0.1.9] - 2022-09-14
 

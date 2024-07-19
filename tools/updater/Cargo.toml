@@ -1,0 +1,30 @@
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+[package]
+name = "slint-updater"
+description = "Tool used to update .slint files from previous versions"
+authors.workspace = true
+documentation.workspace = true
+edition.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+categories = ["gui", "development-tools", "command-line-utilities"]
+
+
+[dependencies]
+i-slint-compiler = { workspace = true, features = ["default", "display-diagnostics"] }
+
+clap = { workspace = true }
+codemap = "0.1"
+codemap-diagnostic = "0.1.1"
+spin_on = { workspace = true }
+by_address = { workspace = true }
+
+[[bin]]
+name = "slint-updater"
+path = "main.rs"

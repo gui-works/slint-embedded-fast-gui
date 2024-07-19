@@ -1,11 +1,11 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 global Glo := {
     property <int> hello: 42;
-    callback sum(int, int) -> int;
-    callback mul(int, int) -> int;
-    callback calculate_profit() -> int;
+    pure callback sum(int, int) -> int;
+    pure callback mul(int, int) -> int;
+    pure callback calculate_profit() -> int;
     calculate_profit() => { return 1000; }
 }
 
@@ -16,8 +16,8 @@ ExtraComp := Rectangle {
 
 
 TestCase := Window {
-    callback sum <=> Glo.sum;
-    callback mul <=> Glo.mul;
+    pure callback sum <=> Glo.sum;
+    pure callback mul <=> Glo.mul;
 
     x := ExtraComp {}
     property<int> five: x.five;
@@ -32,7 +32,7 @@ TestCase := Window {
 
 /*
 ```rust
-let instance = TestCase::new();
+let instance = TestCase::new().unwrap();
 instance.on_sum(|a, b| a + b);
 instance.on_mul(|a, b| a * b);
 assert_eq!(instance.get_five(), 5);

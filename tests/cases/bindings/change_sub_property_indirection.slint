@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // hello, hello2 and alias are aliases
 SubElem := Rectangle {
@@ -22,13 +22,14 @@ TestCase := Rectangle {
     }
 
     property <string> sub_text <=> sub_alias.indirection;
+    property <bool> test: sub_text == "ABC";
 }
 
 
 /*
 
 ```rust
-let instance = TestCase::new();
+let instance = TestCase::new().unwrap();
 assert_eq!(instance.get_sub_text(), slint::SharedString::from("ABC"));
 instance.set_public_alias(slint::SharedString::from("EFG"));
 assert_eq!(instance.get_sub_text(), slint::SharedString::from("EFG"));

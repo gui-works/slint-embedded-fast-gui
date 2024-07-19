@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 /*!
 This crate allows you to create ffi-friendly virtual tables.
@@ -231,7 +231,7 @@ impl<'a, T: ?Sized + VTableMeta> Copy for VRef<'a, T> {}
 
 impl<'a, T: ?Sized + VTableMeta> Clone for VRef<'a, T> {
     fn clone(&self) -> Self {
-        Self { inner: self.inner, phantom: PhantomData }
+        *self
     }
 }
 
@@ -358,7 +358,7 @@ impl<'a, T: ?Sized + VTableMeta> VRefMut<'a, T> {
     /// Can create mutable reference to ptr, so no other code can create mutable reference of ptr
     /// during the life time 'a.
     pub unsafe fn from_raw(vtable: NonNull<T::VTable>, ptr: NonNull<u8>) -> Self {
-        Self { inner: Inner { vtable: vtable.cast(), ptr: ptr }, phantom: PhantomData }
+        Self { inner: Inner { vtable: vtable.cast(), ptr }, phantom: PhantomData }
     }
 
     /// Borrow this to obtain a VRef.
@@ -542,7 +542,7 @@ impl<Base, T: ?Sized + VTableMeta, Flag> Copy for VOffset<Base, T, Flag> {}
 
 impl<Base, T: ?Sized + VTableMeta, Flag> Clone for VOffset<Base, T, Flag> {
     fn clone(&self) -> Self {
-        Self { vtable: self.vtable, offset: self.offset, phantom: PhantomData }
+        *self
     }
 }
 

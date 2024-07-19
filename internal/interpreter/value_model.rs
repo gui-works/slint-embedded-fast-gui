@@ -1,35 +1,34 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use crate::api::Value;
 use i_slint_core::model::{Model, ModelTracker};
-use std::cell::RefCell;
 
 pub struct ValueModel {
-    value: RefCell<Value>,
+    value: Value,
 }
 
 impl ValueModel {
     pub fn new(value: Value) -> Self {
-        Self { value: RefCell::new(value) }
+        Self { value }
     }
 }
 
 impl ModelTracker for ValueModel {
     fn attach_peer(&self, peer: i_slint_core::model::ModelPeer) {
-        if let Value::Model(ref model_ptr) = *self.value.borrow() {
+        if let Value::Model(ref model_ptr) = self.value {
             model_ptr.model_tracker().attach_peer(peer)
         }
     }
 
     fn track_row_count_changes(&self) {
-        if let Value::Model(ref model_ptr) = *self.value.borrow() {
+        if let Value::Model(ref model_ptr) = self.value {
             model_ptr.model_tracker().track_row_count_changes()
         }
     }
 
     fn track_row_data_changes(&self, row: usize) {
-        if let Value::Model(ref model_ptr) = *self.value.borrow() {
+        if let Value::Model(ref model_ptr) = self.value {
             model_ptr.model_tracker().track_row_data_changes(row)
         }
     }
@@ -39,7 +38,7 @@ impl Model for ValueModel {
     type Data = Value;
 
     fn row_count(&self) -> usize {
-        match &*self.value.borrow() {
+        match &self.value {
             Value::Bool(b) => {
                 if *b {
                     1
@@ -47,7 +46,7 @@ impl Model for ValueModel {
                     0
                 }
             }
-            Value::Number(x) => *x as usize,
+            Value::Number(x) => x.max(Default::default()) as usize,
             Value::Void => 0,
             Value::Model(model_ptr) => model_ptr.row_count(),
             x => panic!("Invalid model {:?}", x),
@@ -58,7 +57,7 @@ impl Model for ValueModel {
         if row >= self.row_count() {
             None
         } else {
-            Some(match &*self.value.borrow() {
+            Some(match &self.value {
                 Value::Bool(_) => Value::Void,
                 Value::Number(_) => Value::Number(row as _),
                 Value::Model(model_ptr) => model_ptr.row_data(row)?,
@@ -72,7 +71,7 @@ impl Model for ValueModel {
     }
 
     fn set_row_data(&self, row: usize, data: Self::Data) {
-        match &mut *self.value.borrow_mut() {
+        match &self.value {
             Value::Model(model_ptr) => model_ptr.set_row_data(row, data),
             _ => eprintln!("Trying to change the value of a read-only integer model."),
         }

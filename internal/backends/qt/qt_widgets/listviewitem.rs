@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use i_slint_core::input::FocusEventResult;
 
@@ -9,25 +9,28 @@ use super::*;
 #[derive(FieldOffsets, Default, SlintElement)]
 #[pin]
 pub struct NativeStandardListViewItem {
-    pub x: Property<LogicalLength>,
-    pub y: Property<LogicalLength>,
-    pub width: Property<LogicalLength>,
-    pub height: Property<LogicalLength>,
     pub item: Property<i_slint_core::model::StandardListViewItem>,
     pub index: Property<i32>,
     pub is_selected: Property<bool>,
     pub cached_rendering_data: CachedRenderingData,
     pub has_hover: Property<bool>,
+    pub has_focus: Property<bool>,
+    pub pressed: Property<bool>,
+    pub pressed_x: Property<LogicalLength>,
+    pub pressed_y: Property<LogicalLength>,
+
+    /// Specify that this item is in fact used in a ComboBox
+    pub combobox: Property<bool>,
+    widget_ptr: std::cell::Cell<SlintTypeErasedWidgetPtr>,
+    animation_tracker: Property<i32>,
 }
 
 impl Item for NativeStandardListViewItem {
-    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
-
-    fn geometry(self: Pin<&Self>) -> LogicalRect {
-        LogicalRect::new(
-            LogicalPoint::from_lengths(self.x(), self.y()),
-            LogicalSize::from_lengths(self.width(), self.height()),
-        )
+    fn init(self: Pin<&Self>, _self_rc: &ItemRc) {
+        let animation_tracker_property_ptr = Self::FIELD_OFFSETS.animation_tracker.apply_pin(self);
+        self.widget_ptr.set(cpp! { unsafe [animation_tracker_property_ptr as "void*"] -> SlintTypeErasedWidgetPtr as "std::unique_ptr<SlintTypeErasedWidget>"  {
+            return make_unique_animated_widget<QWidget>(animation_tracker_property_ptr);
+        }})
     }
 
     fn layout_info(
@@ -38,24 +41,34 @@ impl Item for NativeStandardListViewItem {
         let index: i32 = self.index();
         let item = self.item();
         let text: qttypes::QString = item.text.as_str().into();
+        let combobox: bool = self.combobox();
 
         let s = cpp!(unsafe [
             index as "int",
-            text as "QString"
+            text as "QString",
+            combobox as "bool"
         ] -> qttypes::QSize as "QSize" {
             ensure_initialized();
 
-            QStyleOptionViewItem option;
-            option.decorationPosition = QStyleOptionViewItem::Left;
-            option.decorationAlignment = Qt::AlignCenter;
-            option.displayAlignment = Qt::AlignLeft|Qt::AlignVCenter;
-            option.showDecorationSelected = qApp->style()->styleHint(QStyle::SH_ItemView_ShowDecorationSelected, nullptr, nullptr);
-            if (index % 2) {
-                option.features |= QStyleOptionViewItem::Alternate;
-            }
-            option.features |= QStyleOptionViewItem::HasDisplay;
-            option.text = text;
-            return qApp->style()->sizeFromContents(QStyle::CT_ItemViewItem, &option, QSize{}, nullptr);
+            QStyleOptionComboBox cb_opt;
+            if (combobox && qApp->style()->styleHint(QStyle::SH_ComboBox_Popup, &cb_opt, nullptr)) {
+                QStyleOptionMenuItem option;
+                option.text = text;
+                option.text.replace(QChar('&'), QLatin1String("&&"));
+                return qApp->style()->sizeFromContents(QStyle::CT_MenuItem, &option, QSize{}, nullptr);
+            } else {
+                QStyleOptionViewItem option;
+                option.decorationPosition = QStyleOptionViewItem::Left;
+                option.decorationAlignment = Qt::AlignCenter;
+                option.displayAlignment = Qt::AlignLeft|Qt::AlignVCenter;
+                option.showDecorationSelected = qApp->style()->styleHint(QStyle::SH_ItemView_ShowDecorationSelected, nullptr, nullptr);
+                if (index % 2) {
+                    option.features |= QStyleOptionViewItem::Alternate;
+                }
+                option.features |= QStyleOptionViewItem::HasDisplay;
+                option.text = text;
+                return qApp->style()->sizeFromContents(QStyle::CT_ItemViewItem, &option, QSize{}, nullptr);
+                }
         });
         let min = match orientation {
             Orientation::Horizontal => s.width,
@@ -103,7 +116,9 @@ impl Item for NativeStandardListViewItem {
     fn_render! { this dpr size painter widget initial_state =>
         let index: i32 = this.index();
         let is_selected: bool = this.is_selected();
+        let combobox: bool = this.combobox();
         let has_hover: bool = this.has_hover();
+        let has_focus: bool = this.has_focus();
         let item = this.item();
         let text: qttypes::QString = item.text.as_str().into();
         cpp!(unsafe [
@@ -114,38 +129,68 @@ impl Item for NativeStandardListViewItem {
             index as "int",
             is_selected as "bool",
             has_hover as "bool",
+            has_focus as "bool",
             text as "QString",
-            initial_state as "int"
+            initial_state as "int",
+            combobox as "bool"
         ] {
-            QStyleOptionViewItem option;
-            option.state |= QStyle::State(initial_state);
-            option.rect = QRect(QPoint(), size / dpr);
-            option.state = QStyle::State_Enabled;
-            if (is_selected) {
-                option.state |= QStyle::State_Selected;
-            }
-            if (has_hover) {
-                option.state |= QStyle::State_MouseOver;
-            }
-            option.decorationPosition = QStyleOptionViewItem::Left;
-            option.decorationAlignment = Qt::AlignCenter;
-            option.displayAlignment = Qt::AlignLeft|Qt::AlignVCenter;
-            option.showDecorationSelected = qApp->style()->styleHint(QStyle::SH_ItemView_ShowDecorationSelected, nullptr, nullptr);
-            if (index % 2) {
-                option.features |= QStyleOptionViewItem::Alternate;
-            }
-            option.features |= QStyleOptionViewItem::HasDisplay;
-            option.text = text;
-            // CE_ItemViewItem in QCommonStyle calls setClipRect on the painter and replace the clips. So we need to cheat.
-            auto engine = (*painter)->paintEngine();
-            auto old_clip = engine->systemClip();
-            auto new_clip = old_clip & ((*painter)->clipRegion() * (*painter)->transform());
-            if (new_clip.isEmpty()) return;
-            engine->setSystemClip(new_clip);
+            QStyleOptionComboBox cb_opt;
+            if (combobox && qApp->style()->styleHint(QStyle::SH_ComboBox_Popup, &cb_opt, widget)) {
+                widget->setProperty("_q_isComboBoxPopupItem", true);
+                QStyleOptionMenuItem option;
+                option.styleObject = widget;
+                option.state |= QStyle::State(initial_state);
+                option.rect = QRect(QPoint(), size / dpr);
+                option.menuRect = QRect(QPoint(), size / dpr);
+                option.state = QStyle::State_Enabled;
+                if (has_hover) {
+                    option.state |= QStyle::State_MouseOver;
+                    option.state |= QStyle::State_Selected;
+                }
 
-            qApp->style()->drawPrimitive(QStyle::PE_PanelItemViewRow, &option, painter->get(), widget);
-            qApp->style()->drawControl(QStyle::CE_ItemViewItem, &option, painter->get(), widget);
-            engine->setSystemClip(old_clip);
+                if (has_focus) {
+                    option.state |= QStyle::State_HasFocus;
+                    option.state |= QStyle::State_Selected;
+                }
+                option.text = text;
+                option.text.replace(QChar('&'), QLatin1String("&&"));
+                option.checked = is_selected;
+                option.menuItemType = QStyleOptionMenuItem::Normal;
+                //option.reservedShortcutWidth = 0;
+                //option.maxIconWidth = 4;
+
+                qApp->style()->drawControl(QStyle::CE_MenuItem, &option, painter->get(), widget);
+                widget->setProperty("_q_isComboBoxPopupItem", {});
+            } else {
+                QStyleOptionViewItem option;
+                option.styleObject = widget;
+                option.state |= QStyle::State(initial_state);
+                option.rect = QRect(QPoint(), size / dpr);
+                option.state |= QStyle::State_Enabled;
+                if (is_selected) {
+                    option.state |= QStyle::State_Selected;
+                }
+                if (has_hover) {
+                    option.state |= QStyle::State_MouseOver;
+                }
+                if (has_focus) {
+                    option.state |= QStyle::State_HasFocus;
+                }
+                option.decorationPosition = QStyleOptionViewItem::Left;
+                option.decorationAlignment = Qt::AlignCenter;
+                option.displayAlignment = Qt::AlignLeft|Qt::AlignVCenter;
+                option.showDecorationSelected = qApp->style()->styleHint(QStyle::SH_ItemView_ShowDecorationSelected, nullptr, nullptr);
+
+                if (index % 2) {
+                    option.features |= QStyleOptionViewItem::Alternate;
+                }
+                option.features |= QStyleOptionViewItem::HasDisplay;
+
+                option.text = text;
+
+                qApp->style()->drawPrimitive(QStyle::PE_PanelItemViewRow, &option, painter->get(), widget);
+                qApp->style()->drawControl(QStyle::CE_ItemViewItem, &option, painter->get(), widget);
+            }
         });
     }
 }

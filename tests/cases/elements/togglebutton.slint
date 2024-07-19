@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 import { Button } from "std-widgets.slint";
 
@@ -33,7 +33,7 @@ assert(instance.get_checked());
 
 
 ```rust
-let instance = TestCase::new();
+let instance = TestCase::new().unwrap();
 assert!(instance.get_checked());
 
 // click on button
@@ -51,11 +51,11 @@ var instance = new slint.TestCase();
 assert.equal(instance.checked, true);
 
 // click on button
-instance.send_mouse_click(50., 50.);
+slintlib.private_api.send_mouse_click(instance, 50., 50.);
 assert.equal(instance.checked, false);
 
 // click on button
-instance.send_mouse_click(50., 50.);
+slintlib.private_api.send_mouse_click(instance, 50., 50.);
 assert.equal(instance.checked, true);
 ```
 */

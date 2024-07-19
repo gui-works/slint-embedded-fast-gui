@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 /*!
     Property binding engine.
@@ -8,13 +8,16 @@
     thin dst container, and intrusive linked list
 */
 
+// cSpell: ignore rustflags
+
 #![allow(unsafe_code)]
 #![warn(missing_docs)]
 
+/// A singled linked list whose nodes are pinned
 mod single_linked_list_pin {
     #![allow(unsafe_code)]
+    #[cfg(not(feature = "std"))]
     use alloc::boxed::Box;
-    ///! A singled linked list whose nodes are pinned
     use core::pin::Pin;
 
     type NodePtr<T> = Option<Pin<Box<SingleLinkedListPinNode<T>>>>;
@@ -48,7 +51,7 @@ mod single_linked_list_pin {
         }
 
         #[allow(unused)]
-        pub fn iter<'a>(&'a self) -> impl Iterator<Item = Pin<&T>> + 'a {
+        pub fn iter(&self) -> impl Iterator<Item = Pin<&T>> {
             struct I<'a, T>(&'a NodePtr<T>);
 
             impl<'a, T> Iterator for I<'a, T> {
@@ -114,15 +117,50 @@ pub(crate) mod dependency_tracker {
     impl<T> DependencyListHead<T> {
         pub unsafe fn mem_move(from: *mut Self, to: *mut Self) {
             (*to).0.set((*from).0.get());
-            if let Some(next) = ((*from).0.get() as *const DependencyNode<T>).as_ref() {
+            if let Some(next) = (*from).0.get().as_ref() {
                 debug_assert_eq!(from as *const _, next.prev.get() as *const _);
                 next.debug_assert_valid();
                 next.prev.set(to as *const _);
                 next.debug_assert_valid();
             }
         }
+
+        /// Swap two list head
+        pub fn swap(from: Pin<&Self>, to: Pin<&Self>) {
+            Cell::swap(&from.0, &to.0);
+            unsafe {
+                if let Some(n) = from.0.get().as_ref() {
+                    debug_assert_eq!(n.prev.get() as *const _, &to.0 as *const _);
+                    n.prev.set(&from.0 as *const _);
+                    n.debug_assert_valid();
+                }
+
+                if let Some(n) = to.0.get().as_ref() {
+                    debug_assert_eq!(n.prev.get() as *const _, &from.0 as *const _);
+                    n.prev.set(&to.0 as *const _);
+                    n.debug_assert_valid();
+                }
+            }
+        }
+
+        /// Return true is the list is empty
+        pub fn is_empty(&self) -> bool {
+            self.0.get().is_null()
+        }
+
+        /// Remove all the nodes from the list;
+        pub fn clear(self: Pin<&Self>) {
+            unsafe {
+                if let Some(n) = self.0.get().as_ref() {
+                    n.debug_assert_valid();
+                    n.prev.set(core::ptr::null());
+                }
+            }
+            self.0.set(core::ptr::null());
+        }
+
         pub unsafe fn drop(_self: *mut Self) {
-            if let Some(next) = ((*_self).0.get() as *const DependencyNode<T>).as_ref() {
+            if let Some(next) = (*_self).0.get().as_ref() {
                 debug_assert_eq!(_self as *const _, next.prev.get() as *const _);
                 next.debug_assert_valid();
                 next.prev.set(core::ptr::null());
@@ -133,7 +171,7 @@ pub(crate) mod dependency_tracker {
             unsafe {
                 node.remove();
                 node.debug_assert_valid();
-                let old = self.0.get() as *const DependencyNode<T>;
+                let old = self.0.get();
                 if let Some(x) = old.as_ref() {
                     x.debug_assert_valid();
                 }
@@ -150,7 +188,7 @@ pub(crate) mod dependency_tracker {
 
         pub fn for_each(&self, mut f: impl FnMut(&T)) {
             unsafe {
-                let mut next = self.0.get() as *const DependencyNode<T>;
+                let mut next = self.0.get();
                 while let Some(node) = next.as_ref() {
                     node.debug_assert_valid();
                     next = node.next.get();
@@ -222,6 +260,7 @@ pub(crate) mod dependency_tracker {
 type DependencyListHead = dependency_tracker::DependencyListHead<*const BindingHolder>;
 type DependencyNode = dependency_tracker::DependencyNode<*const BindingHolder>;
 
+#[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::cell::{Cell, RefCell, UnsafeCell};
@@ -253,7 +292,9 @@ struct BindingVTable {
 
 /// A binding trait object can be used to dynamically produces values for a property.
 ///
-/// Safety: IS_TWO_WAY_BINDNG cannot be true if Self is not a TwoWayBinding
+/// # Safety
+///
+/// IS_TWO_WAY_BINDING cannot be true if Self is not a TwoWayBinding
 unsafe trait BindingCallable {
     /// This function is called by the property to evaluate the binding and produce a new value. The
     /// previous property value is provided in the value parameter.
@@ -280,7 +321,7 @@ unsafe trait BindingCallable {
     }
 
     /// Set to true if and only if Self is a TwoWayBinding<T>
-    const IS_TWO_WAY_BINDNG: bool = false;
+    const IS_TWO_WAY_BINDING: bool = false;
 }
 
 unsafe impl<F: Fn(*mut ()) -> BindingResult> BindingCallable for F {
@@ -431,7 +472,7 @@ fn alloc_binding_holder<B: BindingCallable + 'static>(binding: B) -> *mut Bindin
         dep_nodes: Default::default(),
         vtable: <B as HasBindingVTable>::VT,
         dirty: Cell::new(true), // starts dirty so it evaluates the property when used
-        is_two_way_binding: B::IS_TWO_WAY_BINDNG,
+        is_two_way_binding: B::IS_TWO_WAY_BINDING,
         pinned: PhantomPinned,
         #[cfg(slint_debug_property)]
         debug_name: Default::default(),
@@ -441,7 +482,7 @@ fn alloc_binding_holder<B: BindingCallable + 'static>(binding: B) -> *mut Bindin
 }
 
 #[repr(transparent)]
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct PropertyHandle {
     /// The handle can either be a pointer to a binding, or a pointer to the list of dependent properties.
     /// The two least significant bit of the pointer are flags, as the pointer will be aligned.
@@ -450,6 +491,19 @@ struct PropertyHandle {
     /// The second to last bit (`0b10`) tells that the pointer points to a binding. Otherwise, it is the head
     /// node of the linked list of dependent binding
     handle: Cell<usize>,
+}
+
+impl core::fmt::Debug for PropertyHandle {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let handle = self.handle.get();
+        write!(
+            f,
+            "PropertyHandle {{ handle: 0x{:x}, locked: {}, binding: {} }}",
+            handle & !0b11,
+            (handle & 0b01) == 0b01,
+            (handle & 0b10) == 0b10
+        )
+    }
 }
 
 impl PropertyHandle {
@@ -493,8 +547,8 @@ impl PropertyHandle {
                     (*binding).dependencies.set(0);
                 } else {
                     DependencyListHead::mem_move(
-                        (&mut (*binding).dependencies) as *mut _ as *mut _,
-                        self.handle.as_ptr() as *mut _,
+                        (*binding).dependencies.as_ptr() as *mut DependencyListHead,
+                        self.handle.as_ptr() as *mut DependencyListHead,
                     );
                 }
                 ((*binding).vtable.drop)(binding);
@@ -540,8 +594,8 @@ impl PropertyHandle {
                 (*binding).dependencies.set(const_sentinel);
             } else {
                 DependencyListHead::mem_move(
-                    self.handle.as_ptr() as *mut _,
-                    (&mut (*binding).dependencies) as *mut _ as *mut _,
+                    self.handle.as_ptr() as *mut DependencyListHead,
+                    (*binding).dependencies.as_ptr() as *mut DependencyListHead,
                 );
             }
         }
@@ -657,11 +711,26 @@ impl Drop for PropertyHandle {
 
 /// Safety: the dependency list must be valid and consistent
 unsafe fn mark_dependencies_dirty(dependencies: *mut DependencyListHead) {
+    debug_assert!(!core::ptr::eq(
+        *(dependencies as *mut *const u32),
+        (&CONSTANT_PROPERTY_SENTINEL) as *const u32,
+    ));
     DependencyListHead::for_each(&*dependencies, |binding| {
         let binding: &BindingHolder = &**binding;
         let was_dirty = binding.dirty.replace(true);
         (binding.vtable.mark_dirty)(binding as *const BindingHolder, was_dirty);
-        mark_dependencies_dirty(binding.dependencies.as_ptr() as *mut DependencyListHead)
+
+        assert!(
+            !core::ptr::eq(
+                *(binding.dependencies.as_ptr() as *mut *const u32),
+                (&CONSTANT_PROPERTY_SENTINEL) as *const u32,
+            ),
+            "Const property marked as dirty"
+        );
+
+        if !was_dirty {
+            mark_dependencies_dirty(binding.dependencies.as_ptr() as *mut DependencyListHead)
+        }
     });
 }
 
@@ -964,13 +1033,13 @@ impl<T: PartialEq + Clone + 'static> Property<T> {
                 true
             }
 
-            const IS_TWO_WAY_BINDNG: bool = true;
+            const IS_TWO_WAY_BINDING: bool = true;
         }
 
         #[cfg(slint_debug_property)]
         let debug_name = format!("<{}<=>{}>", prop1.debug_name.borrow(), prop2.debug_name.borrow());
 
-        let value = prop2.get();
+        let value = prop2.get_internal();
 
         let prop1_handle_val = prop1.handle.handle.get();
         if prop1_handle_val & 0b10 == 0b10 {
@@ -988,6 +1057,7 @@ impl<T: PartialEq + Clone + 'static> Property<T> {
                         debug_name.as_str(),
                     );
                 }
+                prop2.set(value);
                 return;
             }
         };
@@ -1091,22 +1161,162 @@ fn property_two_ways_test_binding() {
     assert_eq!(depends.as_ref().get(), 55 + 9 + 8);
 }
 
-mod properties_animations;
-pub use properties_animations::*;
+#[test]
+fn property_two_ways_recurse_from_binding() {
+    let xx = Rc::pin(Property::new(0));
 
-/// Value of the state property
-///
-/// A state is just the current state, but also has information about the previous state and the moment it changed
-#[repr(C)]
-#[derive(Clone, Default, Debug, PartialEq)]
-pub struct StateInfo {
-    /// The current state value
-    pub current_state: i32,
-    /// The previous state
-    pub previous_state: i32,
-    /// The instant in which the state changed last
-    pub change_time: crate::animations::Instant,
+    let p1 = Rc::pin(Property::new(42));
+    let p2 = Rc::pin(Property::new(88));
+    let global = Rc::pin(Property::new(23));
+
+    let done = Rc::new(Cell::new(false));
+    xx.set_binding({
+        let p1 = p1.clone();
+        let p2 = p2.clone();
+        let global = global.clone();
+        let xx_weak = pin_weak::rc::PinWeak::downgrade(xx.clone());
+        move || {
+            if !done.get() {
+                done.set(true);
+                Property::link_two_way(p1.as_ref(), p2.as_ref());
+                let xx = xx_weak.upgrade().unwrap();
+                p1.as_ref().set_binding(move || xx.as_ref().get() + 9);
+            }
+            global.as_ref().get() + 2
+        }
+    });
+    assert_eq!(xx.as_ref().get(), 23 + 2);
+    assert_eq!(p1.as_ref().get(), 23 + 2 + 9);
+    assert_eq!(p2.as_ref().get(), 23 + 2 + 9);
+
+    global.as_ref().set(55);
+    assert_eq!(p1.as_ref().get(), 55 + 2 + 9);
+    assert_eq!(p2.as_ref().get(), 55 + 2 + 9);
+    assert_eq!(xx.as_ref().get(), 55 + 2);
 }
+
+#[test]
+fn property_two_ways_binding_of_two_way_binding_first() {
+    let p1_1 = Rc::pin(Property::new(2));
+    let p1_2 = Rc::pin(Property::new(4));
+    Property::link_two_way(p1_1.as_ref(), p1_2.as_ref());
+
+    assert_eq!(p1_1.as_ref().get(), 4);
+    assert_eq!(p1_2.as_ref().get(), 4);
+
+    let p2 = Rc::pin(Property::new(3));
+    Property::link_two_way(p1_1.as_ref(), p2.as_ref());
+
+    assert_eq!(p1_1.as_ref().get(), 3);
+    assert_eq!(p1_2.as_ref().get(), 3);
+    assert_eq!(p2.as_ref().get(), 3);
+
+    p1_1.set(6);
+
+    assert_eq!(p1_1.as_ref().get(), 6);
+    assert_eq!(p1_2.as_ref().get(), 6);
+    assert_eq!(p2.as_ref().get(), 6);
+
+    p1_2.set(8);
+
+    assert_eq!(p1_1.as_ref().get(), 8);
+    assert_eq!(p1_2.as_ref().get(), 8);
+    assert_eq!(p2.as_ref().get(), 8);
+
+    p2.set(7);
+
+    assert_eq!(p1_1.as_ref().get(), 7);
+    assert_eq!(p1_2.as_ref().get(), 7);
+    assert_eq!(p2.as_ref().get(), 7);
+}
+
+#[test]
+fn property_two_ways_binding_of_two_way_binding_second() {
+    let p1 = Rc::pin(Property::new(2));
+    let p2_1 = Rc::pin(Property::new(3));
+    let p2_2 = Rc::pin(Property::new(5));
+    Property::link_two_way(p2_1.as_ref(), p2_2.as_ref());
+
+    assert_eq!(p2_1.as_ref().get(), 5);
+    assert_eq!(p2_2.as_ref().get(), 5);
+
+    Property::link_two_way(p1.as_ref(), p2_2.as_ref());
+
+    assert_eq!(p1.as_ref().get(), 5);
+    assert_eq!(p2_1.as_ref().get(), 5);
+    assert_eq!(p2_2.as_ref().get(), 5);
+
+    p1.set(6);
+
+    assert_eq!(p1.as_ref().get(), 6);
+    assert_eq!(p2_1.as_ref().get(), 6);
+    assert_eq!(p2_2.as_ref().get(), 6);
+
+    p2_1.set(7);
+
+    assert_eq!(p1.as_ref().get(), 7);
+    assert_eq!(p2_1.as_ref().get(), 7);
+    assert_eq!(p2_2.as_ref().get(), 7);
+
+    p2_2.set(9);
+
+    assert_eq!(p1.as_ref().get(), 9);
+    assert_eq!(p2_1.as_ref().get(), 9);
+    assert_eq!(p2_2.as_ref().get(), 9);
+}
+
+#[test]
+fn property_two_ways_binding_of_two_two_way_bindings() {
+    let p1_1 = Rc::pin(Property::new(2));
+    let p1_2 = Rc::pin(Property::new(4));
+    Property::link_two_way(p1_1.as_ref(), p1_2.as_ref());
+    assert_eq!(p1_1.as_ref().get(), 4);
+    assert_eq!(p1_2.as_ref().get(), 4);
+
+    let p2_1 = Rc::pin(Property::new(3));
+    let p2_2 = Rc::pin(Property::new(5));
+    Property::link_two_way(p2_1.as_ref(), p2_2.as_ref());
+
+    assert_eq!(p2_1.as_ref().get(), 5);
+    assert_eq!(p2_2.as_ref().get(), 5);
+
+    Property::link_two_way(p1_1.as_ref(), p2_2.as_ref());
+
+    assert_eq!(p1_1.as_ref().get(), 5);
+    assert_eq!(p1_2.as_ref().get(), 5);
+    assert_eq!(p2_1.as_ref().get(), 5);
+    assert_eq!(p2_2.as_ref().get(), 5);
+
+    p1_1.set(6);
+    assert_eq!(p1_1.as_ref().get(), 6);
+    assert_eq!(p1_2.as_ref().get(), 6);
+    assert_eq!(p2_1.as_ref().get(), 6);
+    assert_eq!(p2_2.as_ref().get(), 6);
+
+    p1_2.set(8);
+    assert_eq!(p1_1.as_ref().get(), 8);
+    assert_eq!(p1_2.as_ref().get(), 8);
+    assert_eq!(p2_1.as_ref().get(), 8);
+    assert_eq!(p2_2.as_ref().get(), 8);
+
+    p2_1.set(7);
+    assert_eq!(p1_1.as_ref().get(), 7);
+    assert_eq!(p1_2.as_ref().get(), 7);
+    assert_eq!(p2_1.as_ref().get(), 7);
+    assert_eq!(p2_2.as_ref().get(), 7);
+
+    p2_2.set(9);
+    assert_eq!(p1_1.as_ref().get(), 9);
+    assert_eq!(p1_2.as_ref().get(), 9);
+    assert_eq!(p2_1.as_ref().get(), 9);
+    assert_eq!(p2_2.as_ref().get(), 9);
+}
+
+mod change_tracker;
+pub use change_tracker::*;
+mod properties_animations;
+pub use crate::items::StateInfo;
+pub use properties_animations::*;
 
 struct StateInfoBinding<F> {
     dirty_time: Cell<Option<crate::animations::Instant>>,
@@ -1149,16 +1359,16 @@ pub fn set_state_binding(property: Pin<&Property<StateInfo>>, binding: impl Fn()
 
 #[doc(hidden)]
 pub trait PropertyDirtyHandler {
-    fn notify(&self);
+    fn notify(self: Pin<&Self>);
 }
 
 impl PropertyDirtyHandler for () {
-    fn notify(&self) {}
+    fn notify(self: Pin<&Self>) {}
 }
 
 impl<F: Fn()> PropertyDirtyHandler for F {
-    fn notify(&self) {
-        self()
+    fn notify(self: Pin<&Self>) {
+        (self.get_ref())()
     }
 }
 
@@ -1213,6 +1423,10 @@ impl<DirtyHandler: PropertyDirtyHandler> PropertyTracker<DirtyHandler> {
         if CURRENT_BINDING.is_set() {
             CURRENT_BINDING.with(|cur_binding| {
                 if let Some(cur_binding) = cur_binding {
+                    debug_assert!(!core::ptr::eq(
+                        self.holder.dependencies.get() as *const u32,
+                        (&CONSTANT_PROPERTY_SENTINEL) as *const u32,
+                    ));
                     cur_binding.register_self_as_dependency(
                         self.holder.dependencies.as_ptr() as *mut DependencyListHead,
                         #[cfg(slint_debug_property)]
@@ -1271,13 +1485,13 @@ impl<DirtyHandler: PropertyDirtyHandler> PropertyTracker<DirtyHandler> {
     /// Sets the specified callback handler function, which will be called if any
     /// properties that this tracker depends on becomes dirty.
     ///
-    /// The `handmer` `PropertyDirtyHandler` is a trait which is implemented for
+    /// The `handler` `PropertyDirtyHandler` is a trait which is implemented for
     /// any `Fn()` closure
     ///
-    /// Note that the handler will be invoked immediatly when a property is modified or
+    /// Note that the handler will be invoked immediately when a property is modified or
     /// marked as dirty. In particular, the involved property are still in a locked
     /// state and should not be accessed while the handler is run. This function can be
-    /// usefull to mark some work to be done later.
+    /// useful to mark some work to be done later.
     pub fn new_with_dirty_handler(handler: DirtyHandler) -> Self {
         /// Safety: _self must be a pointer to a `BindingHolder<DirtyHandler>`
         unsafe fn mark_dirty<B: PropertyDirtyHandler>(
@@ -1285,7 +1499,7 @@ impl<DirtyHandler: PropertyDirtyHandler> PropertyTracker<DirtyHandler> {
             was_dirty: bool,
         ) {
             if !was_dirty {
-                ((*(_self as *const BindingHolder<B>)).binding).notify();
+                Pin::new_unchecked(&(*(_self as *const BindingHolder<B>)).binding).notify();
             }
         }
 

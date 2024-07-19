@@ -1,3 +1,5 @@
+<!-- Copyright © SixtyFPS GmbH <info@slint.dev> ; SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 -->
+
 # Editor Configuration for Slint
 
 This folder contains extensions or configuration files for different editor to better support .slint files.
@@ -17,29 +19,28 @@ get you started.
 
 ## Kate
 
+Before we start, it's important to note that Kate relies on the presence of syntax highlighting file for the usage of the LSP.
+Therefore, we'll set up the syntax highlighting first.
+
 ### Syntax Highlighting
 
-Kate relies on the presence of syntax highlighting file for the usage of the LSP so we'll setup
-that first. The file [slint.ksyntaxhighlighter.xml](kate/slint.ksyntaxhighlighter.xml) needs to be copied
-in a location where kate can find it. See the [kate documentation](https://docs.kde.org/stable5/en/kate/katepart/highlight.html#katehighlight-xml-format)
+The file [slint.ksyntaxhighlighter.xml](kate/slint.ksyntaxhighlighter.xml) needs to be copied into a location where Kate can find it.
+See the [kate documentation](https://docs.kde.org/stable5/en/kate/katepart/highlight.html#katehighlight-xml-format)
 
 On Linux, this can be done by running this command
 
-```
+```sh
 mkdir -p ~/.local/share/org.kde.syntax-highlighting/syntax/
 wget https://raw.githubusercontent.com/slint-ui/slint/master/editors/kate/slint.ksyntaxhighlighter.xml -O ~/.local/share/org.kde.syntax-highlighting/syntax/slint.xml
 ```
 
 On Windows, download [slint.ksyntaxhighlighter.xml](./slint.ksyntaxhighlighter.xml) into `%USERPROFILE%\AppData\Local\org.kde.syntax-highlighting\syntax`
 
-
 ### LSP
 
-To install the Slint Language server, check the [LSP README.md](../tools/lsp/README.md).
+After setting up the syntax highlighting, you can now install the Slint Language server. Check the [LSP README.md](../tools/lsp/README.md) for instructions.
 
-Then go to *Settings > Configure Kate*. In the *Plugins* section, enable the *LSP-Client* plugin.
-This will add a *LSP Client* section in the settings dialog. In that *LSP Client* section,
-go to the *User Server Settings*, and  enter the following in the text area:
+Once it is installed, go to *Settings > Configure Kate*. In the *Plugins* section, enable the *LSP-Client* plugin. This will add a *LSP Client* section in the settings dialog. In that *LSP Client* section, go to the *User Server Settings*, and  enter the following in the text area:
 
 ```json
 {
@@ -53,8 +54,13 @@ go to the *User Server Settings*, and  enter the following in the text area:
 }
 ```
 
-To show the preview, right click on the name definition of the component you want to preview
-(eg. `MainWindow` in `MainWindow := Window {`). Then in the menu, select *LSP Client > Code Action > Show Preview*.
+To preview a component, first, position your cursor on the name definition of the component you want to preview
+(for instance, `MainWindow` in `component MainWindow inherits Window {`).
+Then, activate the *Show Preview* code action.
+You can do this by using the Alt+Enter shortcut to bring up the code action menu,
+or find it in the menu bar at *LSP Client > Code Action > Show Preview*
+
+<img src="https://github.com/slint-ui/slint/assets/959326/e2e6f1a8-d3b8-46a1-87b3-0273c4a40cfc" width="75%" height="75%">
 
 
 ## QtCreator
@@ -130,9 +136,9 @@ exists under the `language` server section:
 
 Follow step 1. of the Vim section to get support for `.slint` files.
 
-The easist way to use the language server itself in Neovim is via the `neovim/lsp-config`
+The easist way to use the language server itself in Neovim is via the `neovim/nvim-lspconfig`
 and `williamboman/nvim-lsp-installer` plugins. Once these are installed
-you can run `:LspInstallInfo` to install the `slint_lsp` binary (on Windows and Linux).
+you can run `:LspInstall slint_lsp` to install the lsp binary (on Windows, Linux, and macOS).
 
 Once the slint_lsp language server is installed and running, you can triggger the live preview
 via the code actions. Unfortunately there are several ways to trigger these, so please check your
@@ -146,6 +152,7 @@ for syntax highlighting and indentation support.
 To install the Slint Language server, check the [LSP README.md](../tools/lsp/README.md).
 
 To setup the LSP:
+
 1. Make sure the slint language server is installed
 2. Using Package Control in Sublime Text, install the LSP package (sublimelsp/LSP)
 3. Download the Slint syntax highlighting files into your User Package folder,
@@ -154,9 +161,9 @@ To setup the LSP:
    https://raw.githubusercontent.com/slint-ui/slint/master/editors/sublime/Slint.tmPreferences
 4. Download the LSP package settings file into your User Package folder:
    https://raw.githubusercontent.com/slint-ui/slint/master/editors/sublime/LSP.sublime-settings
-5. Modify the slint-lsp command path in `LSP.sublime-settings` to point to the cargo instalation path in your home folder (**Replace YOUR_USER by your username**):
+5. Modify the slint-lsp command path in `LSP.sublime-settings` to point to the cargo installation path in your home folder (**Replace YOUR_USER by your username**):
    `"command": ["/home/YOUR_USER/.cargo/bin/slint-lsp"]`
-6. Run "LSP: Enable Language Server Globally" or "LSP: Enable Lanuage Server in Project" from Sublime's Command Palette to allow the server to start.
+6. Run "LSP: Enable Language Server Globally" or "LSP: Enable Language Server in Project" from Sublime's Command Palette to allow the server to start.
 7. Open a .slint file - if the server starts its name will be in the left side of the status bar.
 
 In order to **preview a component**, when you have a .slint file open, place your cursor to
@@ -164,14 +171,20 @@ the name of the component you would like to preview and select the "Show preview
 will appear on the right of the editor pane.
 
 ## JetBrains IDE
-Tested with: CLion 2022.1 (on linux)
 
-*Note: This may/should work for other JetBrains-products also. If you test it please add your results to the above list.*
+https://github.com/kizeevov/slint-idea-plugin has a plugin for the Intellij
+platform.
 
-### LSP Support
-1. Install the "LSP Support"-plugin (https://plugins.jetbrains.com/plugin/10209-lsp-support). The docs can be found at https://github.com/gtache/intellij-lsp
-2. Install slint-lsp `cargo install slint-lsp`
-4. Go to File -> Settings -> Languages & Frameworks -> Language Server Protocol -> Server Definitions
-5. Choose "Executable". In "Extension" put "slint" and set "Path" to "/home/\<username\>/.cargo/bin/slint-lsp"
-6. Press the "+"-button
-7. Restart IDE
+_Note: This plugin is developed by @kizeevov._
+
+## Zed
+
+[Zed](https://zed.dev) is a high-performance, multiplayer code editor. Luke Jones maintains
+the [zed-slint extension](https://gitlab.com/flukejones/zed-slint), that integrates the latest
+release of the [slint language server](../tools/lsp/README.md) into Zed, offering code completion
+and syntax highlighting. Install the extension via the following steps:
+
+1. Open the extensions tab via the Zed -> Extensions menu.
+2. In the search field, enter "slint".
+3. Click on "Install" for the "Slint" extension.
+

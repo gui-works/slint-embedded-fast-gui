@@ -1,13 +1,13 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 use chrono::NaiveDate;
 use slint::SharedString;
 
-slint::slint!(import { Booker } from "booker.slint";);
+slint::slint!(export { Booker } from "booker.slint";);
 
 pub fn main() {
-    let booker = Booker::new();
+    let booker = Booker::new().unwrap();
     booker.on_validate_date(|date: SharedString| {
         NaiveDate::parse_from_str(date.as_str(), "%d.%m.%Y").is_ok()
     });
@@ -23,5 +23,5 @@ pub fn main() {
         date1 <= date2
     });
 
-    booker.run();
+    booker.run().unwrap();
 }

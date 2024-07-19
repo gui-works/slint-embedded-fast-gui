@@ -1,0 +1,203 @@
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+/// Basic information on a known component
+export struct ComponentItem {
+    name: string,
+    index: int,
+    defined-at: string,
+    pretty-location: string,
+    is-user-defined: bool,
+    is-currently-shown: bool,
+    is-exported: bool,
+}
+
+/// A `category` with a lost of `ComponentItem`s that belong into it.
+///
+/// Fiel url is either an empty string or a URL to some document
+export struct ComponentListItem {
+    category: string,
+    file_url: string,
+    components: [ComponentItem]
+}
+
+/// Some `Diagnostics` as raised by the compiler
+export struct Diagnostics {
+    level: string,
+    message: string,
+    url: string,
+    line: int,
+    column: int,
+}
+
+/// What kind of layout we are working with
+export enum LayoutKind {
+    None,
+    Horizontal,
+    Vertical,
+    Grid,
+}
+
+/// A rectangular region that is selected
+struct SelectionRectangle {
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+}
+
+/// A `Selection`
+export struct Selection {
+    geometry: SelectionRectangle,
+    layout-data: LayoutKind,
+    is-primary: bool,
+    is-moveable: bool,
+    is-resizable: bool,
+}
+
+/// A mark showing where an element will show up when dropped into the current location
+export struct DropMark {
+    x1: length,
+    y1: length,
+    x2: length,
+    y2: length,
+}
+
+/// A Range in a source
+export struct Range {
+    start: int,
+    end: int,
+}
+
+/// Data about the property value for use in "simple" mode
+export struct SimpleValueData {
+    widget: string,
+    visual-items: [string],
+    meta-data: [string],
+}
+
+/// Important Ranges in the property definition
+///
+/// The URL and version is the same as in the Element it belongs to
+export struct PropertyDefinition {
+    definition-range: Range,
+    selection-range: Range,
+    expression-range: Range,
+    expression-value: string,
+}
+
+/// The Property Declaration
+export struct PropertyDeclaration {
+    source-uri: string,
+    source-version: int,
+    range: Range,
+}
+
+/// Information on one Property
+export struct PropertyInformation {
+    name: string,
+    type-name: string,
+    declared-at: PropertyDeclaration,
+    defined-at: PropertyDefinition,
+    simple-value: SimpleValueData,
+}
+
+/// Information on one Property
+export struct PropertyGroup {
+    group-name: string,
+    properties: [PropertyInformation],
+}
+
+/// Information on an Element a Property belongs to
+export struct ElementInformation {
+    id: string,
+    type-name: string,
+    source-uri: string,
+    source-version: int,
+    range: Range,
+
+    properties: [PropertyGroup],
+}
+
+export global Api {
+    // # Properties
+    // ## General preview state:
+    in property <bool> experimental: false; // experimental features are available
+    in property <bool> show-preview-ui: true; // enable editing mode
+    in-out property <bool> design-mode; // Design-mode engaged!
+    
+    // ## Component Data for ComponentList:
+    in property <[ComponentListItem]> known-components; // All the components
+    out property <ComponentItem> visible-component; // The component currently viewed
+
+    // ## Diagnostics and other Status messages
+    in property <[Diagnostics]> diagnostics; // Compiler diagnostics
+    in property <string> status-text; // status message text
+
+    // ## Style:
+    in property <[string]> known-styles; // All the known styles
+    in-out property <string> current-style; // The current style
+
+    // ## History Navigation    
+    in property <bool> can-navigate-back: false;
+    in property <bool> can-navigate-forward: false;
+
+    // ## Drawing Area
+    in property <[Selection]> selections; // Borders around things
+    in-out property <DropMark> drop-mark;
+    in property <component-factory> preview-area; // The actual preview
+
+    // ## Property Editor
+    in property <ElementInformation> current-element;
+
+    // # Callbacks
+
+    // ## Style:
+    callback style-changed();
+
+    // ## Histroy Navigation
+    callback navigate(int);
+
+    // ## Component life-cycle:
+
+    // Create a new componnet
+    callback add-new-component();
+
+    // Add an existing component
+    pure callback can-drop(/* component-index */ int, /* x */ length, /* y */ length, /* on-drop-area */ bool) -> bool;
+    callback drop(/* component-index */ int, /* x */ length, /* y */ length);
+    
+    callback rename-component(string/* old-name */, string/* defined-at */, string/* new-name */);
+
+    callback selected-element-can-move-to(/* x */ length, /* y */ length, /* mouse-x */ length, /* mouse-y */ length) -> bool;
+    callback selected-element-move(/* x */ length, /* y */ length, /* mouse-x */ length, /* mouse-y */ length);
+
+    callback selected-element-resize(/* x */ length, /* y */ length, /* width */ length, /* height */ length);
+
+    callback selected-element-delete();
+
+    // ## Element selection:
+    callback select-at(/* x */ length, /* y */ length, /* enter-component? */ bool);
+    callback select-behind(/* x */ length, /* y */ length, /* enter-component* */ bool, /* reverse */ bool);
+    callback reselect();
+    callback unselect();
+
+    // ## Change Editor:    
+
+    // Show a conponent in the editor
+    callback show-component(/* name */ string, /* url */ string);
+    // Show a position consisting of `line` and `column` in a `file` in the editor
+    callback show-document(/* file */ string, /* line */ int, /* column */ int);
+    // Show a position consisting of `line` and `column` in a `file` in the editor
+    callback show-document-offset-range(/* url */ string, /* start_offset */ int, /* end_offset */ int);
+
+    // ## Drawing Area
+    // Preview some other component
+    callback show-preview-for(string/* name */, string/*url*/);
+
+    // ## Property Editor
+    pure callback test-binding(/* element-url */ string, /* element-version */ int, /* element-offset */ int, /* property-name */ string, /* property-value */ string) -> bool;
+    pure callback test-simple-binding(/* element-url */ string, /* element-version */ int, /* element-offset */ int, /* property-name */ string, /* simple-property-value */ [string]) -> bool;
+    callback set-binding(/* element-url */ string, /* element-version */ int, /* element-offset */ int, /* property-name */ string, /* property-value */ string);
+    callback set-simple-binding(/* element-url */ string, /* element-version */ int, /* element-offset */ int, /* property-name */ string, /* simple-property-value */ [string]);
+}

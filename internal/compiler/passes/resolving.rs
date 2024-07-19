@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Passes that resolve the property binding expression.
 //!
@@ -15,6 +15,7 @@ use crate::lookup::{LookupCtx, LookupObject, LookupResult};
 use crate::object_tree::*;
 use crate::parser::{identifier_text, syntax_nodes, NodeOrToken, SyntaxKind, SyntaxNode};
 use crate::typeregister::TypeRegister;
+use core::num::IntErrorKind;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -30,7 +31,6 @@ fn resolve_expression(
     scope: &ComponentScope,
     type_register: &TypeRegister,
     type_loader: &crate::typeloader::TypeLoader,
-    two_ways: &mut Vec<(String, NamedReference)>,
     diag: &mut BuildDiagnostics,
 ) {
     if let Expression::Uncompiled(node) = expr {
@@ -47,9 +47,9 @@ fn resolve_expression(
 
         let new_expr = match node.kind() {
             SyntaxKind::CallbackConnection => {
-                //FIXME: proper callback support (node is a codeblock)
                 Expression::from_callback_connection(node.clone().into(), &mut lookup_ctx)
             }
+            SyntaxKind::Function => Expression::from_function(node.clone().into(), &mut lookup_ctx),
             SyntaxKind::Expression => {
                 //FIXME again: this happen for non-binding expression (i.e: model)
                 Expression::from_expression_node(node.clone().into(), &mut lookup_ctx)
@@ -58,19 +58,16 @@ fn resolve_expression(
             SyntaxKind::BindingExpression => {
                 Expression::from_binding_expression_node(node.clone(), &mut lookup_ctx)
             }
+            SyntaxKind::PropertyChangedCallback => Expression::from_codeblock_node(
+                syntax_nodes::PropertyChangedCallback::from(node.clone()).CodeBlock(),
+                &mut lookup_ctx,
+            ),
             SyntaxKind::TwoWayBinding => {
-                if lookup_ctx.property_type == Type::Invalid {
-                    // An attempt to resolve this already failed when trying to resolve the property type
-                    assert!(diag.has_error());
-                    return;
-                }
-                if let Some(nr) = resolve_two_way_binding(node.clone().into(), &mut lookup_ctx) {
-                    two_ways.push((property_name.unwrap().into(), nr));
-                }
+                assert!(diag.has_errors(), "Two way binding should have been resolved already  (property: {property_name:?})");
                 Expression::Invalid
             }
             _ => {
-                debug_assert!(diag.has_error());
+                debug_assert!(diag.has_errors());
                 Expression::Invalid
             }
         };
@@ -83,6 +80,8 @@ pub fn resolve_expressions(
     type_loader: &crate::typeloader::TypeLoader,
     diag: &mut BuildDiagnostics,
 ) {
+    resolve_two_way_bindings(doc, &doc.local_registry, diag);
+
     for component in doc.inner_components.iter() {
         let scope = ComponentScope(vec![]);
 
@@ -90,19 +89,20 @@ pub fn resolve_expressions(
             let mut new_scope = scope.clone();
             let mut is_repeated = elem.borrow().repeated.is_some();
             new_scope.0.push(elem.clone());
-            let mut two_ways = vec![];
             visit_element_expressions(elem, |expr, property_name, property_type| {
                 if is_repeated {
                     // The first expression is always the model and it needs to be resolved with the parent scope
-                    debug_assert!(elem.borrow().repeated.as_ref().is_none()); // should be none because it is taken by the visit_element_expressions function
+                    debug_assert!(matches!(
+                        elem.borrow().repeated.as_ref().unwrap().model,
+                        Expression::Invalid
+                    )); // should be Invalid because it is taken by the visit_element_expressions function
                     resolve_expression(
                         expr,
                         property_name,
                         property_type(),
-                        &scope,
+                        scope,
                         &doc.local_registry,
                         type_loader,
-                        &mut two_ways,
                         diag,
                     );
                     is_repeated = false;
@@ -114,17 +114,23 @@ pub fn resolve_expressions(
                         &new_scope,
                         &doc.local_registry,
                         type_loader,
-                        &mut two_ways,
                         diag,
                     )
                 }
             });
-            for (prop, nr) in two_ways {
-                elem.borrow().bindings.get(&prop).unwrap().borrow_mut().two_way_bindings.push(nr);
-            }
             new_scope
         })
     }
+}
+
+/// To be used in [`Expression::from_qualified_name_node`] to specify if the lookup is performed
+/// for two ways binding (which happens before the models and other expressions are resolved),
+/// or after that.
+#[derive(Default)]
+enum LookupPhase {
+    #[default]
+    UnspecifiedPhase,
+    ResolvingTwoWayBindings,
 }
 
 impl Expression {
@@ -140,22 +146,29 @@ impl Expression {
             .unwrap_or(Self::Invalid);
         if ctx.property_type == Type::LogicalLength && e.ty() == Type::Percent {
             // See if a conversion from percentage to length is allowed
-            const RELATIVE_TO_PARENT_PROPERTIES: [&str; 2] = ["width", "height"];
+            const RELATIVE_TO_PARENT_PROPERTIES: &[&str] =
+                &["width", "height", "preferred-width", "preferred-height"];
             let property_name = ctx.property_name.unwrap_or_default();
             if RELATIVE_TO_PARENT_PROPERTIES.contains(&property_name) {
                 return e;
             } else {
                 ctx.diag.push_error(
                     format!(
-                        "Automatic conversion from percentage to length is only possible for the properties {}",
-                        RELATIVE_TO_PARENT_PROPERTIES.join(" and ")
+                        "Automatic conversion from percentage to length is only possible for the following properties: {}",
+                        RELATIVE_TO_PARENT_PROPERTIES.join(", ")
                     ),
                     &node
                 );
                 return Expression::Invalid;
             }
         };
-        e.maybe_convert_to(ctx.property_type.clone(), &node, ctx.diag)
+        if !matches!(ctx.property_type, Type::Callback { .. } | Type::Function { .. }) {
+            e.maybe_convert_to(ctx.property_type.clone(), &node, ctx.diag)
+        } else {
+            // Binding to a callback or function shouldn't happen
+            assert!(ctx.diag.has_errors());
+            e
+        }
     }
 
     fn from_codeblock_node(node: syntax_nodes::CodeBlock, ctx: &mut LookupCtx) -> Expression {
@@ -202,7 +215,11 @@ impl Expression {
         ctx: &mut LookupCtx,
     ) -> Expression {
         let return_type = ctx.return_type().clone();
-        Expression::ReturnStatement(node.Expression().map(|n| {
+        let e = node.Expression();
+        if e.is_none() && !matches!(return_type, Type::Void | Type::Invalid) {
+            ctx.diag.push_error(format!("Must return a value of type '{return_type}'"), &node);
+        }
+        Expression::ReturnStatement(e.map(|n| {
             Box::new(Self::from_expression_node(n, ctx).maybe_convert_to(
                 return_type,
                 &node,
@@ -224,14 +241,28 @@ impl Expression {
         )
     }
 
+    fn from_function(node: syntax_nodes::Function, ctx: &mut LookupCtx) -> Expression {
+        ctx.arguments = node
+            .ArgumentDeclaration()
+            .map(|x| identifier_text(&x.DeclaredIdentifier()).unwrap_or_default())
+            .collect();
+        Self::from_codeblock_node(node.CodeBlock(), ctx).maybe_convert_to(
+            ctx.return_type().clone(),
+            &node,
+            ctx.diag,
+        )
+    }
+
     fn from_expression_node(node: syntax_nodes::Expression, ctx: &mut LookupCtx) -> Self {
         node.Expression()
             .map(|n| Self::from_expression_node(n, ctx))
             .or_else(|| node.AtImageUrl().map(|n| Self::from_at_image_url_node(n, ctx)))
             .or_else(|| node.AtGradient().map(|n| Self::from_at_gradient(n, ctx)))
+            .or_else(|| node.AtTr().map(|n| Self::from_at_tr(n, ctx)))
             .or_else(|| {
                 node.QualifiedName().map(|n| {
-                    let exp = Self::from_qualified_name_node(n.clone(), ctx);
+                    let exp =
+                        Self::from_qualified_name_node(n.clone(), ctx, LookupPhase::default());
                     if matches!(exp.ty(), Type::Function { .. } | Type::Callback { .. }) {
                         ctx.diag.push_error(
                             format!(
@@ -312,29 +343,67 @@ impl Expression {
             return Expression::ImageReference {
                 resource_ref: ImageReference::None,
                 source_location: Some(node.to_source_location()),
+                nine_slice: None,
             };
         }
 
         let absolute_source_path = {
             let path = std::path::Path::new(&s);
-            if path.is_absolute() || s.starts_with("http://") || s.starts_with("https://") {
+            if crate::pathutils::is_absolute(path) {
                 s
             } else {
                 ctx.type_loader
-                    .map(|loader| {
-                        loader
-                            .resolve_import_path(Some(&(*node).clone().into()), &s)
-                            .0
-                            .to_string_lossy()
-                            .to_string()
+                    .and_then(|loader| {
+                        loader.resolve_import_path(Some(&(*node).clone().into()), &s)
                     })
-                    .unwrap_or(s)
+                    .map(|i| i.0.to_string_lossy().to_string())
+                    .unwrap_or_else(|| {
+                        crate::pathutils::join(
+                            &crate::pathutils::dirname(node.source_file.path()),
+                            path,
+                        )
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or(s.clone())
+                    })
+            }
+        };
+
+        let nine_slice = node
+            .children_with_tokens()
+            .filter_map(|n| n.into_token())
+            .filter(|t| t.kind() == SyntaxKind::NumberLiteral)
+            .map(|arg| {
+                arg.text().parse().unwrap_or_else(|err: std::num::ParseIntError| {
+                    match err.kind() {
+                        IntErrorKind::PosOverflow | IntErrorKind::NegOverflow => {
+                            ctx.diag.push_error("Number too big".into(), &arg)
+                        }
+                        IntErrorKind::InvalidDigit => ctx.diag.push_error(
+                            "Border widths of a nine-slice can't have units".into(),
+                            &arg,
+                        ),
+                        _ => ctx.diag.push_error("Cannot parse number literal".into(), &arg),
+                    };
+                    0u16
+                })
+            })
+            .collect::<Vec<u16>>();
+
+        let nine_slice = match nine_slice.as_slice() {
+            [x] => Some([*x, *x, *x, *x]),
+            [x, y] => Some([*x, *y, *x, *y]),
+            [x, y, z, w] => Some([*x, *y, *z, *w]),
+            [] => None,
+            _ => {
+                assert!(ctx.diag.has_errors());
+                None
             }
         };
 
         Expression::ImageReference {
             resource_ref: ImageReference::AbsolutePath(absolute_source_path),
             source_location: Some(node.to_source_location()),
+            nine_slice,
         }
     }
 
@@ -467,9 +536,12 @@ impl Expression {
             let (before, rest) = stops.split_at_mut(start);
             let pos =
                 rest.iter().position(|s| !matches!(s.1, Expression::Invalid)).unwrap_or(rest.len());
-            if pos > 0 {
+            if pos > 0 && pos < rest.len() {
                 let (middle, after) = rest.split_at_mut(pos);
-                let begin = &before.last().expect("The first should never be invalid").1;
+                let begin = before
+                    .last()
+                    .map(|s| &s.1)
+                    .unwrap_or(&Expression::NumberLiteral(1., Unit::None));
                 let end = &after.first().expect("The last should never be invalid").1;
                 for (i, (_, e)) in middle.iter_mut().enumerate() {
                     debug_assert!(matches!(e, Expression::Invalid));
@@ -502,8 +574,171 @@ impl Expression {
         }
     }
 
+    fn from_at_tr(node: syntax_nodes::AtTr, ctx: &mut LookupCtx) -> Expression {
+        let Some(string) = node
+            .child_text(SyntaxKind::StringLiteral)
+            .and_then(|s| crate::literals::unescape_string(&s))
+        else {
+            ctx.diag.push_error("Cannot parse string literal".into(), &node);
+            return Expression::Invalid;
+        };
+        let context = node.TrContext().map(|n| {
+            n.child_text(SyntaxKind::StringLiteral)
+                .and_then(|s| crate::literals::unescape_string(&s))
+                .unwrap_or_else(|| {
+                    ctx.diag.push_error("Cannot parse string literal".into(), &n);
+                    Default::default()
+                })
+        });
+        let plural = node.TrPlural().map(|pl| {
+            let s = pl
+                .child_text(SyntaxKind::StringLiteral)
+                .and_then(|s| crate::literals::unescape_string(&s))
+                .unwrap_or_else(|| {
+                    ctx.diag.push_error("Cannot parse string literal".into(), &pl);
+                    Default::default()
+                });
+            let n = pl.Expression();
+            let expr = Expression::from_expression_node(n.clone(), ctx).maybe_convert_to(
+                Type::Int32,
+                &n,
+                ctx.diag,
+            );
+            (s, expr)
+        });
+
+        let domain = ctx
+            .type_loader
+            .and_then(|tl| tl.compiler_config.translation_domain.clone())
+            .unwrap_or_default();
+
+        let subs = node.Expression().map(|n| {
+            Expression::from_expression_node(n.clone(), ctx).maybe_convert_to(
+                Type::String,
+                &n,
+                ctx.diag,
+            )
+        });
+        let values = subs.collect::<Vec<_>>();
+
+        // check format string
+        {
+            let mut arg_idx = 0;
+            let mut pos_max = 0;
+            let mut pos = 0;
+            let mut has_n = false;
+            while let Some(mut p) = string[pos..].find(['{', '}']) {
+                if string.len() - pos < p + 1 {
+                    ctx.diag.push_error(
+                        "Unescaped trailing '{' in format string. Escape '{' with '{{'".into(),
+                        &node,
+                    );
+                    break;
+                }
+                p += pos;
+
+                // Skip escaped }
+                if string.get(p..=p) == Some("}") {
+                    if string.get(p + 1..=p + 1) == Some("}") {
+                        pos = p + 2;
+                        continue;
+                    } else {
+                        ctx.diag.push_error(
+                            "Unescaped '}' in format string. Escape '}' with '}}'".into(),
+                            &node,
+                        );
+                        break;
+                    }
+                }
+
+                // Skip escaped {
+                if string.get(p + 1..=p + 1) == Some("{") {
+                    pos = p + 2;
+                    continue;
+                }
+
+                // Find the argument
+                let end = if let Some(end) = string[p..].find('}') {
+                    end + p
+                } else {
+                    ctx.diag.push_error(
+                        "Unterminated placeholder in format string. '{' must be escaped with '{{'"
+                            .into(),
+                        &node,
+                    );
+                    break;
+                };
+                let argument = &string[p + 1..end];
+                if argument.is_empty() {
+                    arg_idx += 1;
+                } else if let Ok(n) = argument.parse::<u16>() {
+                    pos_max = pos_max.max(n as usize + 1);
+                } else if argument == "n" {
+                    has_n = true;
+                    if plural.is_none() {
+                        ctx.diag.push_error(
+                            "`{n}` placeholder can only be found in plural form".into(),
+                            &node,
+                        );
+                    }
+                } else {
+                    ctx.diag
+                        .push_error("Invalid '{...}' placeholder in format string. The placeholder must be a number, or braces must be escaped with '{{' and '}}'".into(), &node);
+                    break;
+                };
+                pos = end + 1;
+            }
+            if arg_idx > 0 && pos_max > 0 {
+                ctx.diag.push_error(
+                    "Cannot mix positional and non-positional placeholder in format string".into(),
+                    &node,
+                );
+            } else if arg_idx > values.len() || pos_max > values.len() {
+                let num = arg_idx.max(pos_max);
+                let note = if !has_n && plural.is_some() {
+                    ". Note: use `{n}` for the argument after '%'"
+                } else {
+                    ""
+                };
+                ctx.diag.push_error(
+                    format!("Format string contains {num} placeholders, but only {} extra arguments were given{note}", values.len()),
+                    &node,
+                );
+            }
+        }
+
+        let plural = plural.unwrap_or((String::new(), Expression::NumberLiteral(1., Unit::None)));
+
+        let get_component_name = || {
+            ctx.component_scope
+                .first()
+                .and_then(|e| e.borrow().enclosing_component.upgrade())
+                .map(|c| c.id.clone())
+        };
+
+        Expression::FunctionCall {
+            function: Box::new(Expression::BuiltinFunctionReference(
+                BuiltinFunction::Translate,
+                Some(node.to_source_location()),
+            )),
+            arguments: vec![
+                Expression::StringLiteral(string),
+                Expression::StringLiteral(context.or_else(get_component_name).unwrap_or_default()),
+                Expression::StringLiteral(domain),
+                Expression::Array { element_ty: Type::String, values },
+                plural.1,
+                Expression::StringLiteral(plural.0),
+            ],
+            source_location: Some(node.to_source_location()),
+        }
+    }
+
     /// Perform the lookup
-    fn from_qualified_name_node(node: syntax_nodes::QualifiedName, ctx: &mut LookupCtx) -> Self {
+    fn from_qualified_name_node(
+        node: syntax_nodes::QualifiedName,
+        ctx: &mut LookupCtx,
+        phase: LookupPhase,
+    ) -> Self {
         let mut it = node
             .children_with_tokens()
             .filter(|n| n.kind() == SyntaxKind::Identifier)
@@ -513,7 +748,7 @@ impl Expression {
             first
         } else {
             // There must be at least one member (parser should ensure that)
-            debug_assert!(ctx.diag.has_error());
+            debug_assert!(ctx.diag.has_errors());
             return Self::Invalid;
         };
 
@@ -573,6 +808,14 @@ impl Expression {
                 }
                 r
             }
+            LookupResult::Expression {
+                expression: r @ Expression::FunctionReference(..), ..
+            } => {
+                if let Some(x) = it.next() {
+                    ctx.diag.push_error("Cannot access fields of a function".into(), &x)
+                }
+                r
+            }
             LookupResult::Enumeration(enumeration) => {
                 if let Some(next_identifier) = it.next() {
                     match enumeration
@@ -597,6 +840,16 @@ impl Expression {
                     ctx.diag.push_error("Cannot take reference to an enum".to_string(), &node);
                     Expression::Invalid
                 }
+            }
+            LookupResult::Expression {
+                expression: Expression::RepeaterModelReference { .. },
+                ..
+            } if matches!(phase, LookupPhase::ResolvingTwoWayBindings) => {
+                ctx.diag.push_error(
+                    "Two-way bindings to model data is not supported yet".to_string(),
+                    &node,
+                );
+                Expression::Invalid
             }
             LookupResult::Expression { expression, .. } => maybe_lookup_object(expression, it, ctx),
             LookupResult::Namespace(_) => {
@@ -638,13 +891,15 @@ impl Expression {
         let function = sub_expr.next().map_or(Self::Invalid, |n| {
             // Treat the QualifiedName separately so we can catch the uses of uncalled signal
             n.QualifiedName()
-                .map(|qn| Self::from_qualified_name_node(qn, ctx))
+                .map(|qn| Self::from_qualified_name_node(qn, ctx, LookupPhase::default()))
                 .unwrap_or_else(|| Self::from_expression_node(n, ctx))
         });
 
         let sub_expr = sub_expr.map(|n| {
             (Self::from_expression_node(n.clone(), ctx), Some(NodeOrToken::from((*n).clone())))
         });
+
+        let mut adjust_arg_count = 0;
 
         let function = match function {
             Expression::BuiltinMacroReference(mac, n) => {
@@ -653,6 +908,7 @@ impl Expression {
             }
             Expression::MemberFunction { base, base_node, member } => {
                 arguments.push((*base, base_node));
+                adjust_arg_count = 1;
                 member
             }
             _ => Box::new(function),
@@ -665,8 +921,8 @@ impl Expression {
                     ctx.diag.push_error(
                         format!(
                             "The callback or function expects {} arguments, but {} are provided",
-                            args.len(),
-                            arguments.len()
+                            args.len() - adjust_arg_count,
+                            arguments.len() - adjust_arg_count,
                         ),
                         &node,
                     );
@@ -678,6 +934,10 @@ impl Expression {
                         .map(|((e, node), ty)| e.maybe_convert_to(ty.clone(), &node, ctx.diag))
                         .collect()
                 }
+            }
+            Type::Invalid => {
+                debug_assert!(ctx.diag.has_errors());
+                arguments.into_iter().map(|x| x.0).collect()
             }
             _ => {
                 ctx.diag.push_error("The expression is not a function".into(), &node);
@@ -714,12 +974,7 @@ impl Expression {
             .or_else(|| node.child_token(SyntaxKind::Equal).and(Some('=')))
             .unwrap_or('_');
         if lhs.ty() != Type::Invalid {
-            if let Err(msg) = lhs.try_set_rw() {
-                ctx.diag.push_error(
-                    format!("{} {}", if op == '=' { "Assignment" } else { "Self assignment" }, msg),
-                    &node,
-                );
-            }
+            lhs.try_set_rw(ctx, if op == '=' { "Assignment" } else { "Self assignment" }, &node);
         }
         let ty = lhs.ty();
         let expected_ty = match op {
@@ -742,6 +997,7 @@ impl Expression {
             lhs: Box::new(lhs),
             rhs: Box::new(rhs.maybe_convert_to(expected_ty, &rhs_n, ctx.diag)),
             op,
+            node: Some(NodeOrToken::Node(node.into())),
         }
     }
 
@@ -844,14 +1100,37 @@ impl Expression {
         let exp_n = node.Expression();
         let exp = Self::from_expression_node(exp_n, ctx);
 
-        Expression::UnaryOp {
-            sub: Box::new(exp),
-            op: None
-                .or_else(|| node.child_token(SyntaxKind::Plus).and(Some('+')))
-                .or_else(|| node.child_token(SyntaxKind::Minus).and(Some('-')))
-                .or_else(|| node.child_token(SyntaxKind::Bang).and(Some('!')))
-                .unwrap_or('_'),
-        }
+        let op = None
+            .or_else(|| node.child_token(SyntaxKind::Plus).and(Some('+')))
+            .or_else(|| node.child_token(SyntaxKind::Minus).and(Some('-')))
+            .or_else(|| node.child_token(SyntaxKind::Bang).and(Some('!')))
+            .unwrap_or('_');
+
+        let exp = match op {
+            '!' => exp.maybe_convert_to(Type::Bool, &node, ctx.diag),
+            '+' | '-' => {
+                let ty = exp.ty();
+                if ty.default_unit().is_none()
+                    && !matches!(
+                        ty,
+                        Type::Int32
+                            | Type::Float32
+                            | Type::Percent
+                            | Type::UnitProduct(..)
+                            | Type::Invalid
+                    )
+                {
+                    ctx.diag.push_error(format!("Unary '{op}' not supported on {ty}"), &node);
+                }
+                exp
+            }
+            _ => {
+                assert!(ctx.diag.has_errors());
+                exp
+            }
+        };
+
+        Expression::UnaryOp { sub: Box::new(exp), op }
     }
 
     fn from_conditional_expression_node(
@@ -888,7 +1167,7 @@ impl Expression {
         let index_expr = Self::from_expression_node(index_expr_n.clone(), ctx).maybe_convert_to(
             Type::Int32,
             &index_expr_n,
-            &mut ctx.diag,
+            ctx.diag,
         );
 
         let ty = array_expr.ty();
@@ -915,6 +1194,7 @@ impl Expression {
             fields: values.iter().map(|(k, v)| (k.clone(), v.ty())).collect(),
             name: None,
             node: None,
+            rust_attributes: None,
         };
         Expression::Struct { ty, values }
     }
@@ -923,9 +1203,11 @@ impl Expression {
         let mut values: Vec<Expression> =
             node.Expression().map(|e| Expression::from_expression_node(e, ctx)).collect();
 
-        // FIXME: what's the type of an empty array ?
-        let element_ty =
-            Self::common_target_type_for_type_list(values.iter().map(|expr| expr.ty()));
+        let element_ty = if values.is_empty() {
+            Type::Void
+        } else {
+            Self::common_target_type_for_type_list(values.iter().map(|expr| expr.ty()))
+        };
 
         for e in values.iter_mut() {
             *e = core::mem::replace(e, Expression::Invalid).maybe_convert_to(
@@ -963,7 +1245,7 @@ impl Expression {
     /// This function is used to find a type that's suitable for casting each instance of a bunch of expressions
     /// to a type that captures most aspects. For example for an array of object literals the result is a merge of
     /// all seen fields.
-    fn common_target_type_for_type_list(types: impl Iterator<Item = Type>) -> Type {
+    pub fn common_target_type_for_type_list(types: impl Iterator<Item = Type>) -> Type {
         types.fold(Type::Invalid, |target_type, expr_ty| {
             if target_type == expr_ty {
                 target_type
@@ -976,8 +1258,14 @@ impl Expression {
                             fields: mut result_fields,
                             name: result_name,
                             node: result_node,
+                            rust_attributes,
                         },
-                        Type::Struct { fields: elem_fields, name: elem_name, node: elem_node },
+                        Type::Struct {
+                            fields: elem_fields,
+                            name: elem_name,
+                            node: elem_node,
+                            rust_attributes: derived,
+                        },
                     ) => {
                         for (elem_name, elem_ty) in elem_fields.into_iter() {
                             match result_fields.entry(elem_name) {
@@ -989,7 +1277,7 @@ impl Expression {
                                 ) => {
                                     *existing_field.get_mut() =
                                         Self::common_target_type_for_type_list(
-                                            [existing_field.get().clone(), elem_ty].iter().cloned(),
+                                            [existing_field.get().clone(), elem_ty].into_iter(),
                                         );
                                 }
                             }
@@ -998,8 +1286,16 @@ impl Expression {
                             name: result_name.or(elem_name),
                             fields: result_fields,
                             node: result_node.or(elem_node),
+                            rust_attributes: rust_attributes.or(derived),
                         }
                     }
+                    (Type::Array(lhs), Type::Array(rhs)) => Type::Array(if *lhs == Type::Void {
+                        rhs
+                    } else if *rhs == Type::Void {
+                        lhs
+                    } else {
+                        Self::common_target_type_for_type_list([*lhs, *rhs].into_iter()).into()
+                    }),
                     (Type::Color, Type::Brush) | (Type::Brush, Type::Color) => Type::Brush,
                     (target_type, expr_ty) => {
                         if expr_ty.can_convert(&target_type) {
@@ -1032,17 +1328,55 @@ fn continue_lookup_within_element(
     } else if matches!(ctx.property_type, Type::ElementReference) {
         return Expression::ElementReference(Rc::downgrade(elem));
     } else {
-        ctx.diag.push_error("Cannot take reference of an element".into(), &node);
+        // Try to recover in case we wanted to access a property
+        let mut rest = String::new();
+        if let Some(LookupResult::Expression {
+            expression: Expression::PropertyReference(nr),
+            ..
+        }) = crate::lookup::InScopeLookup.lookup(ctx, &elem.borrow().id)
+        {
+            let e = nr.element();
+            let e_borrowed = e.borrow();
+            let mut id = e_borrowed.id.as_str();
+            if id.is_empty() {
+                if ctx.component_scope.last().map_or(false, |x| Rc::ptr_eq(&e, x)) {
+                    id = "self";
+                } else if ctx.component_scope.first().map_or(false, |x| Rc::ptr_eq(&e, x)) {
+                    id = "root";
+                } else if ctx
+                    .component_scope
+                    .iter()
+                    .nth_back(1)
+                    .map_or(false, |x| Rc::ptr_eq(&e, x))
+                {
+                    id = "parent";
+                }
+            };
+            if !id.is_empty() {
+                rest =
+                    format!(". Use '{id}.{}' to access the property with the same name", nr.name());
+            }
+        } else if let Some(LookupResult::Expression {
+            expression: Expression::EnumerationValue(value),
+            ..
+        }) = crate::lookup::ReturnTypeSpecificLookup.lookup(ctx, &elem.borrow().id)
+        {
+            rest = format!(
+                ". Use '{}.{value}' to access the enumeration value",
+                value.enumeration.name
+            );
+        }
+        ctx.diag.push_error(format!("Cannot take reference of an element{rest}"), &node);
         return Expression::Invalid;
     };
     let prop_name = crate::parser::normalize_identifier(second.text());
 
     let lookup_result = elem.borrow().lookup_property(&prop_name);
+    let local_to_component = lookup_result.is_local_to_component && ctx.is_local_element(elem);
+
     if lookup_result.property_type.is_property_type() {
-        if !lookup_result.is_local_to_component
-            && lookup_result.property_visibility == PropertyVisibility::Private
-        {
-            ctx.diag.push_error(format!("'{}' is private", second.text()), &second);
+        if !local_to_component && lookup_result.property_visibility == PropertyVisibility::Private {
+            ctx.diag.push_error(format!("The property '{}' is private. Annotate it with 'in', 'out' or 'in-out' to make it accessible from other components", second.text()), &second);
             return Expression::Invalid;
         }
         if lookup_result.resolved_name != prop_name {
@@ -1059,13 +1393,43 @@ fn continue_lookup_within_element(
         if let Some(x) = it.next() {
             ctx.diag.push_error("Cannot access fields of callback".into(), &x)
         }
-        Expression::CallbackReference(NamedReference::new(elem, &lookup_result.resolved_name))
+        Expression::CallbackReference(
+            NamedReference::new(elem, &lookup_result.resolved_name),
+            Some(NodeOrToken::Token(second)),
+        )
     } else if matches!(lookup_result.property_type, Type::Function { .. }) {
-        let member = elem.borrow().base_type.lookup_member_function(&lookup_result.resolved_name);
-        Expression::MemberFunction {
-            base: Box::new(Expression::ElementReference(Rc::downgrade(elem))),
-            base_node: Some(NodeOrToken::Node(node.into())),
-            member: Box::new(member),
+        if lookup_result.property_visibility == PropertyVisibility::Private && !local_to_component {
+            let message = format!("The function '{}' is private. Annotate it with 'public' to make it accessible from other components", second.text());
+            if !lookup_result.is_local_to_component {
+                ctx.diag.push_error(message, &second);
+            } else {
+                ctx.diag.push_warning(message+". Note: this used to be allowed in previous version, but this should be considered an error", &second);
+            }
+        } else if lookup_result.property_visibility == PropertyVisibility::Protected
+            && !local_to_component
+            && !(lookup_result.is_in_direct_base
+                && ctx.component_scope.first().map_or(false, |x| Rc::ptr_eq(x, elem)))
+        {
+            ctx.diag.push_error(format!("The function '{}' is protected", second.text()), &second);
+        }
+        if let Some(x) = it.next() {
+            ctx.diag.push_error("Cannot access fields of a function".into(), &x)
+        }
+        if let Some(f) =
+            elem.borrow().base_type.lookup_member_function(&lookup_result.resolved_name)
+        {
+            // builtin member function
+            Expression::MemberFunction {
+                base: Box::new(Expression::ElementReference(Rc::downgrade(elem))),
+                base_node: Some(NodeOrToken::Node(node.into())),
+                member: Expression::BuiltinFunctionReference(f, Some(second.to_source_location()))
+                    .into(),
+            }
+        } else {
+            Expression::FunctionReference(
+                NamedReference::new(elem, &lookup_result.resolved_name),
+                Some(NodeOrToken::Token(second)),
+            )
         }
     } else {
         let mut err = |extra: &str| {
@@ -1079,7 +1443,7 @@ fn continue_lookup_within_element(
                 ElementType::Builtin(b) => format!("Element '{}'", b.name),
                 ElementType::Native(_) => unreachable!("the native pass comes later"),
                 ElementType::Error => {
-                    assert!(ctx.diag.has_error());
+                    assert!(ctx.diag.has_errors());
                     return;
                 }
             };
@@ -1139,18 +1503,155 @@ fn maybe_lookup_object(
     base
 }
 
+/// Go through all the two way binding and resolve them first
+fn resolve_two_way_bindings(
+    doc: &Document,
+    type_register: &TypeRegister,
+    diag: &mut BuildDiagnostics,
+) {
+    for component in doc.inner_components.iter() {
+        let scope = ComponentScope(vec![]);
+
+        recurse_elem(&component.root_element, &scope, &mut |elem, scope| {
+            let mut new_scope = scope.clone();
+            new_scope.0.push(elem.clone());
+            for (prop_name, binding) in &elem.borrow().bindings {
+                let mut binding = binding.borrow_mut();
+                if let Expression::Uncompiled(node) = binding.expression.clone() {
+                    if let Some(n) = syntax_nodes::TwoWayBinding::new(node.clone()) {
+                        let lhs_lookup = elem.borrow().lookup_property(prop_name);
+                        if lhs_lookup.property_type == Type::Invalid {
+                            // An attempt to resolve this already failed when trying to resolve the property type
+                            assert!(diag.has_errors());
+                            continue;
+                        }
+                        let mut lookup_ctx = LookupCtx {
+                            property_name: Some(prop_name.as_str()),
+                            property_type: lhs_lookup.property_type.clone(),
+                            component_scope: &new_scope.0,
+                            diag,
+                            arguments: vec![],
+                            type_register,
+                            type_loader: None,
+                            current_token: Some(node.clone().into()),
+                        };
+
+                        binding.expression = Expression::Invalid;
+
+                        if let Some(nr) = resolve_two_way_binding(n, &mut lookup_ctx) {
+                            binding.two_way_bindings.push(nr.clone());
+
+                            nr.element()
+                                .borrow()
+                                .property_analysis
+                                .borrow_mut()
+                                .entry(nr.name().to_string())
+                                .or_default()
+                                .is_linked = true;
+
+                            // Check the compatibility.
+                            let mut rhs_lookup = nr.element().borrow().lookup_property(nr.name());
+                            rhs_lookup.is_local_to_component &=
+                                lookup_ctx.is_local_element(&nr.element());
+
+                            if !rhs_lookup.is_valid_for_assignment() {
+                                match (
+                                    lhs_lookup.property_visibility,
+                                    rhs_lookup.property_visibility,
+                                ) {
+                                    (PropertyVisibility::Input, PropertyVisibility::Input)
+                                        if !lhs_lookup.is_local_to_component =>
+                                    {
+                                        assert!(rhs_lookup.is_local_to_component);
+                                        marked_linked_read_only(elem, prop_name);
+                                    }
+                                    (
+                                        PropertyVisibility::Output | PropertyVisibility::Private,
+                                        PropertyVisibility::Output | PropertyVisibility::Input,
+                                    ) => {
+                                        assert!(lhs_lookup.is_local_to_component);
+                                        marked_linked_read_only(elem, prop_name);
+                                    }
+                                    (PropertyVisibility::Input, PropertyVisibility::Output)
+                                        if !lhs_lookup.is_local_to_component =>
+                                    {
+                                        assert!(!rhs_lookup.is_local_to_component);
+                                        marked_linked_read_only(elem, prop_name);
+                                    }
+                                    _ => {
+                                        if lookup_ctx.is_legacy_component() {
+                                            diag.push_warning(
+                                                format!(
+                                                    "Link to a {} property is deprecated",
+                                                    rhs_lookup.property_visibility
+                                                ),
+                                                &node,
+                                            );
+                                        } else {
+                                            diag.push_error(
+                                                format!(
+                                                    "Cannot link to a {} property",
+                                                    rhs_lookup.property_visibility
+                                                ),
+                                                &node,
+                                            )
+                                        }
+                                    }
+                                }
+                            } else if !lhs_lookup.is_valid_for_assignment() {
+                                if rhs_lookup.is_local_to_component
+                                    && rhs_lookup.property_visibility == PropertyVisibility::InOut
+                                {
+                                    if lookup_ctx.is_legacy_component() {
+                                        debug_assert!(!diag.is_empty()); // warning should already be reported
+                                    } else {
+                                        diag.push_error("Cannot link input property".into(), &node);
+                                    }
+                                } else {
+                                    // This is allowed, but then the rhs must also become read only.
+                                    marked_linked_read_only(&nr.element(), nr.name());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            new_scope
+        })
+    }
+
+    fn marked_linked_read_only(elem: &ElementRc, prop_name: &str) {
+        elem.borrow()
+            .property_analysis
+            .borrow_mut()
+            .entry(prop_name.to_string())
+            .or_default()
+            .is_linked_to_read_only = true;
+    }
+}
+
 pub fn resolve_two_way_binding(
     node: syntax_nodes::TwoWayBinding,
     ctx: &mut LookupCtx,
 ) -> Option<NamedReference> {
-    let e = node
-        .Expression()
-        .QualifiedName()
-        .map_or(Expression::Invalid, |n| Expression::from_qualified_name_node(n, ctx));
+    let e = if let Some(n) = node.Expression().QualifiedName() {
+        Expression::from_qualified_name_node(n, ctx, LookupPhase::ResolvingTwoWayBindings)
+    } else {
+        ctx.diag.push_error(
+            "The expression in a two way binding must be a property reference".into(),
+            &node.Expression(),
+        );
+        return None;
+    };
+    // If type is invalid, error has already been reported,  when inferring, the error will be reported by the inferring code
+    let report_error = !matches!(
+        ctx.property_type,
+        Type::InferredProperty | Type::InferredCallback | Type::Invalid
+    );
     let ty = e.ty();
     match e {
         Expression::PropertyReference(n) => {
-            if ty != ctx.property_type && ctx.property_type != Type::InferredProperty {
+            if report_error && ty != ctx.property_type {
                 ctx.diag.push_error(
                     "The property does not have the same type as the bound property".into(),
                     &node,
@@ -1158,13 +1659,23 @@ pub fn resolve_two_way_binding(
             }
             Some(n)
         }
-        Expression::CallbackReference(n) => {
-            if ctx.property_type != Type::InferredCallback && ty != ctx.property_type {
+        Expression::CallbackReference(n, _) => {
+            if report_error && ty != ctx.property_type {
                 ctx.diag.push_error("Cannot bind to a callback".into(), &node);
                 None
             } else {
                 Some(n)
             }
+        }
+        Expression::FunctionReference(..) => {
+            if report_error {
+                ctx.diag.push_error("Cannot bind to a function".into(), &node);
+            }
+            None
+        }
+        Expression::Invalid => {
+            debug_assert!(ctx.diag.has_errors());
+            None
         }
         _ => {
             ctx.diag.push_error(

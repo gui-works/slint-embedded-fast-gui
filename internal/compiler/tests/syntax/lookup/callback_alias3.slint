@@ -1,27 +1,26 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 Sub := Rectangle {
     callback compute(int) -> int;
     callback compute_alias <=> compute;
 }
 
-Xxx := Rectangle {
+export Xxx := Rectangle {
 
     foo := Rectangle {
         callback hello(int) -> int;
     }
 
     callback colr <=> foo.background;
-//                   ^error{The property does not have the same type as the bound property}
+//  ^error{Binding to callback 'colr' must bind to another callback}
     property propr <=> foo.hello;
-//                 ^error{Cannot bind to a callback}
-//  ^^error{Could not infer type of property 'propr'}
+//  ^error{Could not infer type of property 'propr'}
 
     callback loop1 <=> loop2;
     callback loop3 <=> loop1;
 //                     ^error{Unknown unqualified identifier 'loop1'}
-//                    ^^error{The expression in a two way binding must be a property reference}
+//  ^^error{Binding to callback 'loop3' must bind to another callback}
     callback loop2 <=> loop3;
 
     Sub {
@@ -31,5 +30,8 @@ Xxx := Rectangle {
             return "hello";
 //          ^error{Cannot convert string to int}
         }
+
+        callback x <=> compute_alias;
+//               ^error{Cannot declare callback 'x' when a property with the same name exists}
     }
 }

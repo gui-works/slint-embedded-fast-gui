@@ -1,10 +1,14 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 import { DemoPalette, Page, SpinBox, ComboBox, CheckBox, Label } from "common.slint";
 
-export SettingsPage := Page {
-    header: "Settings";
+export global PrinterSettings {
+    callback change-language(int);
+}
+
+export component SettingsPage inherits Page {
+    header: @tr("Settings");
 
     GridLayout {
         padding-top: 46px /* header line height in design */
@@ -12,76 +16,79 @@ export SettingsPage := Page {
         spacing: 24px;
         Row {
             Text {
-                text: "General";
+                colspan: 4;
+                text: @tr("General");
                 color: DemoPalette.secondary-foreground-color;
                 font-size: DemoPalette.base-font-size * 1.125;
                 font-weight: 800;
             }
         }
         Row {
-            Label { text: "TURBO mode"; }
+            Label { text: @tr("TURBO mode"); }
             CheckBox { checked: true; }
 
             Rectangle {}
 
-            Label { text: "Power Management"; }
+            Label { text: @tr("Power Management"); }
             CheckBox {
                 checked: false;
-                text: "Eco Mode";
+                text: @tr("Eco Mode");
             }
         }
 
         Row {
             Text {
-                text: "Defaults";
+                colspan: 4;
+                text: @tr("Defaults");
                 color: DemoPalette.secondary-foreground-color;
                 font-size: DemoPalette.base-font-size * 1.125;
                 font-weight: 800;
             }
         }
         Row {
-            Label { text: "Layout"; }
+            Label { text: @tr("Layout"); }
             ComboBox {
-                value: "Portrait";
-                choices: ["Portrait", "Landscape"];
+                value: @tr("Portrait");
+                choices: [@tr("Portrait"), @tr("Landscape")];
             }
 
             Rectangle {}
 
-            Label { text: "Paper Tray"; }
+            Label { text: @tr("Paper Tray"); }
             ComboBox {
-                value: "Special Tray";
-                choices: ["Special Tray", "Normal Tray"];
+                value: @tr("Special Tray");
+                choices: [@tr("Special Tray"), @tr("Normal Tray")];
             }
         }
         Row {
-            Label { text: "Quality"; }
+            Label { text: @tr("Quality"); }
             ComboBox {
-                value: "Best";
-                choices: ["Best", "Medium", "Draft"];
+                value: @tr("Best");
+                choices: [@tr("Best"), @tr("Medium"), @tr("Draft")];
             }
 
             Rectangle {}
 
-            Label { text: "Paper Type"; }
+            Label { text: @tr("Language"); }
             ComboBox {
-                value: "Standard";
-                choices: ["Standard", "Non-standard"];
+                value: @tr("English");
+                choices: [@tr("English"), @tr("French")];
+                selected(x) => { PrinterSettings.change-language(x); }
             }
         }
         Row {
-            Label { text: "Color Mode"; }
+            Label { text: @tr("Color Mode"); }
             ComboBox {
-                value: "Grayscale";
-                choices: ["Grayscale", "RGB", "YCMB"];
+                value: @tr("Grayscale");
+                choices: [@tr("Grayscale"), @tr("RGB"), @tr("YCMB")];
             }
 
             Rectangle {}
 
-            Label { text: "Paper Handling"; }
+            Label { text: @tr("Paper Handling"); }
             CheckBox {
                 checked: true;
-                text: "sort page";
+                text: @tr("Sort Pages");
             }
         }
         Row { Rectangle {} }

@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //include_path: ../../../examples/printerdemo/ui/images/
 
@@ -7,8 +7,22 @@ TestCase := Rectangle {
     img := Image {
         source: @image-url("cat.jpg");
     }
+
+    img2 := Image {
+        source: @image-url("cat.jpg");
+        source-clip-x: 20;
+    }
+
+    img3 := Image {
+        source: @image-url("image.slint");
+    }
+
+    out property <image> with-border: @image-url("dog.jpg", nine-slice(12 13 14 15));
+
     property <length> img_width: img.width;
     property <length> img_height: img.height;
+    property <bool> test: img2.source-clip-height * 1px == img2.height && img2.source-clip-width * 1px == img2.width &&
+         img2.width/1px == img2.source.width - 20 && img3.source.width == 0 && img3.source.height == 0;
 }
 
 /*
@@ -18,14 +32,16 @@ const TestCase &instance = *handle;
 
 assert_eq(instance.get_img_width(), 320.);
 assert_eq(instance.get_img_height(), 480.);
+assert(instance.get_test());
 ```
 
 
 ```rust
-let instance = TestCase::new();
+let instance = TestCase::new().unwrap();
 
 assert_eq!(instance.get_img_width(), 320.);
 assert_eq!(instance.get_img_height(), 480.);
+assert!(instance.get_test());
 ```
 
 ```js
@@ -34,5 +50,6 @@ var instance = new slint.TestCase();
 
 assert.equal(instance.img_width, 320);
 assert.equal(instance.img_height, 480);
+assert(instance.test);
 ```
 */

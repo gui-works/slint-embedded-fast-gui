@@ -1,11 +1,11 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-Test3 := Rectangle {
+export Test3 := Rectangle {
     TabWidget {
 //  ^error{Unknown type TabWidget. \(The type exist as an internal type, but cannot be accessed in this scope\)}
     }
 }
 
-Foo := TabWidget { }
-//    ^error{Unknown type TabWidget. \(The type exist as an internal type, but cannot be accessed in this scope\)}
+export Foo := TabWidget { }
+//            ^error{Unknown type TabWidget. \(The type exist as an internal type, but cannot be accessed in this scope\)}

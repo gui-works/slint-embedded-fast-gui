@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 
 SubComponent := Rectangle {
@@ -25,7 +25,7 @@ TestCase := Rectangle {
 /*
 ```rust
 use slint::Model;
-let instance = TestCase::new();
+let instance = TestCase::new().unwrap();
 
 let the_model = std::rc::Rc::new(slint::VecModel::<i32>::from(vec![1, 2, 3]));
 instance.set_mod(the_model.clone().into());
@@ -48,8 +48,8 @@ assert_eq(*the_model->row_data(1) , 2+8);
 ```js
 var instance = new slint.TestCase({});
 instance.mod = [1, 2, 3];
-instance.send_mouse_click(50., 50.);
-assert.equal(instance.mod[1], 2+8);
+slintlib.private_api.send_mouse_click(instance, 50., 50.);
+assert.equal(instance.mod.rowData(1), 2+8);
 ```
 
 

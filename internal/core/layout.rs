@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Runtime support for layouts.
 
@@ -9,13 +9,7 @@ use crate::items::{DialogButtonRole, LayoutAlignment};
 use crate::{slice::Slice, Coord, SharedVector};
 use alloc::vec::Vec;
 
-/// Vertical or Horizontal orientation
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-#[repr(u8)]
-pub enum Orientation {
-    Horizontal,
-    Vertical,
-}
+pub use crate::items::Orientation;
 
 /// The constraint that applies to an item
 // Also, the field needs to be in alphabetical order because how the generated code sort fields for struct
@@ -64,6 +58,7 @@ impl LayoutInfo {
     }
 
     /// Helper function to return a preferred size which is within the min/max constraints
+    #[must_use]
     pub fn preferred_bounded(&self) -> Coord {
         self.preferred.min(self.max).max(self.min)
     }
@@ -75,6 +70,43 @@ impl core::ops::Add for LayoutInfo {
     fn add(self, rhs: Self) -> Self::Output {
         self.merge(&rhs)
     }
+}
+
+/// Returns the logical min and max sizes given the provided layout constraints.
+pub fn min_max_size_for_layout_constraints(
+    constraints_horizontal: LayoutInfo,
+    constraints_vertical: LayoutInfo,
+) -> (Option<crate::api::LogicalSize>, Option<crate::api::LogicalSize>) {
+    let min_width = constraints_horizontal.min.min(constraints_horizontal.max) as f32;
+    let min_height = constraints_vertical.min.min(constraints_vertical.max) as f32;
+    let max_width = constraints_horizontal.max.max(constraints_horizontal.min) as f32;
+    let max_height = constraints_vertical.max.max(constraints_vertical.min) as f32;
+
+    //cfg!(target_arch = "wasm32") is there because wasm32 winit don't like when max size is None:
+    // panicked at 'Property is read only: JsValue(NoModificationAllowedError: CSSStyleDeclaration.removeProperty: Can't remove property 'max-width' from computed style
+
+    let min_size = if min_width > 0. || min_height > 0. || cfg!(target_arch = "wasm32") {
+        Some(crate::api::LogicalSize::new(min_width, min_height))
+    } else {
+        None
+    };
+
+    let max_size = if (max_width > 0.
+        && max_height > 0.
+        && (max_width < i32::MAX as f32 || max_height < i32::MAX as f32))
+        || cfg!(target_arch = "wasm32")
+    {
+        // maximum widget size for Qt and a workaround for the winit api not allowing partial constraints
+        let window_size_max = 16_777_215.;
+        Some(crate::api::LogicalSize::new(
+            max_width.min(window_size_max),
+            max_height.min(window_size_max),
+        ))
+    } else {
+        None
+    };
+
+    (min_size, max_size)
 }
 
 /// Implement a saturating_add version for both possible value of Coord.
@@ -164,6 +196,7 @@ mod grid_internal {
         }
     }
 
+    #[allow(clippy::unnecessary_cast)] // Coord
     fn adjust_items<A: Adjust>(data: &mut [LayoutData], size_without_spacing: Coord) -> Option<()> {
         loop {
             let size_cannot_grow: Coord = data
@@ -204,8 +237,24 @@ mod grid_internal {
             }
             .min(max_grow);
 
+            let mut distributed = 0 as Coord;
             for it in data.iter_mut().filter(|it| A::can_grow(it) > 0 as Coord) {
-                A::distribute(it, (grow * actual_stretch(it.stretch)) as Coord);
+                let val = (grow * actual_stretch(it.stretch)) as Coord;
+                A::distribute(it, val);
+                distributed += val;
+            }
+
+            if distributed <= 0 as Coord {
+                // This can happen when Coord is integer and there is less then a pixel to add to each elements
+                // just give the pixel to the one with the bigger stretch
+                if let Some(it) = data
+                    .iter_mut()
+                    .filter(|it| A::can_grow(it) > 0 as _)
+                    .max_by(|a, b| actual_stretch(a.stretch).total_cmp(&b.stretch))
+                {
+                    A::distribute(it, to_distribute as Coord);
+                }
+                return Some(());
             }
         }
     }
@@ -607,134 +656,6 @@ pub fn box_layout_info_ortho(cells: Slice<BoxLayoutCellData>, padding: &Padding)
     fold
 }
 
-#[cfg(feature = "std")]
-#[repr(C)]
-pub struct PathLayoutData {
-    pub elements: crate::graphics::PathData,
-    pub item_count: u32,
-    pub x: Coord,
-    pub y: Coord,
-    pub width: Coord,
-    pub height: Coord,
-    pub offset: f32,
-}
-
-#[cfg(feature = "std")]
-pub fn solve_path_layout(
-    data: &PathLayoutData,
-    repeater_indexes: Slice<u32>,
-) -> SharedVector<Coord> {
-    use lyon_geom::*;
-    use lyon_path::PathEvent;
-
-    // Clone of path elements is cheap because it's a clone of underlying SharedVector
-    let mut path_iter = data.elements.clone().iter();
-    path_iter.fit(data.width as _, data.height as _, None);
-
-    let tolerance: f32 = 0.1; // lyon::tessellation::StrokeOptions::DEFAULT_TOLERANCE
-    let path_length = lyon_algorithms::length::approximate_length(path_iter.iter(), tolerance);
-    // the max(2) is there to put the item in the middle when there is a single item
-    let item_distance = 1. / ((data.item_count - 1) as f32).max(2.);
-
-    let mut i = 0;
-    let mut next_t: f32 = data.offset;
-    if data.item_count == 1 {
-        next_t += item_distance;
-    }
-
-    let mut result = SharedVector::<Coord>::default();
-    result.resize(data.item_count as usize * 2 + repeater_indexes.len(), 0 as Coord);
-    let res = result.make_mut_slice();
-
-    // The index/2 in result in which we should add the next repeated item
-    let mut repeat_offset =
-        res.len() / 2 - repeater_indexes.iter().skip(1).step_by(2).sum::<u32>() as usize;
-    // The index/2  in repeater_indexes
-    let mut next_rep = 0;
-    // The index/2 in result in which we should add the next non-repeated item
-    let mut current_offset = 0;
-
-    'main_loop: while i < data.item_count {
-        let mut current_length: f32 = 0.;
-        next_t %= 1.;
-
-        for evt in path_iter.iter() {
-            let seg_len = match evt {
-                PathEvent::Line { from, to } => LineSegment { from, to }.length(),
-                PathEvent::Quadratic { from, ctrl, to } => {
-                    QuadraticBezierSegment { from, ctrl, to }.length()
-                }
-                PathEvent::Cubic { from, ctrl1, ctrl2, to } => {
-                    CubicBezierSegment { from, ctrl1, ctrl2, to }.approximate_length(tolerance)
-                }
-                PathEvent::End { last, first, close: true } => {
-                    LineSegment { from: last, to: first }.length()
-                }
-                _ => continue,
-            };
-
-            let seg_start = current_length;
-            current_length += seg_len;
-
-            let seg_end_t = (seg_start + seg_len) / path_length;
-
-            while next_t <= seg_end_t {
-                let local_t = ((next_t * path_length) - seg_start) / seg_len;
-
-                let item_pos = match evt {
-                    PathEvent::Line { from, to } => LineSegment { from, to }.sample(local_t),
-                    PathEvent::Quadratic { from, ctrl, to } => {
-                        QuadraticBezierSegment { from, ctrl, to }.sample(local_t)
-                    }
-                    PathEvent::Cubic { from, ctrl1, ctrl2, to } => {
-                        CubicBezierSegment { from, ctrl1, ctrl2, to }.sample(local_t)
-                    }
-                    PathEvent::End { last, first, close: true } => {
-                        LineSegment { from: last, to: first }.sample(local_t)
-                    }
-                    _ => unreachable!(),
-                };
-
-                let o = loop {
-                    if let Some(nr) = repeater_indexes.get(next_rep * 2) {
-                        let nr = *nr;
-                        if nr == i {
-                            for o in 0..4 {
-                                res[current_offset * 4 + o] = (repeat_offset * 4 + o) as _;
-                            }
-                            current_offset += 1;
-                        }
-                        if i >= nr {
-                            if i - nr == repeater_indexes[next_rep * 2 + 1] {
-                                next_rep += 1;
-                                continue;
-                            }
-                            repeat_offset += 1;
-                            break repeat_offset - 1;
-                        }
-                    }
-                    current_offset += 1;
-                    break current_offset - 1;
-                };
-
-                res[o * 2] = item_pos.x as Coord + data.x;
-                res[o * 2 + 1] = item_pos.y as Coord + data.y;
-                i += 1;
-                next_t += item_distance;
-                if i >= data.item_count {
-                    break 'main_loop;
-                }
-            }
-
-            if next_t > 1. {
-                break;
-            }
-        }
-    }
-
-    result
-}
-
 /// Given the cells of a layout of a Dialog, re-order the button according to the platform
 ///
 /// This function assume that the `roles` contains the roles of the button which are the first `cells`
@@ -759,7 +680,7 @@ pub fn reorder_dialog_button_layout(cells: &mut [GridLayoutCellData], roles: &[D
         // assume some unix check if XDG_CURRENT_DESKTOP stats with K
         std::env::var("XDG_CURRENT_DESKTOP")
             .ok()
-            .and_then(|v| v.as_bytes().get(0).copied())
+            .and_then(|v| v.as_bytes().first().copied())
             .map_or(false, |x| x.to_ascii_uppercase() == b'K')
     }
     #[cfg(not(feature = "std"))]
@@ -854,15 +775,6 @@ pub(crate) mod ffi {
         padding: &Padding,
     ) -> LayoutInfo {
         super::box_layout_info_ortho(cells, padding)
-    }
-
-    #[no_mangle]
-    pub extern "C" fn slint_solve_path_layout(
-        data: &PathLayoutData,
-        repeater_indexes: Slice<u32>,
-        result: &mut SharedVector<Coord>,
-    ) {
-        *result = super::solve_path_layout(data, repeater_indexes)
     }
 
     /// Calls [`reorder_dialog_button_layout`].

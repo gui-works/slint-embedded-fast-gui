@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Passes that fills the root component used_types.sub_components
 
@@ -11,13 +11,13 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 /// Fill the root_component's used_types.sub_components
-pub fn collect_subcomponents(root_component: &Rc<Component>) {
+pub fn collect_subcomponents(doc: &Document) {
     let mut result = vec![];
     let mut hash = HashSet::new();
-
-    collect_subcomponents_recursive(root_component, &mut result, &mut hash);
-
-    root_component.used_types.borrow_mut().sub_components = result;
+    for component in doc.exported_roots() {
+        collect_subcomponents_recursive(&component, &mut result, &mut hash);
+    }
+    doc.used_types.borrow_mut().sub_components = result;
 }
 
 fn collect_subcomponents_recursive(
@@ -37,6 +37,13 @@ fn collect_subcomponents_recursive(
             _ => return,
         };
         collect_subcomponents_recursive(&base_comp, result, hash);
+        if base_comp.parent_element.upgrade().is_some() {
+            // This is not a sub-component, but is a repeated component
+            return;
+        }
         result.push(base_comp);
     });
+    for popup in component.popup_windows.borrow().iter() {
+        collect_subcomponents_recursive(&popup.component, result, hash);
+    }
 }

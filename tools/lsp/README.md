@@ -1,6 +1,8 @@
+<!-- Copyright © SixtyFPS GmbH <info@slint.dev> ; SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 -->
+
 # LSP (Language Server Protocol) Server for Slint
 
-This directory contains the implementation of the LSP server for [Slint](https://slint-ui.com)
+This directory contains the implementation of the LSP server for [Slint](https://slint.dev)
 featuring diagnostics, code completion, goto definition, and more importantly, live-preview
 
 ## Generic usage
@@ -33,6 +35,9 @@ Alternatively, you can download one of our pre-built binaries for Linux or Windo
 
 As the next step, configure your editor to use the binary, no arguments are required
 
+## Code formatting
+
+The slint code formatting tool is part of the lsp. To learn how to use it as a standalone tool, see [fmt README](./fmt/README.md)
 
 # Editor configuration
 

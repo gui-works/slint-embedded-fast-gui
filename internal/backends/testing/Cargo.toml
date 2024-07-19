@@ -1,21 +1,42 @@
-# Copyright © SixtyFPS GmbH <info@slint-ui.com>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 [package]
 name = "i-slint-backend-testing"
-version = "0.3.2"
-authors = ["Slint Developers <info@slint-ui.com>"]
-edition = "2021"
-license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
 description = "OpenGL rendering backend for Slint"
-repository = "https://github.com/slint-ui/slint"
-homepage = "https://slint-ui.com"
-publish = false
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+build = "build.rs"
 
 [lib]
 path = "lib.rs"
 
+[features]
+# Internal feature that is only enabled for Slint's own tests
+internal = []
+# ffi for C++ bindings
+ffi = []
+system-testing = ["quick-protobuf", "pb-rs", "generational-arena", "async-net", "futures-lite", "byteorder", "image"]
+
 [dependencies]
-i-slint-core = { version = "=0.3.2", path = "../../../internal/core" }
-vtable = { version = "0.1.8", path = "../../../helper_crates/vtable" }
-image = { version = "0.24.0", default-features = false, features = ["png", "jpeg"] }
+i-slint-core = { workspace = true, features = ["std"] }
+vtable = { workspace = true }
+quick-protobuf = { version = "0.8.1", optional = true }
+generational-arena = { version = "0.2.9", optional = true }
+async-net = { version = "2.0.0", optional = true }
+futures-lite = { version = "2.3.0", optional = true }
+byteorder = { version = "1.5.0", optional = true }
+image = { workspace = true, optional = true, features = ["png"] }
+
+[build-dependencies]
+pb-rs = { version = "0.10.0", optional = true, default-features = false }
+
+[dev-dependencies]
+slint = { path = "../../../api/rs/slint", default-features = false, features = ["std", "compat-1-2"] }
+i-slint-core-macros = { path = "../../core-macros" }
+i-slint-common = { path = "../../common" }

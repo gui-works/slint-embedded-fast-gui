@@ -1,7 +1,10 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-use i_slint_core::input::{FocusEventResult, KeyEventType};
+use i_slint_core::{
+    input::{FocusEventResult, KeyEventType},
+    platform::PointerEventButton,
+};
 
 use super::*;
 
@@ -12,21 +15,23 @@ struct NativeSpinBoxData {
     pressed: bool,
 }
 
+type IntArg = (i32,);
+
 #[repr(C)]
 #[derive(FieldOffsets, Default, SlintElement)]
 #[pin]
 pub struct NativeSpinBox {
-    pub x: Property<LogicalLength>,
-    pub y: Property<LogicalLength>,
-    pub width: Property<LogicalLength>,
-    pub height: Property<LogicalLength>,
     pub enabled: Property<bool>,
     pub has_focus: Property<bool>,
     pub value: Property<i32>,
     pub minimum: Property<i32>,
     pub maximum: Property<i32>,
+    pub step_size: Property<i32>,
     pub cached_rendering_data: CachedRenderingData,
+    pub edited: Callback<IntArg>,
     data: Property<NativeSpinBoxData>,
+    widget_ptr: std::cell::Cell<SlintTypeErasedWidgetPtr>,
+    animation_tracker: Property<i32>,
 }
 
 cpp! {{
@@ -54,13 +59,11 @@ option.frame = true;
 }}
 
 impl Item for NativeSpinBox {
-    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
-
-    fn geometry(self: Pin<&Self>) -> LogicalRect {
-        LogicalRect::new(
-            LogicalPoint::from_lengths(self.x(), self.y()),
-            LogicalSize::from_lengths(self.width(), self.height()),
-        )
+    fn init(self: Pin<&Self>, _self_rc: &ItemRc) {
+        let animation_tracker_property_ptr = Self::FIELD_OFFSETS.animation_tracker.apply_pin(self);
+        self.widget_ptr.set(cpp! { unsafe [animation_tracker_property_ptr as "void*"] -> SlintTypeErasedWidgetPtr as "std::unique_ptr<SlintTypeErasedWidget>" {
+            return make_unique_animated_widget<QSpinBox>(animation_tracker_property_ptr);
+        }})
     }
 
     fn layout_info(
@@ -73,12 +76,14 @@ impl Item for NativeSpinBox {
         let active_controls = data.active_controls;
         let pressed = data.pressed;
         let enabled = self.enabled();
+        let widget: NonNull<()> = SlintTypeErasedWidgetPtr::qwidget_ptr(&self.widget_ptr);
 
         let size = cpp!(unsafe [
             //value as "int",
             active_controls as "int",
             pressed as "bool",
-            enabled as "bool"
+            enabled as "bool",
+            widget as "QWidget*"
         ] -> qttypes::QSize as "QSize" {
             ensure_initialized();
             auto style = qApp->style();
@@ -93,15 +98,19 @@ impl Item for NativeSpinBox {
             frame.midLineWidth = 0;
             auto content = option.fontMetrics.boundingRect("0000");
             const QSize margins(2 * 2, 2 * 1); // QLineEditPrivate::verticalMargin and QLineEditPrivate::horizontalMargin
-            auto line_edit_size = style->sizeFromContents(QStyle::CT_LineEdit, &frame, content.size() + margins, nullptr);
-            return style->sizeFromContents(QStyle::CT_SpinBox, &option, line_edit_size, nullptr);
+            auto line_edit_size = style->sizeFromContents(QStyle::CT_LineEdit, &frame, content.size() + margins, widget);
+            return style->sizeFromContents(QStyle::CT_SpinBox, &option, line_edit_size, widget);
         });
         match orientation {
-            Orientation::Horizontal => {
-                LayoutInfo { min: size.width as f32, stretch: 1., ..LayoutInfo::default() }
-            }
+            Orientation::Horizontal => LayoutInfo {
+                min: size.width as f32,
+                preferred: size.width as f32,
+                stretch: 1.,
+                ..LayoutInfo::default()
+            },
             Orientation::Vertical => LayoutInfo {
                 min: size.height as f32,
+                preferred: size.height as f32,
                 max: size.height as f32,
                 ..LayoutInfo::default()
             },
@@ -123,11 +132,13 @@ impl Item for NativeSpinBox {
         window_adapter: &Rc<dyn WindowAdapter>,
         self_rc: &i_slint_core::items::ItemRc,
     ) -> InputEventResult {
-        let size: qttypes::QSize = get_size!(self);
+        let size: qttypes::QSize = get_size!(self_rc);
         let enabled = self.enabled();
         let mut data = self.data();
         let active_controls = data.active_controls;
         let pressed = data.pressed;
+        let step_size = self.step_size();
+        let widget: NonNull<()> = SlintTypeErasedWidgetPtr::qwidget_ptr(&self.widget_ptr);
 
         let pos = event
             .position()
@@ -139,7 +150,8 @@ impl Item for NativeSpinBox {
             size as "QSize",
             enabled as "bool",
             active_controls as "int",
-            pressed as "bool"
+            pressed as "bool",
+            widget as "QWidget*"
         ] -> u32 as "int" {
             ensure_initialized();
             auto style = qApp->style();
@@ -148,7 +160,7 @@ impl Item for NativeSpinBox {
             option.rect = { QPoint{}, size };
             initQSpinBoxOptions(option, pressed, enabled, active_controls);
 
-            return style->hitTestComplexControl(QStyle::CC_SpinBox, &option, pos, nullptr);
+            return style->hitTestComplexControl(QStyle::CC_SpinBox, &option, pos, widget);
         });
         let changed = new_control != active_controls
             || match event {
@@ -160,29 +172,54 @@ impl Item for NativeSpinBox {
                     data.pressed = false;
                     true
                 }
-                MouseEvent::Released { .. } => {
+                MouseEvent::Released { button, .. } => {
                     data.pressed = false;
+                    let left_button = button == PointerEventButton::Left;
                     if new_control == cpp!(unsafe []->u32 as "int" { return QStyle::SC_SpinBoxUp;})
                         && enabled
+                        && left_button
                     {
                         let v = self.value();
                         if v < self.maximum() {
-                            self.value.set(v + 1);
+                            let new_val = v + step_size;
+                            self.value.set(new_val);
+                            Self::FIELD_OFFSETS.edited.apply_pin(self).call(&(new_val,));
                         }
                     }
                     if new_control
                         == cpp!(unsafe []->u32 as "int" { return QStyle::SC_SpinBoxDown;})
                         && enabled
+                        && left_button
                     {
                         let v = self.value();
                         if v > self.minimum() {
-                            self.value.set(v - 1);
+                            let new_val = v - step_size;
+                            self.value.set(new_val);
+                            Self::FIELD_OFFSETS.edited.apply_pin(self).call(&(new_val,));
                         }
                     }
                     true
                 }
                 MouseEvent::Moved { .. } => false,
-                MouseEvent::Wheel { .. } => false, // TODO
+                MouseEvent::Wheel { delta_y, .. } => {
+                    if delta_y > 0. {
+                        let v = self.value();
+                        if v < self.maximum() {
+                            let new_val = v + step_size;
+                            self.value.set(new_val);
+                            Self::FIELD_OFFSETS.edited.apply_pin(self).call(&(new_val,));
+                        }
+                    } else if delta_y < 0. {
+                        let v = self.value();
+                        if v > self.minimum() {
+                            let new_val = v - step_size;
+                            self.value.set(new_val);
+                            Self::FIELD_OFFSETS.edited.apply_pin(self).call(&(new_val,));
+                        }
+                    }
+
+                    true
+                }
             };
         data.active_controls = new_control;
         if changed {
@@ -191,7 +228,7 @@ impl Item for NativeSpinBox {
 
         if let MouseEvent::Pressed { .. } = event {
             if !self.has_focus() {
-                WindowInner::from_pub(window_adapter.window()).set_focus_item(self_rc);
+                WindowInner::from_pub(window_adapter.window()).set_focus_item(self_rc, true);
             }
         }
         InputEventResult::EventAccepted
@@ -209,12 +246,16 @@ impl Item for NativeSpinBox {
         if event.text.starts_with(i_slint_core::input::key_codes::UpArrow)
             && self.value() < self.maximum()
         {
-            self.value.set(self.value() + 1);
+            let new_val = self.value() + self.step_size();
+            self.value.set(new_val);
+            Self::FIELD_OFFSETS.edited.apply_pin(self).call(&(new_val,));
             KeyEventResult::EventAccepted
         } else if event.text.starts_with(i_slint_core::input::key_codes::DownArrow)
             && self.value() > self.minimum()
         {
-            self.value.set(self.value() - 1);
+            let new_val = self.value() - self.step_size();
+            self.value.set(new_val);
+            Self::FIELD_OFFSETS.edited.apply_pin(self).call(&(new_val,));
             KeyEventResult::EventAccepted
         } else {
             KeyEventResult::EventIgnored
@@ -263,6 +304,7 @@ impl Item for NativeSpinBox {
         ] {
             auto style = qApp->style();
             QStyleOptionSpinBox option;
+            option.styleObject = widget;
             option.state |= QStyle::State(initial_state);
             if (enabled && has_focus) {
                 option.state |= QStyle::State_HasFocus;

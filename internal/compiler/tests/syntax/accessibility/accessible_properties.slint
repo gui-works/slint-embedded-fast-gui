@@ -1,15 +1,22 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 Button1 := Rectangle {
     property <bool> cond;
     accessible-role: cond ? button : AccessibleRole.text;
-    //              ^error{The `accessible-role` property must be a constant expression}
+    //               ^error{The `accessible-role` property must be a constant expression}
+
+    rr := Rectangle {
+        init => {
+            self.accessible-role = AccessibleRole.text;
+//          ^error{The property must be known at compile time and cannot be changed at runtime}
+        }
+    }
 }
 
 Button2 := Rectangle {
     accessible-label: "the button";
-    //               ^error{The `accessible-label` property can only be set in combination to `accessible-role`}
+    //                ^error{The `accessible-label` property can only be set in combination to `accessible-role`}
 }
 
 Button3 := Rectangle {
@@ -19,7 +26,7 @@ Button3 := Rectangle {
     }
 }
 
-Test := Window {
+export Test := Window {
 
     Button1 { }
     Button1 { accessible-description: "ok"; } // ok because Button1 has a role
@@ -27,5 +34,5 @@ Test := Window {
     Button2 { }
     Button3 {}
     Button3 { accessible-description: "error";}
-    //                               ^error{The `accessible-description` property can only be set in combination to `accessible-role`}
+    //                                ^error{The `accessible-description` property can only be set in combination to `accessible-role`}
 }

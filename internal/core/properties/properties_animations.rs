@@ -1,8 +1,10 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use super::*;
 use crate::{items::PropertyAnimation, lengths::LogicalLength};
+#[cfg(not(feature = "std"))]
+use num_traits::Float;
 
 enum AnimationState {
     Delaying,
@@ -60,8 +62,7 @@ impl<T: InterpolatedPropertyValue + Clone> PropertyValueAnimationData<T> {
                     // wrap around
                     current_iteration += time_progress / duration;
                     time_progress %= duration;
-                    self.start_time =
-                        new_tick - core::time::Duration::from_millis(time_progress as u64);
+                    self.start_time = new_tick - core::time::Duration::from_millis(time_progress);
                 }
 
                 if (self.details.iteration_count < 0.)
@@ -184,19 +185,20 @@ impl InterpolatedPropertyValue for f32 {
 
 impl InterpolatedPropertyValue for i32 {
     fn interpolate(&self, target_value: &Self, t: f32) -> Self {
-        self + (t * (target_value - self) as f32) as i32
+        self + (t * (target_value - self) as f32).round() as i32
     }
 }
 
 impl InterpolatedPropertyValue for i64 {
     fn interpolate(&self, target_value: &Self, t: f32) -> Self {
-        self + (t * (target_value - self) as f32) as Self
+        self + (t * (target_value - self) as f32).round() as Self
     }
 }
 
 impl InterpolatedPropertyValue for u8 {
     fn interpolate(&self, target_value: &Self, t: f32) -> Self {
-        ((*self as f32) + (t * ((*target_value as f32) - (*self as f32)))).min(255.).max(0.) as u8
+        ((*self as f32) + (t * ((*target_value as f32) - (*self as f32)))).round().clamp(0., 255.)
+            as u8
     }
 }
 
@@ -331,8 +333,6 @@ impl<T: Clone + InterpolatedPropertyValue + 'static> Property<T> {
 #[cfg(test)]
 mod animation_tests {
     use super::*;
-    use crate::items::PropertyAnimation;
-    use std::rc::Rc;
 
     #[derive(Default)]
     struct Component {
@@ -354,8 +354,8 @@ mod animation_tests {
         }
     }
 
-    const DURATION: instant::Duration = instant::Duration::from_millis(10000);
-    const DELAY: instant::Duration = instant::Duration::from_millis(800);
+    const DURATION: std::time::Duration = std::time::Duration::from_millis(10000);
+    const DELAY: std::time::Duration = std::time::Duration::from_millis(800);
 
     // Helper just for testing
     fn get_prop_value<T: Clone>(prop: &Property<T>) -> T {

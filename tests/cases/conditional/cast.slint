@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 TestCase := Rectangle {
     property<bool> condition;
@@ -26,7 +26,7 @@ assert_eq(instance.get_s1(), "123");
 
 
 ```rust
-let instance = TestCase::new();
+let instance = TestCase::new().unwrap();
 instance.set_condition(true);
 assert_eq!(instance.get_s1(), "abc");
 assert_eq!(instance.get_s2(), "123");

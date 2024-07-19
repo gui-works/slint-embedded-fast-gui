@@ -1,15 +1,17 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-use core::convert::TryFrom;
+use i_slint_compiler::diagnostics::SourceFileVersion;
 use i_slint_compiler::langtype::Type as LangType;
-use i_slint_core::graphics::Image;
+use i_slint_core::component_factory::ComponentFactory;
+#[cfg(feature = "internal")]
+use i_slint_core::component_factory::FactoryContext;
 use i_slint_core::model::{Model, ModelRc};
+#[cfg(feature = "internal")]
 use i_slint_core::window::WindowInner;
-use i_slint_core::{Brush, PathData, SharedString, SharedVector};
+use i_slint_core::{PathData, SharedVector};
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::iter::FromIterator;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -17,8 +19,15 @@ use std::rc::Rc;
 pub use i_slint_compiler::diagnostics::{Diagnostic, DiagnosticLevel};
 
 pub use i_slint_core::api::*;
+// keep in sync with api/rs/slint/lib.rs
+pub use i_slint_core::graphics::{
+    Brush, Color, Image, LoadImageError, Rgb8Pixel, Rgba8Pixel, RgbaColor, SharedPixelBuffer,
+};
+use i_slint_core::items::*;
 
-use crate::dynamic_component::ErasedComponentBox;
+use crate::dynamic_item_tree::ErasedItemTreeBox;
+#[cfg(any(feature = "internal", target_arch = "wasm32"))]
+use crate::dynamic_item_tree::WindowOptions;
 
 /// This enum represents the different public variants of the [`Value`] enum, without
 /// the contained values.
@@ -60,6 +69,7 @@ impl From<LangType> for ValueType {
             | LangType::UnitProduct(_) => Self::Number,
             LangType::String => Self::String,
             LangType::Color => Self::Brush,
+            LangType::Brush => Self::Brush,
             LangType::Array(_) => Self::Model,
             LangType::Bool => Self::Bool,
             LangType::Struct { .. } => Self::Struct,
@@ -81,39 +91,43 @@ impl From<LangType> for ValueType {
 /// let v = Value::from(100u32);
 /// assert_eq!(v.try_into(), Ok(100u32));
 /// ```
-#[derive(Clone)]
+#[derive(Clone, Default)]
 #[non_exhaustive]
-#[repr(C)]
+#[repr(u8)]
 pub enum Value {
     /// There is nothing in this value. That's the default.
     /// For example, a function that do not return a result would return a Value::Void
-    Void,
+    #[default]
+    Void = 0,
     /// An `int` or a `float` (this is also used for unit based type such as `length` or `angle`)
-    Number(f64),
+    Number(f64) = 1,
     /// Correspond to the `string` type in .slint
-    String(SharedString),
+    String(SharedString) = 2,
     /// Correspond to the `bool` type in .slint
-    Bool(bool),
+    Bool(bool) = 3,
     /// Correspond to the `image` type in .slint
-    Image(Image),
+    Image(Image) = 4,
     /// A model (that includes array in .slint)
-    Model(ModelRc<Value>),
+    Model(ModelRc<Value>) = 5,
     /// An object
-    Struct(Struct),
+    Struct(Struct) = 6,
     /// Correspond to `brush` or `color` type in .slint.  For color, this is then a [`Brush::SolidColor`]
-    Brush(Brush),
+    Brush(Brush) = 7,
     #[doc(hidden)]
     /// The elements of a path
-    PathData(PathData),
+    PathData(PathData) = 8,
     #[doc(hidden)]
     /// An easing curve
-    EasingCurve(i_slint_core::animations::EasingCurve),
+    EasingCurve(i_slint_core::animations::EasingCurve) = 9,
     #[doc(hidden)]
     /// An enumeration, like `TextHorizontalAlignment::align_center`, represented by `("TextHorizontalAlignment", "align_center")`.
     /// FIXME: consider representing that with a number?
-    EnumerationValue(String, String),
+    EnumerationValue(String, String) = 10,
     #[doc(hidden)]
-    LayoutCache(SharedVector<f32>),
+    LayoutCache(SharedVector<f32>) = 11,
+    #[doc(hidden)]
+    /// Correspond to the `component-factory` type in .slint
+    ComponentFactory(ComponentFactory) = 12,
 }
 
 impl Value {
@@ -130,12 +144,6 @@ impl Value {
             Value::Image(_) => ValueType::Image,
             _ => ValueType::Other,
         }
-    }
-}
-
-impl Default for Value {
-    fn default() -> Self {
-        Value::Void
     }
 }
 
@@ -162,6 +170,9 @@ impl PartialEq for Value {
                 matches!(other, Value::EnumerationValue(rhs_name, rhs_value) if lhs_name == rhs_name && lhs_value == rhs_value)
             }
             Value::LayoutCache(lhs) => matches!(other, Value::LayoutCache(rhs) if lhs == rhs),
+            Value::ComponentFactory(lhs) => {
+                matches!(other, Value::ComponentFactory(rhs) if lhs == rhs)
+            }
         }
     }
 }
@@ -185,6 +196,7 @@ impl std::fmt::Debug for Value {
             Value::EasingCurve(c) => write!(f, "Value::EasingCurve({:?})", c),
             Value::EnumerationValue(n, v) => write!(f, "Value::EnumerationValue({:?}, {:?})", n, v),
             Value::LayoutCache(v) => write!(f, "Value::LayoutCache({:?})", v),
+            Value::ComponentFactory(factory) => write!(f, "Value::ComponentFactory({:?})", factory),
         }
     }
 }
@@ -226,8 +238,9 @@ declare_value_conversion!(Brush => [Brush] );
 declare_value_conversion!(PathData => [PathData]);
 declare_value_conversion!(EasingCurve => [i_slint_core::animations::EasingCurve]);
 declare_value_conversion!(LayoutCache => [SharedVector<f32>] );
+declare_value_conversion!(ComponentFactory => [ComponentFactory] );
 
-/// Implement From / TryFrom for Value that convert a `struct` to/from `Value::Object`
+/// Implement From / TryFrom for Value that convert a `struct` to/from `Value::Struct`
 macro_rules! declare_value_struct_conversion {
     (struct $name:path { $($field:ident),* $(, ..$extra:expr)? }) => {
         impl From<$name> for Value {
@@ -240,28 +253,79 @@ macro_rules! declare_value_struct_conversion {
         impl TryFrom<Value> for $name {
             type Error = ();
             fn try_from(v: Value) -> Result<$name, Self::Error> {
+                #[allow(clippy::field_reassign_with_default)]
                 match v {
                     Value::Struct(x) => {
                         type Ty = $name;
-                        Ok(Ty {
-                            $($field: x.get_field(stringify!($field)).ok_or(())?.clone().try_into().map_err(|_|())?),*
-                            $(, ..$extra)?
-                        })
+                        #[allow(unused)]
+                        let mut res: Ty = Ty::default();
+                        $(let mut res: Ty = $extra;)?
+                        $(res.$field = x.get_field(stringify!($field)).ok_or(())?.clone().try_into().map_err(|_|())?;)*
+                        Ok(res)
                     }
                     _ => Err(()),
                 }
             }
         }
     };
+    ($(
+        $(#[$struct_attr:meta])*
+        struct $Name:ident {
+            @name = $inner_name:literal
+            export {
+                $( $(#[$pub_attr:meta])* $pub_field:ident : $pub_type:ty, )*
+            }
+            private {
+                $( $(#[$pri_attr:meta])* $pri_field:ident : $pri_type:ty, )*
+            }
+        }
+    )*) => {
+        $(
+            impl From<$Name> for Value {
+                fn from(item: $Name) -> Self {
+                    let mut struct_ = Struct::default();
+                    $(struct_.set_field(stringify!($pub_field).into(), item.$pub_field.into());)*
+                    $(handle_private!(SET $Name $pri_field, struct_, item);)*
+                    Value::Struct(struct_)
+                }
+            }
+            impl TryFrom<Value> for $Name {
+                type Error = ();
+                fn try_from(v: Value) -> Result<$Name, Self::Error> {
+                    #[allow(clippy::field_reassign_with_default)]
+                    match v {
+                        Value::Struct(x) => {
+                            type Ty = $Name;
+                            #[allow(unused)]
+                            let mut res: Ty = Ty::default();
+                            $(res.$pub_field = x.get_field(stringify!($pub_field)).ok_or(())?.clone().try_into().map_err(|_|())?;)*
+                            $(handle_private!(GET $Name $pri_field, x, res);)*
+                            Ok(res)
+                        }
+                        _ => Err(()),
+                    }
+                }
+            }
+        )*
+    };
 }
 
-declare_value_struct_conversion!(struct i_slint_core::model::StandardListViewItem { text });
-declare_value_struct_conversion!(struct i_slint_core::properties::StateInfo { current_state, previous_state, change_time });
-declare_value_struct_conversion!(struct i_slint_core::input::KeyboardModifiers { control, alt, shift, meta });
-declare_value_struct_conversion!(struct i_slint_core::input::KeyEvent { text, modifiers, ..Default::default() });
+macro_rules! handle_private {
+    (SET StateInfo $field:ident, $struct_:ident, $item:ident) => {
+        $struct_.set_field(stringify!($field).into(), $item.$field.into())
+    };
+    (SET $_:ident $field:ident, $struct_:ident, $item:ident) => {{}};
+    (GET StateInfo $field:ident, $struct_:ident, $item:ident) => {
+        $item.$field =
+            $struct_.get_field(stringify!($field)).ok_or(())?.clone().try_into().map_err(|_| ())?
+    };
+    (GET $_:ident $field:ident, $struct_:ident, $item:ident) => {{}};
+}
+
 declare_value_struct_conversion!(struct i_slint_core::layout::LayoutInfo { min, max, min_percent, max_percent, preferred, stretch });
 declare_value_struct_conversion!(struct i_slint_core::graphics::Point { x, y, ..Default::default()});
-declare_value_struct_conversion!(struct i_slint_core::items::PointerEvent { kind, button });
+
+i_slint_common::for_each_builtin_structs!(declare_value_struct_conversion);
 
 /// Implement From / TryFrom for Value that convert an `enum` to/from `Value::EnumerationValue`
 ///
@@ -333,16 +397,16 @@ impl TryFrom<Value> for () {
     }
 }
 
-impl From<i_slint_core::Color> for Value {
+impl From<Color> for Value {
     #[inline]
-    fn from(c: i_slint_core::Color) -> Self {
+    fn from(c: Color) -> Self {
         Value::Brush(Brush::SolidColor(c))
     }
 }
-impl TryFrom<Value> for i_slint_core::Color {
+impl TryFrom<Value> for Color {
     type Error = Value;
     #[inline]
-    fn try_from(v: Value) -> Result<i_slint_core::Color, Self::Error> {
+    fn try_from(v: Value) -> Result<Color, Self::Error> {
         match v {
             Value::Brush(Brush::SolidColor(c)) => Ok(c),
             _ => Err(v),
@@ -429,24 +493,25 @@ impl FromIterator<(String, Value)> for Struct {
     }
 }
 
-/// ComponentCompiler is the entry point to the Slint interpreter that can be used
-/// to load .slint files or compile them on-the-fly from a string.
+/// ComponentCompiler is deprecated, use [`Compiler`] instead
+#[deprecated(note = "Use slint_interpreter::Complier instead")]
 pub struct ComponentCompiler {
     config: i_slint_compiler::CompilerConfiguration,
     diagnostics: Vec<Diagnostic>,
 }
 
+#[allow(deprecated)]
 impl Default for ComponentCompiler {
     fn default() -> Self {
-        Self {
-            config: i_slint_compiler::CompilerConfiguration::new(
-                i_slint_compiler::generator::OutputFormat::Interpreter,
-            ),
-            diagnostics: vec![],
-        }
+        let mut config = i_slint_compiler::CompilerConfiguration::new(
+            i_slint_compiler::generator::OutputFormat::Interpreter,
+        );
+        config.components_to_generate = i_slint_compiler::ComponentSelection::LastExported;
+        Self { config, diagnostics: vec![] }
     }
 }
 
+#[allow(deprecated)]
 impl ComponentCompiler {
     /// Returns a new ComponentCompiler.
     pub fn new() -> Self {
@@ -463,7 +528,27 @@ impl ComponentCompiler {
         &self.config.include_paths
     }
 
+    /// Sets the library paths used for looking up `@library` imports to the specified map of library names to paths.
+    pub fn set_library_paths(&mut self, library_paths: HashMap<String, PathBuf>) {
+        self.config.library_paths = library_paths;
+    }
+
+    /// Returns the library paths the component compiler is currently configured with.
+    pub fn library_paths(&self) -> &HashMap<String, PathBuf> {
+        &self.config.library_paths
+    }
+
     /// Sets the style to be used for widgets.
+    ///
+    /// Use the "material" style as widget style when compiling:
+    /// ```rust
+    /// use slint_interpreter::{ComponentDefinition, ComponentCompiler, ComponentHandle};
+    ///
+    /// let mut compiler = ComponentCompiler::default();
+    /// compiler.set_style("material".into());
+    /// let definition =
+    ///     spin_on::spin_on(compiler.build_from_path("hello.slint"));
+    /// ```
     pub fn set_style(&mut self, style: String) {
         self.config.style = Some(style);
     }
@@ -471,6 +556,11 @@ impl ComponentCompiler {
     /// Returns the widget style the compiler is currently using when compiling .slint files.
     pub fn style(&self) -> Option<&String> {
         self.config.style.as_ref()
+    }
+
+    /// The domain used for translations
+    pub fn set_translation_domain(&mut self, domain: String) {
+        self.config.translation_domain = Some(domain);
     }
 
     /// Sets the callback that will be invoked when loading imported .slint files. The specified
@@ -509,6 +599,7 @@ impl ComponentCompiler {
     /// Diagnostics from previous calls are cleared when calling this function.
     ///
     /// If the path is `"-"`, the file will be read from stdin.
+    /// If the extension of the file .rs, the first `slint!` macro from a rust file will be extracted
     ///
     /// This function is `async` but in practice, this is only asynchronous if
     /// [`Self::set_file_loader`] was called and its future is actually asynchronous.
@@ -527,11 +618,10 @@ impl ComponentCompiler {
             }
         };
 
-        generativity::make_guard!(guard);
-        let (c, diag) =
-            crate::dynamic_component::load(source, path.into(), self.config.clone(), guard).await;
-        self.diagnostics = diag.into_iter().collect();
-        c.ok().map(|inner| ComponentDefinition { inner: inner.into() })
+        let r =
+            crate::dynamic_item_tree::load(source, path.into(), None, self.config.clone()).await;
+        self.diagnostics = r.diagnostics.into_iter().collect();
+        r.components.into_values().next()
     }
 
     /// Compile some .slint code into a ComponentDefinition
@@ -555,62 +645,330 @@ impl ComponentCompiler {
         source_code: String,
         path: PathBuf,
     ) -> Option<ComponentDefinition> {
-        generativity::make_guard!(guard);
-        let (c, diag) =
-            crate::dynamic_component::load(source_code, path, self.config.clone(), guard).await;
-        self.diagnostics = diag.into_iter().collect();
-        c.ok().map(|inner| ComponentDefinition { inner: inner.into() })
+        self.build_from_versioned_source_impl(source_code, path, None).await
+    }
+
+    /// Compile some .slint code into a ComponentDefinition
+    ///
+    /// The `path` argument will be used for diagnostics and to compute relative
+    /// paths while importing, and the version of the `SourceFileInner` will be
+    /// set to `version`
+    ///
+    /// Any diagnostics produced during the compilation, such as warnings or errors, are collected
+    /// in this ComponentCompiler and can be retrieved after the call using the [`Self::diagnostics()`]
+    /// function. The [`print_diagnostics`] function can be used to display the diagnostics
+    /// to the users.
+    ///
+    /// Diagnostics from previous calls are cleared when calling this function.
+    ///
+    /// This function is `async` but in practice, this is only asynchronous if
+    /// [`Self::set_file_loader`] is set and its future is actually asynchronous.
+    /// If that is not used, then it is fine to use a very simple executor, such as the one
+    /// provided by the `spin_on` crate
+    #[doc(hidden)]
+    #[cfg(feature = "internal")]
+    pub async fn build_from_versioned_source(
+        &mut self,
+        source_code: String,
+        path: PathBuf,
+        version: SourceFileVersion,
+    ) -> Option<ComponentDefinition> {
+        self.build_from_versioned_source_impl(source_code, path, version).await
+    }
+
+    async fn build_from_versioned_source_impl(
+        &mut self,
+        source_code: String,
+        path: PathBuf,
+        version: SourceFileVersion,
+    ) -> Option<ComponentDefinition> {
+        let r =
+            crate::dynamic_item_tree::load(source_code, path, version, self.config.clone()).await;
+        self.diagnostics = r.diagnostics.into_iter().collect();
+        r.components.into_values().next()
+    }
+}
+
+/// This is the entry point of the crate, it can be used to load a `.slint` file and
+/// compile it into a [`CompilationResult`].
+pub struct Compiler {
+    config: i_slint_compiler::CompilerConfiguration,
+}
+
+impl Default for Compiler {
+    fn default() -> Self {
+        let config = i_slint_compiler::CompilerConfiguration::new(
+            i_slint_compiler::generator::OutputFormat::Interpreter,
+        );
+        Self { config }
+    }
+}
+
+impl Compiler {
+    /// Returns a new Compiler.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Allow access to the underlying `CompilerConfiguration`
+    ///
+    /// This is an internal function without and ABI or API stability guarantees.
+    #[doc(hidden)]
+    #[cfg(feature = "internal")]
+    pub fn compiler_configuration(
+        &mut self,
+        _: i_slint_core::InternalToken,
+    ) -> &mut i_slint_compiler::CompilerConfiguration {
+        &mut self.config
+    }
+
+    /// Sets the include paths used for looking up `.slint` imports to the specified vector of paths.
+    pub fn set_include_paths(&mut self, include_paths: Vec<std::path::PathBuf>) {
+        self.config.include_paths = include_paths;
+    }
+
+    /// Returns the include paths the component compiler is currently configured with.
+    pub fn include_paths(&self) -> &Vec<std::path::PathBuf> {
+        &self.config.include_paths
+    }
+
+    /// Sets the library paths used for looking up `@library` imports to the specified map of library names to paths.
+    pub fn set_library_paths(&mut self, library_paths: HashMap<String, PathBuf>) {
+        self.config.library_paths = library_paths;
+    }
+
+    /// Returns the library paths the component compiler is currently configured with.
+    pub fn library_paths(&self) -> &HashMap<String, PathBuf> {
+        &self.config.library_paths
+    }
+
+    /// Sets the style to be used for widgets.
+    ///
+    /// Use the "material" style as widget style when compiling:
+    /// ```rust
+    /// use slint_interpreter::{ComponentDefinition, Compiler, ComponentHandle};
+    ///
+    /// let mut compiler = Compiler::default();
+    /// compiler.set_style("material".into());
+    /// let result = spin_on::spin_on(compiler.build_from_path("hello.slint"));
+    /// ```
+    pub fn set_style(&mut self, style: String) {
+        self.config.style = Some(style);
+    }
+
+    /// Returns the widget style the compiler is currently using when compiling .slint files.
+    pub fn style(&self) -> Option<&String> {
+        self.config.style.as_ref()
+    }
+
+    /// The domain used for translations
+    pub fn set_translation_domain(&mut self, domain: String) {
+        self.config.translation_domain = Some(domain);
+    }
+
+    /// Sets the callback that will be invoked when loading imported .slint files. The specified
+    /// `file_loader_callback` parameter will be called with a canonical file path as argument
+    /// and is expected to return a future that, when resolved, provides the source code of the
+    /// .slint file to be imported as a string.
+    /// If an error is returned, then the build will abort with that error.
+    /// If None is returned, it means the normal resolution algorithm will proceed as if the hook
+    /// was not in place (i.e: load from the file system following the include paths)
+    pub fn set_file_loader(
+        &mut self,
+        file_loader_fallback: impl Fn(
+                &Path,
+            ) -> core::pin::Pin<
+                Box<dyn core::future::Future<Output = Option<std::io::Result<String>>>>,
+            > + 'static,
+    ) {
+        self.config.open_import_fallback =
+            Some(Rc::new(move |path| file_loader_fallback(Path::new(path.as_str()))));
+    }
+
+    /// Compile a .slint file
+    ///
+    /// Returns a structure that holds the diagnostics and the compiled components.
+    ///
+    /// Any diagnostics produced during the compilation, such as warnings or errors, can be retrieved
+    /// after the call using [`CompilationResult::diagnostics()`].
+    ///
+    /// If the file was compiled without error, the list of component names can be obtained with
+    /// [`CompilationResult::component_names`], and the compiled components themselves with
+    /// [`CompilationResult::component()`].
+    ///
+    /// If the path is `"-"`, the file will be read from stdin.
+    /// If the extension of the file .rs, the first `slint!` macro from a rust file will be extracted
+    ///
+    /// This function is `async` but in practice, this is only asynchronous if
+    /// [`Self::set_file_loader`] was called and its future is actually asynchronous.
+    /// If that is not used, then it is fine to use a very simple executor, such as the one
+    /// provided by the `spin_on` crate
+    pub async fn build_from_path<P: AsRef<Path>>(&self, path: P) -> CompilationResult {
+        let path = path.as_ref();
+        let source = match i_slint_compiler::diagnostics::load_from_path(path) {
+            Ok(s) => s,
+            Err(d) => {
+                let mut diagnostics = i_slint_compiler::diagnostics::BuildDiagnostics::default();
+                diagnostics.push_compiler_error(d);
+                return CompilationResult {
+                    components: HashMap::new(),
+                    diagnostics: diagnostics.into_iter().collect(),
+                };
+            }
+        };
+
+        crate::dynamic_item_tree::load(source, path.into(), None, self.config.clone()).await
+    }
+
+    /// Compile some .slint code
+    ///
+    /// The `path` argument will be used for diagnostics and to compute relative
+    /// paths while importing.
+    ///
+    /// Any diagnostics produced during the compilation, such as warnings or errors, can be retrieved
+    /// after the call using [`CompilationResult::diagnostics()`].
+    ///
+    /// This function is `async` but in practice, this is only asynchronous if
+    /// [`Self::set_file_loader`] is set and its future is actually asynchronous.
+    /// If that is not used, then it is fine to use a very simple executor, such as the one
+    /// provided by the `spin_on` crate
+    pub async fn build_from_source(&self, source_code: String, path: PathBuf) -> CompilationResult {
+        crate::dynamic_item_tree::load(source_code, path, None, self.config.clone()).await
+    }
+}
+
+/// The result of a compilation
+///
+/// If [`Self::has_errors()`] is true, then the compilation failed.
+/// The [`Self::diagnostics()`] function can be used to retrieve the diagnostics (errors and/or warnings)
+/// or [`Self::print_diagnostics()`] can be used to print them to stderr.
+/// The components can be retrieved using [`Self::components()`]
+#[derive(Clone)]
+pub struct CompilationResult {
+    pub(crate) components: HashMap<String, ComponentDefinition>,
+    pub(crate) diagnostics: Vec<Diagnostic>,
+}
+
+impl core::fmt::Debug for CompilationResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompilationResult")
+            .field("components", &self.components.keys())
+            .field("diagnostics", &self.diagnostics)
+            .finish()
+    }
+}
+
+impl CompilationResult {
+    /// Returns true if the compilation failed.
+    /// The errors can be retrieved using the [`Self::diagnostics()`] function.
+    pub fn has_errors(&self) -> bool {
+        self.diagnostics().any(|diag| diag.level() == DiagnosticLevel::Error)
+    }
+
+    /// Return an iterator over the diagnostics.
+    ///
+    /// You can also call [`Self::print_diagnostics()`] to output the diagnostics to stderr
+    pub fn diagnostics(&self) -> impl Iterator<Item = Diagnostic> + '_ {
+        self.diagnostics.iter().cloned()
+    }
+
+    /// Print the diagnostics to stderr
+    ///
+    /// The diagnostics are printed in the same style as rustc errors
+    ///
+    /// This function is available when the `display-diagnostics` is enabled.
+    #[cfg(feature = "display-diagnostics")]
+    pub fn print_diagnostics(&self) {
+        print_diagnostics(&self.diagnostics)
+    }
+
+    /// Returns an iterator over the compiled components.
+    pub fn components(&self) -> impl Iterator<Item = ComponentDefinition> + '_ {
+        self.components.values().cloned()
+    }
+
+    /// Returns the names of the components that were compiled.
+    pub fn component_names(&self) -> impl Iterator<Item = &str> + '_ {
+        self.components.keys().map(|s| s.as_str())
+    }
+
+    /// Return the component definition for the given name.
+    /// If the component does not exist, then `None` is returned.
+    pub fn component(&self, name: &str) -> Option<ComponentDefinition> {
+        self.components.get(name).cloned()
     }
 }
 
 /// ComponentDefinition is a representation of a compiled component from .slint markup.
 ///
-/// It can be constructed from a .slint file using the [`ComponentCompiler::build_from_path`] or [`ComponentCompiler::build_from_source`] functions.
+/// It can be constructed from a .slint file using the [`Compiler::build_from_path`] or [`Compiler::build_from_source`] functions.
 /// And then it can be instantiated with the [`Self::create`] function.
 ///
 /// The ComponentDefinition acts as a factory to create new instances. When you've finished
 /// creating the instances it is safe to drop the ComponentDefinition.
 #[derive(Clone)]
 pub struct ComponentDefinition {
-    inner: crate::dynamic_component::ErasedComponentDescription,
+    pub(crate) inner: crate::dynamic_item_tree::ErasedItemTreeDescription,
 }
 
 impl ComponentDefinition {
     /// Creates a new instance of the component and returns a shared handle to it.
-    pub fn create(&self) -> ComponentInstance {
+    pub fn create(&self) -> Result<ComponentInstance, PlatformError> {
         generativity::make_guard!(guard);
-        ComponentInstance {
-            inner: self.inner.unerase(guard).clone().create(
-                #[cfg(target_arch = "wasm32")]
-                "canvas".into(),
-            ),
-        }
+        Ok(ComponentInstance {
+            inner: self.inner.unerase(guard).clone().create(Default::default())?,
+        })
+    }
+
+    /// Creates a new instance of the component and returns a shared handle to it.
+    #[doc(hidden)]
+    #[cfg(feature = "internal")]
+    pub fn create_embedded(&self, ctx: FactoryContext) -> Result<ComponentInstance, PlatformError> {
+        generativity::make_guard!(guard);
+        Ok(ComponentInstance {
+            inner: self.inner.unerase(guard).clone().create(WindowOptions::Embed {
+                parent_item_tree: ctx.parent_item_tree,
+                parent_item_tree_index: ctx.parent_item_tree_index,
+            })?,
+        })
     }
 
     /// Instantiate the component for wasm using the given canvas id
     #[cfg(target_arch = "wasm32")]
-    pub fn create_with_canvas_id(&self, canvas_id: &str) -> ComponentInstance {
+    pub fn create_with_canvas_id(
+        &self,
+        canvas_id: &str,
+    ) -> Result<ComponentInstance, PlatformError> {
         generativity::make_guard!(guard);
-        ComponentInstance { inner: self.inner.unerase(guard).clone().create(canvas_id.into()) }
-    }
-
-    /// Instantiate the component using an existing window.
-    #[doc(hidden)]
-    pub fn create_with_existing_window(&self, window: &Window) -> ComponentInstance {
-        generativity::make_guard!(guard);
-        ComponentInstance {
+        Ok(ComponentInstance {
             inner: self
                 .inner
                 .unerase(guard)
                 .clone()
-                .create_with_existing_window(&WindowInner::from_pub(window).window_adapter()),
-        }
+                .create(WindowOptions::CreateWithCanvasId(canvas_id.into()))?,
+        })
+    }
+
+    /// Instantiate the component using an existing window.
+    #[doc(hidden)]
+    #[cfg(feature = "internal")]
+    pub fn create_with_existing_window(
+        &self,
+        window: &Window,
+    ) -> Result<ComponentInstance, PlatformError> {
+        generativity::make_guard!(guard);
+        Ok(ComponentInstance {
+            inner: self.inner.unerase(guard).clone().create(WindowOptions::UseExistingWindow(
+                WindowInner::from_pub(window).window_adapter(),
+            ))?,
+        })
     }
 
     /// List of publicly declared properties or callback.
     ///
     /// This is internal because it exposes the `Type` from compilerlib.
     #[doc(hidden)]
+    #[cfg(feature = "internal")]
     pub fn properties_and_callbacks(
         &self,
     ) -> impl Iterator<Item = (String, i_slint_compiler::langtype::Type)> + '_ {
@@ -620,7 +978,8 @@ impl ComponentDefinition {
         self.inner.unerase(guard).properties()
     }
 
-    /// List of publicly declared properties.
+    /// Returns an iterator over all publicly declared properties. Each iterator item is a tuple of property name
+    /// and property type for each of them.
     pub fn properties(&self) -> impl Iterator<Item = (String, ValueType)> + '_ {
         // We create here a 'static guard, because unfortunately the returned type would be restricted to the guard lifetime
         // which is not required, but this is safe because there is only one instance of the unerased type
@@ -648,6 +1007,20 @@ impl ComponentDefinition {
         })
     }
 
+    /// Returns the names of all publicly declared functions.
+    pub fn functions(&self) -> impl Iterator<Item = String> + '_ {
+        // We create here a 'static guard, because unfortunately the returned type would be restricted to the guard lifetime
+        // which is not required, but this is safe because there is only one instance of the unerased type
+        let guard = unsafe { generativity::Guard::new(generativity::Id::new()) };
+        self.inner.unerase(guard).properties().filter_map(|(prop_name, prop_type)| {
+            if matches!(prop_type, LangType::Function { .. }) {
+                Some(prop_name)
+            } else {
+                None
+            }
+        })
+    }
+
     /// Returns the names of all exported global singletons
     ///
     /// **Note:** Only globals that are exported or re-exported from the main .slint file will
@@ -657,6 +1030,21 @@ impl ComponentDefinition {
         // which is not required, but this is safe because there is only one instance of the unerased type
         let guard = unsafe { generativity::Guard::new(generativity::Id::new()) };
         self.inner.unerase(guard).global_names()
+    }
+
+    /// List of publicly declared properties or callback in the exported global singleton specified by its name.
+    ///
+    /// This is internal because it exposes the `Type` from compilerlib.
+    #[doc(hidden)]
+    #[cfg(feature = "internal")]
+    pub fn global_properties_and_callbacks(
+        &self,
+        global_name: &str,
+    ) -> Option<impl Iterator<Item = (String, i_slint_compiler::langtype::Type)> + '_> {
+        // We create here a 'static guard, because unfortunately the returned type would be restricted to the guard lifetime
+        // which is not required, but this is safe because there is only one instance of the unerased type
+        let guard = unsafe { generativity::Guard::new(generativity::Id::new()) };
+        self.inner.unerase(guard).global_properties(global_name)
     }
 
     /// List of publicly declared properties in the exported global singleton specified by its name.
@@ -694,12 +1082,64 @@ impl ComponentDefinition {
         })
     }
 
+    /// List of publicly declared functions in the exported global singleton specified by its name.
+    pub fn global_functions(&self, global_name: &str) -> Option<impl Iterator<Item = String> + '_> {
+        // We create here a 'static guard, because unfortunately the returned type would be restricted to the guard lifetime
+        // which is not required, but this is safe because there is only one instance of the unerased type
+        let guard = unsafe { generativity::Guard::new(generativity::Id::new()) };
+        self.inner.unerase(guard).global_properties(global_name).map(|iter| {
+            iter.filter_map(|(prop_name, prop_type)| {
+                if matches!(prop_type, LangType::Function { .. }) {
+                    Some(prop_name)
+                } else {
+                    None
+                }
+            })
+        })
+    }
+
     /// The name of this Component as written in the .slint file
     pub fn name(&self) -> &str {
         // We create here a 'static guard, because unfortunately the returned type would be restricted to the guard lifetime
         // which is not required, but this is safe because there is only one instance of the unerased type
         let guard = unsafe { generativity::Guard::new(generativity::Id::new()) };
         self.inner.unerase(guard).id()
+    }
+
+    /// This gives access to the tree of Elements.
+    #[cfg(feature = "internal")]
+    #[doc(hidden)]
+    pub fn root_component(&self) -> Rc<i_slint_compiler::object_tree::Component> {
+        let guard = unsafe { generativity::Guard::new(generativity::Id::new()) };
+        self.inner.unerase(guard).original.clone()
+    }
+
+    /// Return the `TypeLoader` used when parsing the code in the interpreter.
+    ///
+    /// WARNING: this is not part of the public API
+    #[cfg(feature = "highlight")]
+    pub fn type_loader(&self) -> std::rc::Rc<i_slint_compiler::typeloader::TypeLoader> {
+        let guard = unsafe { generativity::Guard::new(generativity::Id::new()) };
+        self.inner.unerase(guard).type_loader.get().unwrap().clone()
+    }
+
+    /// Return the `TypeLoader` used when parsing the code in the interpreter in
+    /// a state before most passes were applied by the compiler.
+    ///
+    /// Each returned type loader is a deep copy of the entire state connected to it,
+    /// so this is a fairly expensive function!
+    ///
+    /// WARNING: this is not part of the public API
+    #[cfg(feature = "highlight")]
+    pub fn raw_type_loader(&self) -> Option<i_slint_compiler::typeloader::TypeLoader> {
+        let guard = unsafe { generativity::Guard::new(generativity::Id::new()) };
+        self.inner
+            .unerase(guard)
+            .raw_type_loader
+            .get()
+            .unwrap()
+            .as_ref()
+            .and_then(|tl| i_slint_compiler::typeloader::snapshot(tl))
     }
 }
 
@@ -726,10 +1166,7 @@ pub fn print_diagnostics(diagnostics: &[Diagnostic]) {
 /// An instance can be put on screen with the [`ComponentInstance::run`] function.
 #[repr(C)]
 pub struct ComponentInstance {
-    inner: vtable::VRc<
-        i_slint_core::component::ComponentVTable,
-        crate::dynamic_component::ErasedComponentBox,
-    >,
+    inner: crate::dynamic_item_tree::DynamicComponentVRc,
 }
 
 impl ComponentInstance {
@@ -744,32 +1181,61 @@ impl ComponentInstance {
     /// ## Examples
     ///
     /// ```
-    /// use slint_interpreter::{ComponentDefinition, ComponentCompiler, Value, SharedString};
+    /// # i_slint_backend_testing::init_no_event_loop();
+    /// use slint_interpreter::{ComponentDefinition, Compiler, Value, SharedString};
     /// let code = r#"
-    ///     MyWin := Window {
-    ///         property <int> my_property: 42;
+    ///     export component MyWin inherits Window {
+    ///         in-out property <int> my_property: 42;
     ///     }
     /// "#;
-    /// let mut compiler = ComponentCompiler::default();
-    /// let definition = spin_on::spin_on(
+    /// let mut compiler = Compiler::default();
+    /// let result = spin_on::spin_on(
     ///     compiler.build_from_source(code.into(), Default::default()));
-    /// assert!(compiler.diagnostics().is_empty(), "{:?}", compiler.diagnostics());
-    /// let instance = definition.unwrap().create();
+    /// assert_eq!(result.diagnostics().count(), 0, "{:?}", result.diagnostics().collect::<Vec<_>>());
+    /// let instance = result.component("MyWin").unwrap().create().unwrap();
     /// assert_eq!(instance.get_property("my_property").unwrap(), Value::from(42));
     /// ```
     pub fn get_property(&self, name: &str) -> Result<Value, GetPropertyError> {
         generativity::make_guard!(guard);
         let comp = self.inner.unerase(guard);
+        let name = normalize_identifier(name);
+
+        if comp
+            .description()
+            .original
+            .root_element
+            .borrow()
+            .property_declarations
+            .get(name.as_ref())
+            .map_or(true, |d| !d.expose_in_public_api)
+        {
+            return Err(GetPropertyError::NoSuchProperty);
+        }
+
         comp.description()
-            .get_property(comp.borrow(), &normalize_identifier(name))
+            .get_property(comp.borrow(), &name)
             .map_err(|()| GetPropertyError::NoSuchProperty)
     }
 
-    /// Set the value for a public property of this component
+    /// Set the value for a public property of this component.
     pub fn set_property(&self, name: &str, value: Value) -> Result<(), SetPropertyError> {
+        let name = normalize_identifier(name);
         generativity::make_guard!(guard);
         let comp = self.inner.unerase(guard);
-        comp.description().set_property(comp.borrow(), &normalize_identifier(name), value)
+        let d = comp.description();
+        let elem = d.original.root_element.borrow();
+        let decl = elem
+            .property_declarations
+            .get(name.as_ref())
+            .ok_or(SetPropertyError::NoSuchProperty)?;
+
+        if !decl.expose_in_public_api {
+            return Err(SetPropertyError::NoSuchProperty);
+        } else if decl.visibility == i_slint_compiler::object_tree::PropertyVisibility::Output {
+            return Err(SetPropertyError::AccessDenied);
+        }
+
+        d.set_property(comp.borrow(), &name, value)
     }
 
     /// Set a handler for the callback with the given name. A callback with that
@@ -782,18 +1248,19 @@ impl ComponentInstance {
     /// ## Examples
     ///
     /// ```
-    /// use slint_interpreter::{ComponentDefinition, ComponentCompiler, Value, SharedString, ComponentHandle};
+    /// # i_slint_backend_testing::init_no_event_loop();
+    /// use slint_interpreter::{Compiler, Value, SharedString, ComponentHandle};
     /// use core::convert::TryInto;
     /// let code = r#"
-    ///     MyWin := Window {
+    ///     export component MyWin inherits Window {
     ///         callback foo(int) -> int;
-    ///         property <int> my_prop: 12;
+    ///         in-out property <int> my_prop: 12;
     ///     }
     /// "#;
-    /// let definition = spin_on::spin_on(
-    ///     ComponentCompiler::default().build_from_source(code.into(), Default::default()));
-    /// let instance = definition.unwrap().create();
-    ///
+    /// let result = spin_on::spin_on(
+    ///     Compiler::default().build_from_source(code.into(), Default::default()));
+    /// assert_eq!(result.diagnostics().count(), 0, "{:?}", result.diagnostics().collect::<Vec<_>>());
+    /// let instance = result.component("MyWin").unwrap().create().unwrap();
     /// let instance_weak = instance.as_weak();
     /// instance.set_callback("foo", move |args: &[Value]| -> Value {
     ///     let arg: u32 = args[0].clone().try_into().unwrap();
@@ -802,7 +1269,7 @@ impl ComponentInstance {
     ///     Value::from(arg + my_prop)
     /// }).unwrap();
     ///
-    /// let res = instance.invoke_callback("foo", &[Value::from(500)]).unwrap();
+    /// let res = instance.invoke("foo", &[Value::from(500)]).unwrap();
     /// assert_eq!(res, Value::from(500+12));
     /// ```
     pub fn set_callback(
@@ -817,20 +1284,16 @@ impl ComponentInstance {
             .map_err(|()| SetCallbackError::NoSuchCallback)
     }
 
-    /// Call the given callback with the arguments
+    /// Call the given callback or function with the arguments
     ///
     /// ## Examples
     /// See the documentation of [`Self::set_callback`] for an example
-    pub fn invoke_callback(
-        &self,
-        name: &str,
-        args: &[Value],
-    ) -> Result<Value, InvokeCallbackError> {
+    pub fn invoke(&self, name: &str, args: &[Value]) -> Result<Value, InvokeError> {
         generativity::make_guard!(guard);
         let comp = self.inner.unerase(guard);
         comp.description()
-            .invoke_callback(comp.borrow(), &normalize_identifier(name), args)
-            .map_err(|()| InvokeCallbackError::NoSuchCallback)
+            .invoke(comp.borrow(), &normalize_identifier(name), args)
+            .map_err(|()| InvokeError::NoSuchCallable)
     }
 
     /// Return the value for a property within an exported global singleton used by this component.
@@ -841,20 +1304,20 @@ impl ComponentInstance {
     /// ## Examples
     ///
     /// ```
-    /// use slint_interpreter::{ComponentDefinition, ComponentCompiler, Value, SharedString};
+    /// # i_slint_backend_testing::init_no_event_loop();
+    /// use slint_interpreter::{Compiler, Value, SharedString};
     /// let code = r#"
-    ///     global Glob := {
-    ///         property <int> my_property: 42;
+    ///     global Glob {
+    ///         in-out property <int> my_property: 42;
     ///     }
     ///     export { Glob as TheGlobal }
-    ///     MyWin := Window {
+    ///     export component MyWin inherits Window {
     ///     }
     /// "#;
-    /// let mut compiler = ComponentCompiler::default();
-    /// let definition = spin_on::spin_on(
-    ///     compiler.build_from_source(code.into(), Default::default()));
-    /// assert!(compiler.diagnostics().is_empty(), "{:?}", compiler.diagnostics());
-    /// let instance = definition.unwrap().create();
+    /// let mut compiler = Compiler::default();
+    /// let result = spin_on::spin_on(compiler.build_from_source(code.into(), Default::default()));
+    /// assert_eq!(result.diagnostics().count(), 0, "{:?}", result.diagnostics().collect::<Vec<_>>());
+    /// let instance = result.component("MyWin").unwrap().create().unwrap();
     /// assert_eq!(instance.get_global_property("TheGlobal", "my_property").unwrap(), Value::from(42));
     /// ```
     pub fn get_global_property(
@@ -895,19 +1358,20 @@ impl ComponentInstance {
     /// ## Examples
     ///
     /// ```
-    /// use slint_interpreter::{ComponentDefinition, ComponentCompiler, Value, SharedString};
+    /// # i_slint_backend_testing::init_no_event_loop();
+    /// use slint_interpreter::{Compiler, Value, SharedString};
     /// use core::convert::TryInto;
     /// let code = r#"
-    ///     export global Logic := {
-    ///         callback to_uppercase(string) -> string;
+    ///     export global Logic {
+    ///         pure callback to_uppercase(string) -> string;
     ///     }
-    ///     MyWin := Window {
-    ///         property <string> hello: Logic.to_uppercase("world");
+    ///     export component MyWin inherits Window {
+    ///         out property <string> hello: Logic.to_uppercase("world");
     ///     }
     /// "#;
-    /// let definition = spin_on::spin_on(
-    ///     ComponentCompiler::default().build_from_source(code.into(), Default::default()));
-    /// let instance = definition.unwrap().create();
+    /// let result = spin_on::spin_on(
+    ///     Compiler::default().build_from_source(code.into(), Default::default()));
+    /// let instance = result.component("MyWin").unwrap().create().unwrap();
     /// instance.set_global_callback("Logic", "to_uppercase", |args: &[Value]| -> Value {
     ///     let arg: SharedString = args[0].clone().try_into().unwrap();
     ///     Value::from(SharedString::from(arg.to_uppercase()))
@@ -916,7 +1380,7 @@ impl ComponentInstance {
     /// let res = instance.get_property("hello").unwrap();
     /// assert_eq!(res, Value::from(SharedString::from("WORLD")));
     ///
-    /// let abc = instance.invoke_global_callback("Logic", "to_uppercase", &[
+    /// let abc = instance.invoke_global("Logic", "to_uppercase", &[
     ///     SharedString::from("abc").into()
     /// ]).unwrap();
     /// assert_eq!(abc, Value::from(SharedString::from("ABC")));
@@ -937,29 +1401,80 @@ impl ComponentInstance {
             .map_err(|()| SetCallbackError::NoSuchCallback)
     }
 
-    /// Call the given callback within a global singleton with the arguments
+    /// Call the given callback or function within a global singleton with the arguments
     ///
     /// ## Examples
     /// See the documentation of [`Self::set_global_callback`] for an example
-    pub fn invoke_global_callback(
+    pub fn invoke_global(
         &self,
         global: &str,
-        callback_name: &str,
+        callable_name: &str,
         args: &[Value],
-    ) -> Result<Value, InvokeCallbackError> {
+    ) -> Result<Value, InvokeError> {
         generativity::make_guard!(guard);
         let comp = self.inner.unerase(guard);
-        comp.description()
+        let g = comp
+            .description()
             .get_global(comp.borrow(), &normalize_identifier(global))
-            .map_err(|()| InvokeCallbackError::NoSuchCallback)? // FIXME: should there be a NoSuchGlobal error?
-            .as_ref()
-            .invoke_callback(&normalize_identifier(callback_name), args)
-            .map_err(|()| InvokeCallbackError::NoSuchCallback)
+            .map_err(|()| InvokeError::NoSuchCallable)?; // FIXME: should there be a NoSuchGlobal error?
+        let callable_name = normalize_identifier(callable_name);
+        if matches!(
+            comp.description()
+                .original
+                .root_element
+                .borrow()
+                .lookup_property(&callable_name)
+                .property_type,
+            LangType::Function { .. }
+        ) {
+            g.as_ref()
+                .eval_function(&callable_name, args.to_vec())
+                .map_err(|()| InvokeError::NoSuchCallable)
+        } else {
+            g.as_ref()
+                .invoke_callback(&callable_name, args)
+                .map_err(|()| InvokeError::NoSuchCallable)
+        }
+    }
+
+    /// Find all positions of the components which are pointed by a given source location.
+    ///
+    /// WARNING: this is not part of the public API
+    #[cfg(feature = "highlight")]
+    pub fn component_positions(
+        &self,
+        path: &Path,
+        offset: u32,
+    ) -> Vec<i_slint_core::lengths::LogicalRect> {
+        crate::highlight::component_positions(&self.inner, path, offset)
+    }
+
+    /// Find the position of the `element`.
+    ///
+    /// WARNING: this is not part of the public API
+    #[cfg(feature = "highlight")]
+    pub fn element_positions(
+        &self,
+        element: &i_slint_compiler::object_tree::ElementRc,
+    ) -> Vec<i_slint_core::lengths::LogicalRect> {
+        crate::highlight::element_positions(&self.inner, element)
+    }
+
+    /// Find the the `element` that was defined at the text position.
+    ///
+    /// WARNING: this is not part of the public API
+    #[cfg(feature = "highlight")]
+    pub fn element_node_at_source_code_position(
+        &self,
+        path: &Path,
+        offset: u32,
+    ) -> Vec<(i_slint_compiler::object_tree::ElementRc, usize)> {
+        crate::highlight::element_node_at_source_code_position(&self.inner, path, offset)
     }
 }
 
 impl ComponentHandle for ComponentInstance {
-    type Inner = crate::dynamic_component::ErasedComponentBox;
+    type Inner = crate::dynamic_item_tree::ErasedItemTreeBox;
 
     fn as_weak(&self) -> Weak<Self>
     where
@@ -973,31 +1488,27 @@ impl ComponentHandle for ComponentInstance {
     }
 
     fn from_inner(
-        inner: vtable::VRc<i_slint_core::component::ComponentVTable, Self::Inner>,
+        inner: vtable::VRc<i_slint_core::item_tree::ItemTreeVTable, Self::Inner>,
     ) -> Self {
         Self { inner }
     }
 
-    fn show(&self) {
-        generativity::make_guard!(guard);
-        let comp = self.inner.unerase(guard);
-        comp.borrow_instance().window_adapter().window().show();
+    fn show(&self) -> Result<(), PlatformError> {
+        self.inner.window_adapter_ref()?.window().show()
     }
 
-    fn hide(&self) {
-        generativity::make_guard!(guard);
-        let comp = self.inner.unerase(guard);
-        comp.borrow_instance().window_adapter().window().hide();
+    fn hide(&self) -> Result<(), PlatformError> {
+        self.inner.window_adapter_ref()?.window().hide()
     }
 
-    fn run(&self) {
-        self.show();
-        run_event_loop();
-        self.hide();
+    fn run(&self) -> Result<(), PlatformError> {
+        self.show()?;
+        run_event_loop()?;
+        self.hide()
     }
 
     fn window(&self) -> &Window {
-        self.inner.window_adapter().window()
+        self.inner.window_adapter_ref().unwrap().window()
     }
 
     fn global<'a, T: Global<'a, Self>>(&'a self) -> T
@@ -1009,7 +1520,7 @@ impl ComponentHandle for ComponentInstance {
 }
 
 impl From<ComponentInstance>
-    for vtable::VRc<i_slint_core::component::ComponentVTable, ErasedComponentBox>
+    for vtable::VRc<i_slint_core::item_tree::ItemTreeVTable, ErasedItemTreeBox>
 {
     fn from(value: ComponentInstance) -> Self {
         value.inner
@@ -1029,12 +1540,19 @@ pub enum GetPropertyError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum SetPropertyError {
-    /// There is no property with the given name
+    /// There is no property with the given name.
     #[error("no such property")]
     NoSuchProperty,
-    /// The property exist but does not have a type matching the dynamic value
+    /// The property exists but does not have a type matching the dynamic value.
+    ///
+    /// This happens for example when assigning a source struct value to a target
+    /// struct property, where the source doesn't have all the fields the target struct
+    /// requires.
     #[error("wrong type")]
     WrongType,
+    /// Attempt to set an output property.
+    #[error("access denied")]
+    AccessDenied,
 }
 
 /// Error returned by [`ComponentInstance::set_callback`]
@@ -1046,23 +1564,33 @@ pub enum SetCallbackError {
     NoSuchCallback,
 }
 
-/// Error returned by [`ComponentInstance::invoke_callback`]
+/// Error returned by [`ComponentInstance::invoke`]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
-pub enum InvokeCallbackError {
-    /// There is no callback with the given name
-    #[error("no such callback")]
-    NoSuchCallback,
+pub enum InvokeError {
+    /// There is no callback or function with the given name
+    #[error("no such callback or function")]
+    NoSuchCallable,
 }
 
 /// Enters the main event loop. This is necessary in order to receive
 /// events from the windowing system in order to render to the screen
 /// and react to user input.
-pub fn run_event_loop() {
-    i_slint_backend_selector::with_platform(|b| b.run_event_loop());
+pub fn run_event_loop() -> Result<(), PlatformError> {
+    i_slint_backend_selector::with_platform(|b| b.run_event_loop())
 }
 
-/// This module contains a few function use by tests
+#[cfg(all(feature = "internal", target_arch = "wasm32"))]
+/// Spawn the event loop.
+///
+/// Like [`run_event_loop()`], but returns immediately as the loop is running within
+/// the browser's runtime
+pub fn spawn_event_loop() -> Result<(), PlatformError> {
+    i_slint_backend_selector::with_platform(|_| i_slint_backend_winit::spawn_event_loop())
+}
+
+/// This module contains a few functions used by the tests
+#[doc(hidden)]
 pub mod testing {
     use super::ComponentHandle;
     use i_slint_core::window::WindowInner;
@@ -1070,9 +1598,21 @@ pub mod testing {
     /// Wrapper around [`i_slint_core::tests::slint_send_mouse_click`]
     pub fn send_mouse_click(comp: &super::ComponentInstance, x: f32, y: f32) {
         i_slint_core::tests::slint_send_mouse_click(
-            &vtable::VRc::into_dyn(comp.inner.clone()),
             x,
             y,
+            &WindowInner::from_pub(comp.window()).window_adapter(),
+        );
+    }
+
+    /// Wrapper around [`i_slint_core::tests::slint_send_keyboard_char`]
+    pub fn send_keyboard_char(
+        comp: &super::ComponentInstance,
+        string: i_slint_core::SharedString,
+        pressed: bool,
+    ) {
+        i_slint_core::tests::slint_send_keyboard_char(
+            &string,
+            pressed,
             &WindowInner::from_pub(comp.window()).window_adapter(),
         );
     }
@@ -1083,7 +1623,6 @@ pub mod testing {
     ) {
         i_slint_core::tests::send_keyboard_string_sequence(
             &string,
-            Default::default(),
             &WindowInner::from_pub(comp.window()).window_adapter(),
         );
     }
@@ -1091,21 +1630,22 @@ pub mod testing {
 
 #[test]
 fn component_definition_properties() {
-    i_slint_backend_testing::init();
-    let mut compiler = ComponentCompiler::default();
+    i_slint_backend_testing::init_no_event_loop();
+    let mut compiler = Compiler::default();
     compiler.set_style("fluent".into());
     let comp_def = spin_on::spin_on(
         compiler.build_from_source(
             r#"
-    export Dummy := Rectangle {
-        property <string> test;
-        property <int> underscores-and-dashes_preserved: 44;
+    export component Dummy {
+        in-out property <string> test;
+        in-out property <int> underscores-and-dashes_preserved: 44;
         callback hello;
     }"#
             .into(),
             "".into(),
         ),
     )
+    .component("Dummy")
     .unwrap();
 
     let props = comp_def.properties().collect::<Vec<(_, _)>>();
@@ -1116,7 +1656,7 @@ fn component_definition_properties() {
     assert_eq!(props[1].0, "underscores-and-dashes_preserved");
     assert_eq!(props[1].1, ValueType::Number);
 
-    let instance = comp_def.create();
+    let instance = comp_def.create().unwrap();
     assert_eq!(instance.get_property("underscores_and-dashes-preserved"), Ok(Value::Number(44.)));
     assert_eq!(
         instance.get_property("underscoresanddashespreserved"),
@@ -1139,53 +1679,76 @@ fn component_definition_properties() {
 
 #[test]
 fn component_definition_properties2() {
-    i_slint_backend_testing::init();
-    let mut compiler = ComponentCompiler::default();
+    i_slint_backend_testing::init_no_event_loop();
+    let mut compiler = Compiler::default();
     compiler.set_style("fluent".into());
     let comp_def = spin_on::spin_on(
         compiler.build_from_source(
             r#"
-    export Dummy := Rectangle {
-        property <string> sub-text <=> sub.text;
+    export component Dummy {
+        in-out property <string> sub-text <=> sub.text;
         sub := Text { property <int> private-not-exported; }
+        out property <string> xreadonly: "the value";
+        private property <string> xx: sub.text;
         callback hello;
     }"#
             .into(),
             "".into(),
         ),
     )
+    .component("Dummy")
     .unwrap();
 
     let props = comp_def.properties().collect::<Vec<(_, _)>>();
 
-    assert_eq!(props.len(), 1);
+    assert_eq!(props.len(), 2);
     assert_eq!(props[0].0, "sub-text");
     assert_eq!(props[0].1, ValueType::String);
+    assert_eq!(props[1].0, "xreadonly");
 
     let callbacks = comp_def.callbacks().collect::<Vec<_>>();
     assert_eq!(callbacks.len(), 1);
     assert_eq!(callbacks[0], "hello");
+
+    let instance = comp_def.create().unwrap();
+    assert_eq!(
+        instance.set_property("xreadonly", SharedString::from("XXX").into()),
+        Err(SetPropertyError::AccessDenied)
+    );
+    assert_eq!(instance.get_property("xreadonly"), Ok(Value::String("the value".into())));
+    assert_eq!(
+        instance.set_property("xx", SharedString::from("XXX").into()),
+        Err(SetPropertyError::NoSuchProperty)
+    );
+    assert_eq!(
+        instance.set_property("background", Value::default()),
+        Err(SetPropertyError::NoSuchProperty)
+    );
+
+    assert_eq!(instance.get_property("background"), Err(GetPropertyError::NoSuchProperty));
+    assert_eq!(instance.get_property("xx"), Err(GetPropertyError::NoSuchProperty));
 }
 
 #[test]
 fn globals() {
-    i_slint_backend_testing::init();
-    let mut compiler = ComponentCompiler::default();
+    i_slint_backend_testing::init_no_event_loop();
+    let mut compiler = Compiler::default();
     compiler.set_style("fluent".into());
     let definition = spin_on::spin_on(
         compiler.build_from_source(
             r#"
-    export global My-Super_Global := {
-        property <int> the-property : 21;
+    export global My-Super_Global {
+        in-out property <int> the-property : 21;
         callback my-callback();
     }
     export { My-Super_Global as AliasedGlobal }
-    export Dummy := Rectangle {
+    export component Dummy {
     }"#
             .into(),
             "".into(),
         ),
     )
+    .component("Dummy")
     .unwrap();
 
     assert_eq!(definition.globals().collect::<Vec<_>>(), vec!["My-Super_Global", "AliasedGlobal"]);
@@ -1217,7 +1780,7 @@ fn globals() {
         assert_properties_and_callbacks("AliasedGlobal");
     }
 
-    let instance = definition.create();
+    let instance = definition.create().unwrap();
     assert_eq!(
         instance.set_global_property("My_Super-Global", "the_property", Value::Number(44.)),
         Ok(())
@@ -1272,37 +1835,90 @@ fn globals() {
     );
 
     assert_eq!(
-        instance.invoke_global_callback("DontExist", "the-property", &[]),
-        Err(InvokeCallbackError::NoSuchCallback)
+        instance.invoke_global("DontExist", "the-property", &[]),
+        Err(InvokeError::NoSuchCallable)
     );
     assert_eq!(
-        instance.invoke_global_callback("My_Super_Global", "the-property", &[]),
-        Err(InvokeCallbackError::NoSuchCallback)
+        instance.invoke_global("My_Super_Global", "the-property", &[]),
+        Err(InvokeError::NoSuchCallable)
     );
     assert_eq!(
-        instance.invoke_global_callback("My_Super_Global", "yoyo", &[]),
-        Err(InvokeCallbackError::NoSuchCallback)
+        instance.invoke_global("My_Super_Global", "yoyo", &[]),
+        Err(InvokeError::NoSuchCallable)
     );
 }
 
 #[test]
-fn component_definition_struct_properties() {
-    i_slint_backend_testing::init();
-    let mut compiler = ComponentCompiler::default();
+fn call_functions() {
+    i_slint_backend_testing::init_no_event_loop();
+    let mut compiler = Compiler::default();
     compiler.set_style("fluent".into());
-    let comp_def = spin_on::spin_on(
+    let definition = spin_on::spin_on(
         compiler.build_from_source(
             r#"
-    export struct Settings := {
-        string_value: string,
+    export global Gl {
+        out property<string> q;
+        public function foo-bar(a-a: string, b-b:int) -> string {
+            q = a-a;
+            return a-a + b-b;
+        }
     }
-    export Dummy := Rectangle {
-        property <Settings> test;
+    export component Test {
+        out property<int> p;
+        public function foo-bar(a: int, b:int) -> int {
+            p = a;
+            return a + b;
+        }
     }"#
             .into(),
             "".into(),
         ),
     )
+    .component("Test")
+    .unwrap();
+
+    assert_eq!(definition.functions().collect::<Vec<_>>(), ["foo-bar"]);
+    assert_eq!(definition.global_functions("Gl").unwrap().collect::<Vec<_>>(), ["foo-bar"]);
+
+    let instance = definition.create().unwrap();
+
+    assert_eq!(
+        instance.invoke("foo_bar", &[Value::Number(3.), Value::Number(4.)]),
+        Ok(Value::Number(7.))
+    );
+    assert_eq!(instance.invoke("p", &[]), Err(InvokeError::NoSuchCallable));
+    assert_eq!(instance.get_property("p"), Ok(Value::Number(3.)));
+
+    assert_eq!(
+        instance.invoke_global(
+            "Gl",
+            "foo_bar",
+            &[Value::String("Hello".into()), Value::Number(10.)]
+        ),
+        Ok(Value::String("Hello10".into()))
+    );
+    assert_eq!(instance.get_global_property("Gl", "q"), Ok(Value::String("Hello".into())));
+}
+
+#[test]
+fn component_definition_struct_properties() {
+    i_slint_backend_testing::init_no_event_loop();
+    let mut compiler = Compiler::default();
+    compiler.set_style("fluent".into());
+    let comp_def = spin_on::spin_on(
+        compiler.build_from_source(
+            r#"
+    export struct Settings {
+        string_value: string,
+    }
+    export component Dummy {
+        in-out property <Settings> test;
+    }"#
+            .into(),
+            "".into(),
+        ),
+    )
+    .component("Dummy")
     .unwrap();
 
     let props = comp_def.properties().collect::<Vec<(_, _)>>();
@@ -1311,7 +1927,7 @@ fn component_definition_struct_properties() {
     assert_eq!(props[0].0, "test");
     assert_eq!(props[0].1, ValueType::Struct);
 
-    let instance = comp_def.create();
+    let instance = comp_def.create().unwrap();
 
     let valid_struct: Struct =
         [("string_value".to_string(), Value::String("hello".into()))].iter().cloned().collect();
@@ -1338,13 +1954,14 @@ fn component_definition_struct_properties() {
 #[test]
 fn component_definition_model_properties() {
     use i_slint_core::model::*;
-    i_slint_backend_testing::init();
-    let mut compiler = ComponentCompiler::default();
+    i_slint_backend_testing::init_no_event_loop();
+    let mut compiler = Compiler::default();
     compiler.set_style("fluent".into());
     let comp_def = spin_on::spin_on(compiler.build_from_source(
-        "export Dummy := Rectangle { property <[int]> prop: [42, 12]; }".into(),
+        "export component Dummy { in-out property <[int]> prop: [42, 12]; }".into(),
         "".into(),
     ))
+    .component("Dummy")
     .unwrap();
 
     let props = comp_def.properties().collect::<Vec<(_, _)>>();
@@ -1352,13 +1969,10 @@ fn component_definition_model_properties() {
     assert_eq!(props[0].0, "prop");
     assert_eq!(props[0].1, ValueType::Model);
 
-    let instance = comp_def.create();
+    let instance = comp_def.create().unwrap();
 
-    let int_model = Value::Model(VecModel::from_slice(&[
-        Value::Number(14.),
-        Value::Number(15.),
-        Value::Number(16.),
-    ]));
+    let int_model =
+        Value::Model([Value::Number(14.), Value::Number(15.), Value::Number(16.)].into());
     let empty_model = Value::Model(ModelRc::new(VecModel::<Value>::default()));
     let model_with_string = Value::Model(VecModel::from_slice(&[
         Value::Number(1000.),
@@ -1391,6 +2005,99 @@ fn component_definition_model_properties() {
 
     assert_eq!(instance.set_property("prop", empty_model), Ok(()));
     check_model(instance.get_property("prop").unwrap(), &[]);
+}
+
+#[test]
+fn lang_type_to_value_type() {
+    use std::collections::BTreeMap;
+
+    assert_eq!(ValueType::from(LangType::Void), ValueType::Void);
+    assert_eq!(ValueType::from(LangType::Float32), ValueType::Number);
+    assert_eq!(ValueType::from(LangType::Int32), ValueType::Number);
+    assert_eq!(ValueType::from(LangType::Duration), ValueType::Number);
+    assert_eq!(ValueType::from(LangType::Angle), ValueType::Number);
+    assert_eq!(ValueType::from(LangType::PhysicalLength), ValueType::Number);
+    assert_eq!(ValueType::from(LangType::LogicalLength), ValueType::Number);
+    assert_eq!(ValueType::from(LangType::Percent), ValueType::Number);
+    assert_eq!(ValueType::from(LangType::UnitProduct(vec![])), ValueType::Number);
+    assert_eq!(ValueType::from(LangType::String), ValueType::String);
+    assert_eq!(ValueType::from(LangType::Color), ValueType::Brush);
+    assert_eq!(ValueType::from(LangType::Brush), ValueType::Brush);
+    assert_eq!(ValueType::from(LangType::Array(Box::new(LangType::Void))), ValueType::Model);
+    assert_eq!(ValueType::from(LangType::Bool), ValueType::Bool);
+    assert_eq!(
+        ValueType::from(LangType::Struct {
+            fields: BTreeMap::default(),
+            name: None,
+            node: None,
+            rust_attributes: None
+        }),
+        ValueType::Struct
+    );
+    assert_eq!(ValueType::from(LangType::Image), ValueType::Image);
+}
+
+#[test]
+fn test_multi_components() {
+    let result = spin_on::spin_on(
+        Compiler::default().build_from_source(
+            r#"
+        export struct Settings {
+            string_value: string,
+        }
+        export global ExpGlo { in-out property <int> test: 42; }
+        component Common {
+            in-out property <Settings> settings: { string_value: "Hello", };
+        }
+        export component Xyz inherits Window {
+            in-out property <int> aaa: 8;
+        }
+        export component Foo {
+
+            in-out property <int> test: 42;
+            c := Common {}
+        }
+        export component Bar inherits Window {
+            in-out property <int> blah: 78;
+            c := Common {}
+        }
+        "#
+            .into(),
+            PathBuf::from("hello.slint"),
+        ),
+    );
+
+    assert!(!result.has_errors(), "Error {:?}", result.diagnostics().collect::<Vec<_>>());
+    let mut components = result.component_names().collect::<Vec<_>>();
+    components.sort();
+    assert_eq!(components, vec!["Bar", "Xyz"]);
+    let diag = result.diagnostics().collect::<Vec<_>>();
+    assert_eq!(diag.len(), 1);
+    assert_eq!(diag[0].level(), DiagnosticLevel::Warning);
+    assert_eq!(
+        diag[0].message(),
+        "Exported component 'Foo' doesn't inherit Window. No code will be generated for it"
+    );
+
+    let comp1 = result.component("Xyz").unwrap();
+    assert_eq!(comp1.name(), "Xyz");
+    let instance1a = comp1.create().unwrap();
+    let comp2 = result.component("Bar").unwrap();
+    let instance2 = comp2.create().unwrap();
+    let instance1b = comp1.create().unwrap();
+
+    // globals are not shared between instances
+    assert_eq!(instance1a.get_global_property("ExpGlo", "test"), Ok(Value::Number(42.0)));
+    assert_eq!(instance1a.set_global_property("ExpGlo", "test", Value::Number(88.0)), Ok(()));
+    assert_eq!(instance2.get_global_property("ExpGlo", "test"), Ok(Value::Number(42.0)));
+    assert_eq!(instance1b.get_global_property("ExpGlo", "test"), Ok(Value::Number(42.0)));
+    assert_eq!(instance1a.get_global_property("ExpGlo", "test"), Ok(Value::Number(88.0)));
+
+    assert!(result.component("Settings").is_none());
+    assert!(result.component("Foo").is_none());
+    assert!(result.component("Common").is_none());
+    assert!(result.component("ExpGlo").is_none());
+    assert!(result.component("xyz").is_none());
 }
 
 #[cfg(feature = "ffi")]

@@ -1,5 +1,10 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+// The presence of this component shouldn't break anything
+component Window {}
+
+component InheritsPopup inherits PopupWindow {}
 
 Combo := Rectangle {
     property <color> inner_color;
@@ -21,7 +26,7 @@ TestCase := Rectangle {
     for x in [1, 2] :  Combo { }
 }
 
-ComplexTestCase := Window {
+ComplexTestCase := Rectangle {
     TestCase {
         cob := Combo {
             PopupWindow {
@@ -34,7 +39,7 @@ ComplexTestCase := Window {
     TestCase {  }
 }
 
-TypeConversionTestCase := Window {
+TypeConversionTestCase := Rectangle {
     height: 400px;
     popup := PopupWindow {
         y: root.height / 2;
@@ -42,5 +47,6 @@ TypeConversionTestCase := Window {
     }
     TouchArea {
         clicked => { popup.show() }
-     }
+    }
+    InheritsPopup {}
 }

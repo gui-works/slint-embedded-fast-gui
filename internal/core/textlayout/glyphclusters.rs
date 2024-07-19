@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use core::{marker::PhantomData, ops::Range};
 
@@ -17,9 +17,9 @@ pub struct GlyphCluster<Length: Clone> {
 }
 
 #[derive(Clone)]
-pub struct GlyphClusterIterator<'a, Length, PlatformGlyph> {
+pub struct GlyphClusterIterator<'a, Length> {
     text: &'a str,
-    shaped_text: &'a ShapeBuffer<Length, PlatformGlyph>,
+    shaped_text: &'a ShapeBuffer<Length>,
     current_run: usize,
     // absolute byte offset in the entire text
     byte_offset: usize,
@@ -27,8 +27,8 @@ pub struct GlyphClusterIterator<'a, Length, PlatformGlyph> {
     marker: PhantomData<Length>,
 }
 
-impl<'a, Length, PlatformGlyph> GlyphClusterIterator<'a, Length, PlatformGlyph> {
-    pub fn new(text: &'a str, shaped_text: &'a ShapeBuffer<Length, PlatformGlyph>) -> Self {
+impl<'a, Length> GlyphClusterIterator<'a, Length> {
+    pub fn new(text: &'a str, shaped_text: &'a ShapeBuffer<Length>) -> Self {
         Self {
             text,
             shaped_text,
@@ -40,8 +40,8 @@ impl<'a, Length, PlatformGlyph> GlyphClusterIterator<'a, Length, PlatformGlyph> 
     }
 }
 
-impl<'a, Length: Copy + Clone + Zero + core::ops::AddAssign, PlatformGlyph> Iterator
-    for GlyphClusterIterator<'a, Length, PlatformGlyph>
+impl<'a, Length: Copy + Clone + Zero + core::ops::AddAssign> Iterator
+    for GlyphClusterIterator<'a, Length>
 {
     type Item = GlyphCluster<Length>;
 
@@ -74,7 +74,7 @@ impl<'a, Length: Copy + Clone + Zero + core::ops::AddAssign, PlatformGlyph> Iter
 
             self.glyph_index += 1;
 
-            if self.glyph_index >= self.shaped_text.glyphs.len() {
+            if self.glyph_index >= current_run.glyph_range.end {
                 cluster_byte_offset = current_run.byte_range.end;
                 break;
             }

@@ -1,7 +1,7 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-TestCase := Rectangle {
+export TestCase := Rectangle {
     property<bool> checked;
     property <int> border;
     states [
@@ -14,7 +14,7 @@ TestCase := Rectangle {
             border: 42;
         }
     ]
-//  ^error{expected Identifier}
+//  ^error{Parse error: expected a top-level item such as a component, a struct, or a global}
 
     transitions [
         in pressed: {

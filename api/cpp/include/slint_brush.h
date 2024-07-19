@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 #pragma once
 #include <string_view>
@@ -130,11 +130,20 @@ public:
     /// Returns a new version of this brush that has the brightness increased
     /// by the specified factor. This is done by calling Color::brighter on
     /// all the colors of this brush.
-    inline Brush brighter(float factor) const;
+    [[nodiscard]] inline Brush brighter(float factor) const;
     /// Returns a new version of this color that has the brightness decreased
     /// by the specified factor. This is done by calling Color::darker on
     /// all the colors of this brush.
-    inline Brush darker(float factor) const;
+    [[nodiscard]] inline Brush darker(float factor) const;
+
+    /// Returns a new version of this brush with the opacity decreased by \a factor.
+    ///
+    /// This is done by calling Color::transparentize on all the colors of this brush.
+    [[nodiscard]] inline Brush transparentize(float factor) const;
+
+    /// Returns a new version of this brush with the related color's opacities
+    /// set to \a alpha.
+    [[nodiscard]] inline Brush with_alpha(float alpha) const;
 
     /// Returns true if \a a is equal to \a b. If \a a holds a color, then \a b must also hold a
     /// color that is identical to \a a's color. If it holds a gradient, then the gradients must be
@@ -148,6 +157,7 @@ private:
     using Tag = cbindgen_private::types::Brush::Tag;
     using Inner = cbindgen_private::types::Brush;
     Inner data;
+    friend struct private_api::Property<Brush>;
 };
 
 Color Brush::color() const
@@ -218,4 +228,70 @@ inline Brush Brush::darker(float factor) const
     }
     return result;
 }
+
+inline Brush Brush::transparentize(float factor) const
+{
+    Brush result = *this;
+    switch (data.tag) {
+    case Tag::SolidColor:
+        cbindgen_private::types::slint_color_transparentize(&data.solid_color._0, factor,
+                                                            &result.data.solid_color._0);
+        break;
+    case Tag::LinearGradient:
+        for (std::size_t i = 1; i < data.linear_gradient._0.size(); ++i) {
+            cbindgen_private::types::slint_color_transparentize(
+                    &data.linear_gradient._0[i].color, factor,
+                    &result.data.linear_gradient._0[i].color);
+        }
+        break;
+    case Tag::RadialGradient:
+        for (std::size_t i = 0; i < data.linear_gradient._0.size(); ++i) {
+            cbindgen_private::types::slint_color_transparentize(
+                    &data.radial_gradient._0[i].color, factor,
+                    &result.data.radial_gradient._0[i].color);
+        }
+        break;
+    }
+    return result;
 }
+
+inline Brush Brush::with_alpha(float alpha) const
+{
+    Brush result = *this;
+    switch (data.tag) {
+    case Tag::SolidColor:
+        cbindgen_private::types::slint_color_with_alpha(&data.solid_color._0, alpha,
+                                                        &result.data.solid_color._0);
+        break;
+    case Tag::LinearGradient:
+        for (std::size_t i = 1; i < data.linear_gradient._0.size(); ++i) {
+            cbindgen_private::types::slint_color_with_alpha(
+                    &data.linear_gradient._0[i].color, alpha,
+                    &result.data.linear_gradient._0[i].color);
+        }
+        break;
+    case Tag::RadialGradient:
+        for (std::size_t i = 0; i < data.linear_gradient._0.size(); ++i) {
+            cbindgen_private::types::slint_color_with_alpha(
+                    &data.radial_gradient._0[i].color, alpha,
+                    &result.data.radial_gradient._0[i].color);
+        }
+        break;
+    }
+    return result;
+}
+
+namespace private_api {
+
+template<>
+inline void Property<slint::Brush>::set_animated_value(
+        const slint::Brush &new_value,
+        const cbindgen_private::PropertyAnimation &animation_data) const
+{
+    cbindgen_private::slint_property_set_animated_value_brush(&inner, &value, &new_value,
+                                                              &animation_data);
+}
+
+} // namespace private_api
+
+} // namespace slint

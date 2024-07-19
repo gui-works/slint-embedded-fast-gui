@@ -1,17 +1,21 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-Ex1 := Rectangle {
+export Ex1 := Rectangle {
     Rectangle {
         rotation-origin-x: width / 2;
         rotation-angle: 45deg;
-//                     ^error{rotation properties can only be applied to the Image element}
+//                      ^error{rotation properties can only be applied to the Image or Text element}
         rotation-origin-y: width / 2;
     }
     Rectangle {
-//  ^error{rotation properties can only be applied to the Image element}
+//  ^error{rotation properties can only be applied to the Image or Text element}
         rotation-origin-x: width / 2;
         rotation-origin-y: width / 2;
+    }
+
+    Text {
+        rotation-angle: 90deg;
     }
 }
 
@@ -25,13 +29,13 @@ ImageWithChild := Image {
     Rectangle {}
 }
 
-Ex2 := Rectangle {
+export Ex2 := Rectangle {
     Image {
 //  ^error{Elements with rotation properties cannot have children elements}
         rotation-angle: 45deg;
         Rectangle {}
     }
-    RotImg { 
+    RotImg {
 //  ^error{Elements with rotation properties cannot have children elements}
         Rectangle {}
     }
@@ -47,13 +51,13 @@ Ex2 := Rectangle {
 }
 
 
-Ex3 := Rectangle {
+export Ex3 := Rectangle {
     i1 := Image {
-//       ^error{Elements with rotation properties cannot have children elements}
+//        ^error{Elements with rotation properties cannot have children elements}
         Rectangle {}
     }
     i2 := Rectangle {}
-//       ^error{rotation properties can only be applied to the Image element}
+//        ^error{rotation properties can only be applied to the Image or Text element}
 
     TouchArea {
         clicked => {
@@ -61,4 +65,11 @@ Ex3 := Rectangle {
             i2.rotation-origin-x = 10px;
         }
     }
+}
+
+export component Ex4  {
+    in property rot <=> rect . rotation-angle;
+
+    rect := Rectangle {}
+//          ^error{rotation properties can only be applied to the Image or Text element}
 }

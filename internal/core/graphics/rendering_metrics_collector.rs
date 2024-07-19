@@ -1,33 +1,28 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 /*!
 This module contains a simple helper type to measure the average number of frames rendered per second.
 */
 
-use crate::timers::*;
-use crate::window::WindowAdapter;
-use std::cell::RefCell;
-use std::convert::TryFrom;
-use std::rc::{Rc, Weak};
+use crate::animations::Instant;
+use crate::debug_log;
+use crate::timers::{Timer, TimerMode};
+use alloc::format;
+use alloc::rc::Rc;
+#[cfg(not(feature = "std"))]
+use alloc::string::String;
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
+use core::cell::RefCell;
 
-enum RefreshMode {
-    Lazy,      // render only when necessary (default)
-    FullSpeed, // continuously render to the screen
-}
-
-impl<'a> TryFrom<&Vec<&'a str>> for RefreshMode {
-    type Error = ();
-
-    fn try_from(options: &Vec<&'a str>) -> Result<Self, Self::Error> {
-        if options.contains(&"refresh_lazy") {
-            Ok(Self::Lazy)
-        } else if options.contains(&"refresh_full_speed") {
-            Ok(Self::FullSpeed)
-        } else {
-            Err(())
-        }
-    }
+/// The method in which we refresh the window
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefreshMode {
+    /// render only when necessary (default)
+    Lazy,
+    /// continuously render to the screen
+    FullSpeed,
 }
 
 /// This struct is filled/provided by the ItemRenderer to return collected metrics
@@ -39,7 +34,7 @@ pub struct RenderingMetrics {
 }
 
 impl core::fmt::Display for RenderingMetrics {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if let Some(layer_count) = self.layers_created {
             write!(f, "[{} layers created]", layer_count)
         } else {
@@ -49,7 +44,7 @@ impl core::fmt::Display for RenderingMetrics {
 }
 
 struct FrameData {
-    timestamp: instant::Instant,
+    timestamp: Instant,
     metrics: RenderingMetrics,
 }
 
@@ -60,7 +55,6 @@ pub struct RenderingMetricsCollector {
     refresh_mode: RefreshMode,
     output_console: bool,
     output_overlay: bool,
-    window_adapter: Weak<dyn WindowAdapter>,
 }
 
 impl RenderingMetricsCollector {
@@ -73,26 +67,31 @@ impl RenderingMetricsCollector {
     ///
     /// If enabled, this will also print out some system information such as whether
     /// this is a debug or release build, as well as the provided winsys_info string.
-    pub fn new(window_adapter: Weak<dyn WindowAdapter>, winsys_info: &str) -> Option<Rc<Self>> {
-        let options = match std::env::var("SLINT_DEBUG_PERFORMANCE") {
-            Ok(var) => var,
-            _ => return None,
-        };
-        let options: Vec<&str> = options.split(',').collect();
-
-        let refresh_mode = match RefreshMode::try_from(&options) {
-            Ok(mode) => mode,
-            Err(_) => {
-                eprintln!("Missing refresh mode in SLINT_DEBUG_PERFORMANCE. Please specify either refresh_full_speed or refresh_lazy");
-                return None;
+    pub fn new(winsys_info: &str) -> Option<Rc<Self>> {
+        #[cfg(feature = "std")]
+        let options = std::env::var("SLINT_DEBUG_PERFORMANCE").ok()?;
+        #[cfg(not(feature = "std"))]
+        let options = option_env!("SLINT_DEBUG_PERFORMANCE")?;
+        let mut output_console = false;
+        let mut output_overlay = false;
+        let mut refresh_mode = None;
+        for option in options.split(',') {
+            match option {
+                "console" => output_console = true,
+                "overlay" => output_overlay = true,
+                "refresh_lazy" => refresh_mode = Some(RefreshMode::Lazy),
+                "refresh_full_speed" => refresh_mode = Some(RefreshMode::FullSpeed),
+                _ => {}
             }
-        };
+        }
 
-        let output_console = options.contains(&"console");
-        let output_overlay = options.contains(&"overlay");
+        let Some(refresh_mode) = refresh_mode else {
+            debug_log!("Missing refresh mode in SLINT_DEBUG_PERFORMANCE. Please specify either refresh_full_speed or refresh_lazy");
+            return None;
+        };
 
         if !output_console && !output_overlay {
-            eprintln!("Missing output mode in SLINT_DEBUG_PERFORMANCE. Please specify either console or overlay (or both)");
+            debug_log!("Missing output mode in SLINT_DEBUG_PERFORMANCE. Please specify either console or overlay (or both)");
             return None;
         }
 
@@ -102,7 +101,6 @@ impl RenderingMetricsCollector {
             refresh_mode,
             output_console,
             output_overlay,
-            window_adapter,
         });
 
         #[cfg(debug_assertions)]
@@ -110,13 +108,13 @@ impl RenderingMetricsCollector {
         #[cfg(not(debug_assertions))]
         let build_config = "release";
 
-        eprintln!("Slint: Build config: {}; Backend: {}", build_config, winsys_info);
+        debug_log!("Slint: Build config: {}; Backend: {}", build_config, winsys_info);
 
         let self_weak = Rc::downgrade(&collector);
         collector.update_timer.stop();
         collector.update_timer.start(
             TimerMode::Repeated,
-            std::time::Duration::from_secs(1),
+            core::time::Duration::from_secs(1),
             move || {
                 let this = match self_weak.upgrade() {
                     Some(this) => this,
@@ -137,7 +135,7 @@ impl RenderingMetricsCollector {
                 }
 
                 if this.output_console {
-                    eprintln!(
+                    debug_log!(
                         "average frames per second: {} {}",
                         this.collected_frame_data_since_second_ago.borrow().len(),
                         last_frame_details
@@ -150,15 +148,11 @@ impl RenderingMetricsCollector {
     }
 
     fn trim_frame_data_to_second_boundary(self: &Rc<Self>) {
-        let mut i = 0;
         let mut frame_times = self.collected_frame_data_since_second_ago.borrow_mut();
-        while i < frame_times.len() {
-            if frame_times[i].timestamp.elapsed() > std::time::Duration::from_secs(1) {
-                frame_times.remove(i);
-            } else {
-                i += 1
-            }
-        }
+        let now = Instant::now();
+        frame_times.retain(|frame| {
+            now.duration_since(frame.timestamp) <= core::time::Duration::from_secs(1)
+        });
     }
 
     /// Call this function every time you've completed the rendering of a frame. The `renderer` parameter
@@ -169,11 +163,8 @@ impl RenderingMetricsCollector {
     ) {
         self.collected_frame_data_since_second_ago
             .borrow_mut()
-            .push(FrameData { timestamp: instant::Instant::now(), metrics: renderer.metrics() });
+            .push(FrameData { timestamp: Instant::now(), metrics: renderer.metrics() });
         if matches!(self.refresh_mode, RefreshMode::FullSpeed) {
-            if let Some(window) = self.window_adapter.upgrade() {
-                window.request_redraw();
-            }
             crate::animations::CURRENT_ANIMATION_DRIVER
                 .with(|driver| driver.set_has_active_animations());
         }
@@ -185,5 +176,10 @@ impl RenderingMetricsCollector {
                 crate::Color::from_rgb_u8(0, 128, 128),
             );
         }
+    }
+
+    /// Always render the full screen.
+    pub fn refresh_mode(&self) -> RefreshMode {
+        self.refresh_mode
     }
 }

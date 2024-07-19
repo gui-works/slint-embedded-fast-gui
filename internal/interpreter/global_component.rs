@@ -1,20 +1,59 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use core::pin::Pin;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use crate::api::Value;
-use crate::dynamic_component::{ErasedComponentBox, ErasedComponentDescription};
+use crate::dynamic_item_tree::{ErasedItemTreeBox, ErasedItemTreeDescription};
 use crate::SetPropertyError;
 use i_slint_compiler::langtype::ElementType;
 use i_slint_compiler::namedreference::NamedReference;
-use i_slint_compiler::object_tree::Component;
-use i_slint_compiler::object_tree::PropertyDeclaration;
-use i_slint_core::component::ComponentVTable;
+use i_slint_compiler::object_tree::{Component, Document, PropertyDeclaration};
+use i_slint_core::item_tree::ItemTreeVTable;
 use i_slint_core::rtti;
-use i_slint_core::window::WindowAdapter;
+
+pub struct CompiledGlobalCollection {
+    /// compiled globals
+    pub compiled_globals: Vec<CompiledGlobal>,
+    /// Map of all exported global singletons and their index in the compiled_globals vector. The key
+    /// is the normalized name of the global.
+    pub exported_globals_by_name: BTreeMap<String, usize>,
+}
+
+impl CompiledGlobalCollection {
+    pub fn compile(doc: &Document) -> Self {
+        let mut exported_globals_by_name = BTreeMap::new();
+        let compiled_globals = doc
+            .used_types
+            .borrow()
+            .globals
+            .iter()
+            .enumerate()
+            .map(|(index, component)| {
+                let mut global = generate(component);
+
+                if !component.exported_global_names.borrow().is_empty() {
+                    global.extend_public_properties(
+                        component.root_element.borrow().property_declarations.clone(),
+                    );
+
+                    exported_globals_by_name.extend(
+                        component
+                            .exported_global_names
+                            .borrow()
+                            .iter()
+                            .map(|exported_name| (exported_name.name.clone(), index)),
+                    )
+                }
+
+                global
+            })
+            .collect();
+        Self { compiled_globals, exported_globals_by_name }
+    }
+}
 
 pub type GlobalStorage = HashMap<String, Pin<Rc<dyn GlobalComponent>>>;
 
@@ -24,9 +63,11 @@ pub enum CompiledGlobal {
         element: Rc<i_slint_compiler::langtype::BuiltinElement>,
         // dummy needed for iterator accessor
         public_properties: BTreeMap<String, PropertyDeclaration>,
+        /// keep the Component alive as it is boing referenced by `NamedReference`s
+        _original: Rc<Component>,
     },
     Component {
-        component: ErasedComponentDescription,
+        component: ErasedItemTreeDescription,
         public_properties: BTreeMap<String, PropertyDeclaration>,
     },
 }
@@ -51,7 +92,8 @@ impl CompiledGlobal {
             CompiledGlobal::Component { component, .. } => {
                 generativity::make_guard!(guard);
                 let component = component.unerase(guard);
-                component.original.visible_in_public_api()
+                let is_exported = !component.original.exported_global_names.borrow().is_empty();
+                is_exported
             }
         }
     }
@@ -91,13 +133,15 @@ pub trait GlobalComponent {
     fn get_property(self: Pin<&Self>, prop_name: &str) -> Result<Value, ()>;
 
     fn get_property_ptr(self: Pin<&Self>, prop_name: &str) -> *const ();
+
+    fn eval_function(self: Pin<&Self>, fn_name: &str, args: Vec<Value>) -> Result<Value, ()>;
 }
 
 /// Instantiate the global singleton and store it in `globals`
 pub fn instantiate(
     description: &CompiledGlobal,
     globals: &mut GlobalStorage,
-    window_adapter: &Rc<dyn WindowAdapter>,
+    root: vtable::VWeak<ItemTreeVTable, ErasedItemTreeBox>,
 ) {
     let instance = match description {
         CompiledGlobal::Builtin { element, .. } => {
@@ -123,10 +167,11 @@ pub fn instantiate(
         CompiledGlobal::Component { component, .. } => {
             generativity::make_guard!(guard);
             let description = component.unerase(guard);
-            Rc::pin(GlobalComponentInstance(crate::dynamic_component::instantiate(
+            Rc::pin(GlobalComponentInstance(crate::dynamic_item_tree::instantiate(
                 description.clone(),
                 None,
-                window_adapter,
+                Some(root),
+                None,
                 globals.clone(),
             )))
         }
@@ -141,7 +186,7 @@ pub fn instantiate(
 
 /// For the global components, we don't use the dynamic_type optimization,
 /// and we don't try to optimize the property to their real type
-pub struct GlobalComponentInstance(vtable::VRc<ComponentVTable, ErasedComponentBox>);
+pub struct GlobalComponentInstance(vtable::VRc<ItemTreeVTable, ErasedItemTreeBox>);
 
 impl GlobalComponent for GlobalComponentInstance {
     fn set_property(
@@ -163,7 +208,7 @@ impl GlobalComponent for GlobalComponentInstance {
     fn get_property_ptr(self: Pin<&Self>, prop_name: &str) -> *const () {
         generativity::make_guard!(guard);
         let comp = self.0.unerase(guard);
-        crate::dynamic_component::get_property_ptr(
+        crate::dynamic_item_tree::get_property_ptr(
             &NamedReference::new(&comp.description().original.root_element, prop_name),
             comp.borrow_instance(),
         )
@@ -172,7 +217,7 @@ impl GlobalComponent for GlobalComponentInstance {
     fn invoke_callback(self: Pin<&Self>, callback_name: &str, args: &[Value]) -> Result<Value, ()> {
         generativity::make_guard!(guard);
         let comp = self.0.unerase(guard);
-        comp.description().invoke_callback(comp.borrow(), callback_name, args)
+        comp.description().invoke(comp.borrow(), callback_name, args)
     }
 
     fn set_callback_handler(
@@ -183,6 +228,27 @@ impl GlobalComponent for GlobalComponentInstance {
         generativity::make_guard!(guard);
         let comp = self.0.unerase(guard);
         comp.description().set_callback_handler(comp.borrow(), callback_name, handler)
+    }
+
+    fn eval_function(self: Pin<&Self>, fn_name: &str, args: Vec<Value>) -> Result<Value, ()> {
+        generativity::make_guard!(guard);
+        let comp = self.0.unerase(guard);
+        let mut ctx =
+            crate::eval::EvalLocalContext::from_function_arguments(comp.borrow_instance(), args);
+        let result = crate::eval::eval_expression(
+            &comp
+                .description()
+                .original
+                .root_element
+                .borrow()
+                .bindings
+                .get(fn_name)
+                .ok_or(())?
+                .borrow()
+                .expression,
+            &mut ctx,
+        );
+        Ok(result)
     }
 }
 
@@ -224,15 +290,20 @@ impl<T: rtti::BuiltinItem + 'static> GlobalComponent for T {
         let cb = Self::callbacks().into_iter().find(|(k, _)| *k == callback_name).ok_or(())?.1;
         cb.set_handler(self, handler)
     }
+
+    fn eval_function(self: Pin<&Self>, _fn_name: &str, _args: Vec<Value>) -> Result<Value, ()> {
+        Err(())
+    }
 }
 
-pub(crate) fn generate(component: &Rc<Component>) -> CompiledGlobal {
+fn generate(component: &Rc<Component>) -> CompiledGlobal {
     debug_assert!(component.is_global());
     match &component.root_element.borrow().base_type {
         ElementType::Global => {
             generativity::make_guard!(guard);
             CompiledGlobal::Component {
-                component: crate::dynamic_component::generate_component(component, guard).into(),
+                component: crate::dynamic_item_tree::generate_item_tree(component, None, guard)
+                    .into(),
                 public_properties: Default::default(),
             }
         }
@@ -240,6 +311,7 @@ pub(crate) fn generate(component: &Rc<Component>) -> CompiledGlobal {
             name: component.id.clone(),
             element: b.clone(),
             public_properties: Default::default(),
+            _original: component.clone(),
         },
         ElementType::Error | ElementType::Native(_) | ElementType::Component(_) => unreachable!(),
     }

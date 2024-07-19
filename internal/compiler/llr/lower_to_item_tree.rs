@@ -1,42 +1,60 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use by_address::ByAddress;
 
+use super::lower_expression::ExpressionContext;
+use super::PopupWindow as llr_PopupWindow;
 use crate::expression_tree::Expression as tree_Expression;
 use crate::langtype::{ElementType, Type};
 use crate::llr::item_tree::*;
 use crate::namedreference::NamedReference;
-use crate::object_tree::{Component, ElementRc};
-use std::collections::HashMap;
+use crate::object_tree::{Component, ElementRc, PopupWindow, PropertyAnalysis, PropertyVisibility};
+use crate::CompilerConfiguration;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
-use super::lower_expression::ExpressionContext;
-
-pub fn lower_to_item_tree(component: &Rc<Component>) -> PublicComponent {
+pub fn lower_to_item_tree(
+    document: &crate::object_tree::Document,
+    compiler_config: &CompilerConfiguration,
+) -> CompilationUnit {
     let mut state = LoweringState::default();
 
     let mut globals = Vec::new();
-    for g in &component.used_types.borrow().globals {
+    for g in &document.used_types.borrow().globals {
         let count = globals.len();
         globals.push(lower_global(g, count, &mut state));
     }
-    for c in &component.used_types.borrow().sub_components {
-        let sc = lower_sub_component(c, &state, None);
+    for c in &document.used_types.borrow().sub_components {
+        let sc = lower_sub_component(c, &state, None, compiler_config);
         state.sub_components.insert(ByAddress(c.clone()), sc);
     }
 
-    let sc = lower_sub_component(component, &state, None);
-    let public_properties = public_properties(component, &sc.mapping, &state);
-    let item_tree = ItemTree {
-        tree: make_tree(&state, &component.root_element, &sc, &[]),
-        root: Rc::try_unwrap(sc.sub_component).unwrap(),
-        parent_context: None,
-    };
-    let root = PublicComponent {
-        item_tree,
+    let public_components = document
+        .exported_roots()
+        .map(|component| {
+            let sc = lower_sub_component(&component, &state, None, compiler_config);
+            let public_properties = public_properties(&component, &sc.mapping, &state);
+            let mut item_tree = ItemTree {
+                tree: make_tree(&state, &component.root_element, &sc, &[]),
+                root: Rc::try_unwrap(sc.sub_component).unwrap(),
+                parent_context: None,
+            };
+            // For C++ codegen, the root component must have the same name as the public component
+            item_tree.root.name = component.id.clone();
+            PublicComponent {
+                item_tree,
+                public_properties,
+                private_properties: component.private_properties.borrow().clone(),
+                name: component.id.clone(),
+            }
+        })
+        .collect();
+
+    let root = CompilationUnit {
+        public_components,
         globals,
-        sub_components: component
+        sub_components: document
             .used_types
             .borrow()
             .sub_components
@@ -45,7 +63,7 @@ pub fn lower_to_item_tree(component: &Rc<Component>) -> PublicComponent {
                 state.sub_components[&ByAddress(tree_sub_compo.clone())].sub_component.clone()
             })
             .collect(),
-        public_properties,
+        has_debug_info: compiler_config.debug_info,
     };
     super::optim_passes::run_passes(&root);
     root
@@ -60,14 +78,17 @@ pub struct LoweringState {
 #[derive(Debug, Clone)]
 pub enum LoweredElement {
     SubComponent { sub_component_index: usize },
-    NativeItem { item_index: usize },
-    Repeated { repeated_index: usize },
+    NativeItem { item_index: u32 },
+    Repeated { repeated_index: u32 },
+    ComponentPlaceholder { repeated_index: u32 },
 }
 
 #[derive(Default, Debug, Clone)]
 pub struct LoweredSubComponentMapping {
     pub element_mapping: HashMap<ByAddress<ElementRc>, LoweredElement>,
     pub property_mapping: HashMap<NamedReference, PropertyReference>,
+    pub repeater_count: u32,
+    pub container_count: u32,
 }
 
 impl LoweredSubComponentMapping {
@@ -112,6 +133,7 @@ impl LoweredSubComponentMapping {
                 };
             }
             LoweredElement::Repeated { .. } => unreachable!(),
+            LoweredElement::ComponentPlaceholder { .. } => unreachable!(),
         }
     }
 }
@@ -144,11 +166,12 @@ fn property_reference_within_sub_component(
 ) -> PropertyReference {
     match &mut prop_ref {
         PropertyReference::Local { sub_component_path, .. }
-        | PropertyReference::InNativeItem { sub_component_path, .. } => {
+        | PropertyReference::InNativeItem { sub_component_path, .. }
+        | PropertyReference::Function { sub_component_path, .. } => {
             sub_component_path.insert(0, sub_component);
         }
         PropertyReference::InParent { .. } => panic!("the sub-component had no parents"),
-        PropertyReference::Global { .. } => (),
+        PropertyReference::Global { .. } | PropertyReference::GlobalFunction { .. } => (),
     }
     prop_ref
 }
@@ -164,10 +187,8 @@ fn component_id(component: &Rc<Component>) -> String {
         component.root_element.borrow().id.clone()
     } else if component.id.is_empty() {
         format!("Component_{}", component.root_element.borrow().id)
-    } else if component.is_sub_component() {
-        format!("{}_{}", component.id, component.root_element.borrow().id)
     } else {
-        component.id.clone()
+        format!("{}_{}", component.id, component.root_element.borrow().id)
     }
 }
 
@@ -175,28 +196,36 @@ fn lower_sub_component(
     component: &Rc<Component>,
     state: &LoweringState,
     parent_context: Option<&ExpressionContext>,
+    compiler_config: &CompilerConfiguration,
 ) -> LoweredSubComponent {
     let mut sub_component = SubComponent {
         name: component_id(component),
         properties: Default::default(),
+        functions: Default::default(),
         items: Default::default(),
         repeated: Default::default(),
+        component_containers: Default::default(),
         popup_windows: Default::default(),
         sub_components: Default::default(),
         property_init: Default::default(),
+        change_callbacks: Default::default(),
         animations: Default::default(),
         two_way_bindings: Default::default(),
         const_properties: Default::default(),
         init_code: Default::default(),
+        geometries: Default::default(),
         // just initialize to dummy expression right now and it will be set later
         layout_info_h: super::Expression::BoolLiteral(false).into(),
         layout_info_v: super::Expression::BoolLiteral(false).into(),
         accessible_prop: Default::default(),
+        element_infos: Default::default(),
         prop_analysis: Default::default(),
     };
     let mut mapping = LoweredSubComponentMapping::default();
     let mut repeated = vec![];
+    let mut component_container_data = vec![];
     let mut accessible_prop = Vec::new();
+    let mut change_callbacks = Vec::new();
 
     if let Some(parent) = component.parent_element.upgrade() {
         // Add properties for the model data and index
@@ -225,6 +254,21 @@ fn lower_sub_component(
             if x.is_alias.is_some() {
                 continue;
             }
+            if let Type::Function { return_type, args } = &x.property_type {
+                let function_index = sub_component.functions.len();
+                mapping.property_mapping.insert(
+                    NamedReference::new(element, p),
+                    PropertyReference::Function { sub_component_path: vec![], function_index },
+                );
+                sub_component.functions.push(Function {
+                    name: p.into(),
+                    ret_ty: (**return_type).clone(),
+                    args: args.clone(),
+                    // will be replaced later
+                    code: super::Expression::CodeBlock(vec![]),
+                });
+                continue;
+            }
             let property_index = sub_component.properties.len();
             mapping.property_mapping.insert(
                 NamedReference::new(element, p),
@@ -236,12 +280,24 @@ fn lower_sub_component(
                 ..Property::default()
             });
         }
+        if elem.is_component_placeholder {
+            mapping.element_mapping.insert(
+                element.clone().into(),
+                LoweredElement::ComponentPlaceholder {
+                    repeated_index: component_container_data.len() as u32,
+                },
+            );
+            mapping.container_count += 1;
+            component_container_data.push(parent.as_ref().unwrap().clone());
+            return None;
+        }
         if elem.repeated.is_some() {
             mapping.element_mapping.insert(
                 element.clone().into(),
-                LoweredElement::Repeated { repeated_index: repeated.len() },
+                LoweredElement::Repeated { repeated_index: repeated.len() as u32 },
             );
             repeated.push(element.clone());
+            mapping.repeater_count += 1;
             return None;
         }
         match &elem.base_type {
@@ -264,20 +320,14 @@ fn lower_sub_component(
             }
 
             ElementType::Native(n) => {
-                let item_index = sub_component.items.len();
+                let item_index = sub_component.items.len() as u32;
                 mapping
                     .element_mapping
                     .insert(element.clone().into(), LoweredElement::NativeItem { item_index });
-                let is_flickable_viewport = elem.is_flickable_viewport;
                 sub_component.items.push(Item {
                     ty: n.clone(),
-                    name: if is_flickable_viewport {
-                        parent.as_ref().unwrap().borrow().id.clone()
-                    } else {
-                        elem.id.clone()
-                    },
+                    name: elem.id.clone(),
                     index_in_tree: *elem.item_index.get().unwrap(),
-                    is_flickable_viewport,
                 })
             }
             _ => unreachable!(),
@@ -288,11 +338,36 @@ fn lower_sub_component(
                 crate::generator::to_pascal_case(key.strip_prefix("accessible-").unwrap());
             accessible_prop.push((*elem.item_index.get().unwrap(), enum_value, nr.clone()));
         }
+
+        for (prop, expr) in &elem.change_callbacks {
+            change_callbacks.push((NamedReference::new(element, prop), expr.borrow().clone()));
+        }
+
+        if compiler_config.debug_info {
+            let element_infos = elem.element_infos();
+            if !element_infos.is_empty() {
+                sub_component.element_infos.insert(*elem.item_index.get().unwrap(), element_infos);
+            }
+        }
+
         Some(element.clone())
     });
     let ctx = ExpressionContext { mapping: &mapping, state, parent: parent_context, component };
     crate::generator::handle_property_bindings_init(component, |e, p, binding| {
-        let prop = ctx.map_property_reference(&NamedReference::new(e, p));
+        let nr = NamedReference::new(e, p);
+        let prop = ctx.map_property_reference(&nr);
+
+        if let Type::Function { .. } = nr.ty() {
+            if let PropertyReference::Function { sub_component_path, function_index } = prop {
+                assert!(sub_component_path.is_empty());
+                sub_component.functions[function_index].code =
+                    super::lower_expression::lower_expression(&binding.expression, &ctx);
+            } else {
+                unreachable!()
+            }
+            return;
+        }
+
         for tw in &binding.two_way_bindings {
             sub_component.two_way_bindings.push((prop.clone(), ctx.map_property_reference(tw)))
         }
@@ -350,25 +425,40 @@ fn lower_sub_component(
             }
         }
     });
-    sub_component.repeated =
-        repeated.into_iter().map(|elem| lower_repeated_component(&elem, &ctx)).collect();
+    sub_component.component_containers = component_container_data
+        .into_iter()
+        .map(|component_container| {
+            lower_component_container(&component_container, &sub_component, &ctx)
+        })
+        .collect();
+    sub_component.repeated = repeated
+        .into_iter()
+        .map(|elem| lower_repeated_component(&elem, &ctx, compiler_config))
+        .collect();
     for s in &mut sub_component.sub_components {
-        s.repeater_offset += sub_component.repeated.len();
+        s.repeater_offset +=
+            (sub_component.repeated.len() + sub_component.component_containers.len()) as u32;
     }
+
     sub_component.popup_windows = component
         .popup_windows
         .borrow()
         .iter()
-        .map(|popup| lower_popup_component(&popup.component, &ctx))
+        .map(|popup| lower_popup_component(&popup, &ctx, &compiler_config))
         .collect();
 
     crate::generator::for_each_const_properties(component, |elem, n| {
         let x = ctx.map_property_reference(&NamedReference::new(elem, n));
+        // ensure that all const properties have analysis
+        sub_component.prop_analysis.entry(x.clone()).or_insert_with(|| PropAnalysis {
+            property_init: None,
+            analysis: get_property_analysis(elem, n),
+        });
         sub_component.const_properties.push(x);
     });
 
     sub_component.init_code = component
-        .setup_code
+        .init_code
         .borrow()
         .iter()
         .map(|e| super::lower_expression::lower_expression(e, &ctx).into())
@@ -392,38 +482,92 @@ fn lower_sub_component(
     sub_component.accessible_prop = accessible_prop
         .into_iter()
         .map(|(idx, key, nr)| {
-            let mut expr = super::Expression::PropertyReference(ctx.map_property_reference(&nr));
-            match nr.ty() {
-                Type::Bool => {
-                    expr = super::Expression::Condition {
-                        condition: expr.into(),
-                        true_expr: super::Expression::StringLiteral("true".into()).into(),
-                        false_expr: super::Expression::StringLiteral("false".into()).into(),
-                    };
+            let prop = ctx.map_property_reference(&nr);
+            let expr = match nr.ty() {
+                Type::Bool => super::Expression::Condition {
+                    condition: super::Expression::PropertyReference(prop).into(),
+                    true_expr: super::Expression::StringLiteral("true".into()).into(),
+                    false_expr: super::Expression::StringLiteral("false".into()).into(),
+                },
+                Type::Int32 | Type::Float32 => super::Expression::Cast {
+                    from: super::Expression::PropertyReference(prop).into(),
+                    to: Type::String,
+                },
+                Type::String => super::Expression::PropertyReference(prop),
+                Type::Enumeration(e) if e.name == "AccessibleRole" => {
+                    super::Expression::PropertyReference(prop)
                 }
-                Type::Int32 | Type::Float32 => {
-                    expr = super::Expression::Cast { from: expr.into(), to: Type::String };
-                }
-                Type::String => {}
-                Type::Enumeration(e) if e.name == "AccessibleRole" => {}
+                Type::Callback { return_type: None, args } => super::Expression::CallBackCall {
+                    callback: prop,
+                    arguments: (0..args.len())
+                        .map(|index| super::Expression::FunctionParameterReference { index })
+                        .collect(),
+                },
                 _ => panic!("Invalid type for accessible property"),
-            }
+            };
 
             ((idx, key), expr.into())
         })
         .collect();
 
+    sub_component.change_callbacks = change_callbacks
+        .into_iter()
+        .map(|(nr, exprs)| {
+            let prop = ctx.map_property_reference(&nr);
+            let expr =
+                super::lower_expression::lower_expression(&tree_Expression::CodeBlock(exprs), &ctx);
+            (prop, expr.into())
+        })
+        .collect();
+
+    crate::object_tree::recurse_elem(&component.root_element, &(), &mut |element, _| {
+        let elem = element.borrow();
+        if elem.repeated.is_some() {
+            return;
+        };
+        let Some(geom) = &elem.geometry_props else { return };
+        let item_index = *elem.item_index.get().unwrap() as usize;
+        if item_index >= sub_component.geometries.len() {
+            sub_component.geometries.resize(item_index + 1, Default::default());
+        }
+        sub_component.geometries[item_index] = Some(lower_geometry(geom, &ctx).into());
+    });
+
     LoweredSubComponent { sub_component: Rc::new(sub_component), mapping }
+}
+
+fn lower_geometry(
+    geom: &crate::object_tree::GeometryProps,
+    ctx: &ExpressionContext<'_>,
+) -> super::Expression {
+    let mut fields = BTreeMap::default();
+    let mut values = HashMap::with_capacity(4);
+    for (f, v) in [("x", &geom.x), ("y", &geom.y), ("width", &geom.width), ("height", &geom.height)]
+    {
+        fields.insert(f.into(), Type::LogicalLength);
+        values
+            .insert(f.into(), super::Expression::PropertyReference(ctx.map_property_reference(v)));
+    }
+    super::Expression::Struct {
+        ty: Type::Struct { fields, name: None, node: None, rust_attributes: None },
+        values,
+    }
 }
 
 fn get_property_analysis(elem: &ElementRc, p: &str) -> crate::object_tree::PropertyAnalysis {
     let mut a = elem.borrow().property_analysis.borrow().get(p).cloned().unwrap_or_default();
     let mut elem = elem.clone();
     loop {
+        if let Some(d) = elem.borrow().property_declarations.get(p) {
+            if let Some(nr) = &d.is_alias {
+                a.merge(&get_property_analysis(&nr.element(), nr.name()));
+            }
+            return a;
+        }
         let base = elem.borrow().base_type.clone();
         match base {
             ElementType::Native(n) => {
-                if n.properties.get(p).map_or(false, |p| p.is_native_output) {
+                if n.properties.get(p).map_or(false, |p| p.is_native_output()) {
                     a.is_set = true;
                 }
             }
@@ -440,17 +584,19 @@ fn get_property_analysis(elem: &ElementRc, p: &str) -> crate::object_tree::Prope
     }
 }
 
-fn lower_repeated_component(elem: &ElementRc, ctx: &ExpressionContext) -> RepeatedElement {
+fn lower_repeated_component(
+    elem: &ElementRc,
+    ctx: &ExpressionContext,
+    compiler_config: &CompilerConfiguration,
+) -> RepeatedElement {
     let e = elem.borrow();
     let component = e.base_type.as_component().clone();
     let repeated = e.repeated.as_ref().unwrap();
 
-    let sc = lower_sub_component(&component, ctx.state, Some(ctx));
+    let sc: LoweredSubComponent =
+        lower_sub_component(&component, ctx.state, Some(ctx), compiler_config);
 
-    let map_inner_prop = |p| {
-        sc.mapping
-            .map_property_reference(&NamedReference::new(&component.root_element, p), ctx.state)
-    };
+    let geom = component.root_element.borrow().geometry_props.clone().unwrap();
 
     let listview = repeated.is_listview.as_ref().map(|lv| ListViewInfo {
         viewport_y: ctx.map_property_reference(&lv.viewport_y),
@@ -458,10 +604,9 @@ fn lower_repeated_component(elem: &ElementRc, ctx: &ExpressionContext) -> Repeat
         viewport_width: ctx.map_property_reference(&lv.viewport_width),
         listview_height: ctx.map_property_reference(&lv.listview_height),
         listview_width: ctx.map_property_reference(&lv.listview_width),
-
-        prop_y: map_inner_prop("y"),
-        prop_width: map_inner_prop("width"),
-        prop_height: map_inner_prop("height"),
+        prop_y: sc.mapping.map_property_reference(&geom.y, ctx.state),
+        prop_width: sc.mapping.map_property_reference(&geom.width, ctx.state),
+        prop_height: sc.mapping.map_property_reference(&geom.height, ctx.state),
     });
 
     RepeatedElement {
@@ -471,20 +616,46 @@ fn lower_repeated_component(elem: &ElementRc, ctx: &ExpressionContext) -> Repeat
             root: Rc::try_unwrap(sc.sub_component).unwrap(),
             parent_context: Some(e.enclosing_component.upgrade().unwrap().id.clone()),
         },
-        index_prop: (!repeated.is_conditional_element).then(|| 1),
-        data_prop: (!repeated.is_conditional_element).then(|| 0),
+        index_prop: (!repeated.is_conditional_element).then_some(1),
+        data_prop: (!repeated.is_conditional_element).then_some(0),
         index_in_tree: *e.item_index.get().unwrap(),
         listview,
     }
 }
 
-fn lower_popup_component(component: &Rc<Component>, ctx: &ExpressionContext) -> ItemTree {
-    let sc = lower_sub_component(component, ctx.state, Some(ctx));
-    ItemTree {
-        tree: make_tree(ctx.state, &component.root_element, &sc, &[]),
+fn lower_component_container(
+    container: &ElementRc,
+    sub_component: &SubComponent,
+    _ctx: &ExpressionContext,
+) -> ComponentContainerElement {
+    let c = container.borrow();
+
+    let component_container_index = *c.item_index.get().unwrap();
+    let component_container_items_index = sub_component
+        .items
+        .iter()
+        .position(|i| i.index_in_tree == component_container_index)
+        .unwrap() as u32;
+
+    ComponentContainerElement {
+        component_container_item_tree_index: component_container_index,
+        component_container_items_index,
+        component_placeholder_item_tree_index: *c.item_index_of_first_children.get().unwrap(),
+    }
+}
+
+fn lower_popup_component(
+    popup: &PopupWindow,
+    ctx: &ExpressionContext,
+    compiler_config: &CompilerConfiguration,
+) -> llr_PopupWindow {
+    let sc = lower_sub_component(&popup.component, ctx.state, Some(ctx), compiler_config);
+    let item_tree = ItemTree {
+        tree: make_tree(ctx.state, &popup.component.root_element, &sc, &[]),
         root: Rc::try_unwrap(sc.sub_component).unwrap(),
         parent_context: Some(
-            component
+            popup
+                .component
                 .parent_element
                 .upgrade()
                 .unwrap()
@@ -495,7 +666,18 @@ fn lower_popup_component(component: &Rc<Component>, ctx: &ExpressionContext) -> 
                 .id
                 .clone(),
         ),
-    }
+    };
+
+    use super::Expression::PropertyReference as PR;
+    let position = super::lower_expression::make_struct(
+        "Point",
+        [
+            ("x", Type::LogicalLength, PR(sc.mapping.map_property_reference(&popup.x, ctx.state))),
+            ("y", Type::LogicalLength, PR(sc.mapping.map_property_reference(&popup.y, ctx.state))),
+        ],
+    );
+
+    llr_PopupWindow { item_tree, position: position.into() }
 }
 
 fn lower_global(
@@ -507,10 +689,32 @@ fn lower_global(
     let mut properties = vec![];
     let mut const_properties = vec![];
     let mut prop_analysis = vec![];
+    let mut functions = vec![];
 
     for (p, x) in &global.root_element.borrow().property_declarations {
         let property_index = properties.len();
         let nr = NamedReference::new(&global.root_element, p);
+
+        if let Type::Function { return_type, args } = &x.property_type {
+            let function_index = functions.len();
+            mapping.property_mapping.insert(
+                nr.clone(),
+                PropertyReference::Function { sub_component_path: vec![], function_index },
+            );
+            state.global_properties.insert(
+                nr.clone(),
+                PropertyReference::GlobalFunction { global_index, function_index },
+            );
+            functions.push(Function {
+                name: p.into(),
+                ret_ty: (**return_type).clone(),
+                args: args.clone(),
+                // will be replaced later
+                code: super::Expression::CodeBlock(vec![]),
+            });
+            continue;
+        }
+
         mapping.property_mapping.insert(
             nr.clone(),
             PropertyReference::Local { sub_component_path: vec![], property_index },
@@ -548,16 +752,21 @@ fn lower_global(
         assert!(binding.borrow().two_way_bindings.is_empty());
         assert!(binding.borrow().animation.is_none());
         let expression =
-            super::lower_expression::lower_expression(&binding.borrow().expression, &ctx).into();
+            super::lower_expression::lower_expression(&binding.borrow().expression, &ctx);
 
         let nr = NamedReference::new(&global.root_element, prop);
         let property_index = match mapping.property_mapping[&nr] {
             PropertyReference::Local { property_index, .. } => property_index,
+            PropertyReference::Function { ref sub_component_path, function_index } => {
+                assert!(sub_component_path.is_empty());
+                functions[function_index].code = expression;
+                continue;
+            }
             _ => unreachable!(),
         };
         let is_constant = binding.borrow().analysis.as_ref().map_or(false, |a| a.is_const);
         init_values[property_index] = Some(BindingExpression {
-            expression,
+            expression: expression.into(),
             animation: None,
             is_constant,
             is_state_info: false,
@@ -574,16 +783,18 @@ fn lower_global(
             state
                 .global_properties
                 .insert(nr, PropertyReference::Global { global_index, property_index });
-            prop_analysis.push(
-                global
+            prop_analysis.push(PropertyAnalysis {
+                // Assume that a builtin global property can always be set from the builtin code
+                is_set_externally: true,
+                ..global
                     .root_element
                     .borrow()
                     .property_analysis
                     .borrow()
                     .get(p)
                     .cloned()
-                    .unwrap_or_default(),
-            );
+                    .unwrap_or_default()
+            });
         }
         true
     } else {
@@ -594,9 +805,11 @@ fn lower_global(
     GlobalComponent {
         name: global.root_element.borrow().id.clone(),
         properties,
+        functions,
         init_values,
         const_properties,
         public_properties,
+        private_properties: global.private_properties.borrow().clone(),
         exported: !global.exported_global_names.borrow().is_empty(),
         aliases: global.global_aliases(),
         is_builtin,
@@ -612,6 +825,7 @@ fn make_tree(
 ) -> TreeNode {
     let e = element.borrow();
     let children = e.children.iter().map(|c| make_tree(state, c, component, sub_component_path));
+    let repeater_count = component.mapping.repeater_count;
     match component.mapping.element_mapping.get(&ByAddress(element.clone())).unwrap() {
         LoweredElement::SubComponent { sub_component_index } => {
             let sub_component = e.sub_component().unwrap();
@@ -636,6 +850,7 @@ fn make_tree(
             item_index: *item_index,
             children: children.collect(),
             repeated: false,
+            component_container: false,
         },
         LoweredElement::Repeated { repeated_index } => TreeNode {
             is_accessible: false,
@@ -643,6 +858,15 @@ fn make_tree(
             item_index: *repeated_index,
             children: vec![],
             repeated: true,
+            component_container: false,
+        },
+        LoweredElement::ComponentPlaceholder { repeated_index } => TreeNode {
+            is_accessible: false,
+            sub_component_path: sub_component_path.into(),
+            item_index: *repeated_index + repeater_count,
+            children: vec![],
+            repeated: false,
+            component_container: true,
         },
     }
 }
@@ -661,7 +885,12 @@ fn public_properties(
         .map(|(p, c)| {
             let property_reference = mapping
                 .map_property_reference(&NamedReference::new(&component.root_element, p), state);
-            (p.clone(), (c.property_type.clone(), property_reference))
+            PublicProperty {
+                name: p.clone(),
+                ty: c.property_type.clone(),
+                prop: property_reference,
+                read_only: c.visibility == PropertyVisibility::Output,
+            }
         })
         .collect()
 }

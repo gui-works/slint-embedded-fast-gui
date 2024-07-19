@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Datastructures used to represent layouts in the compiler
 
@@ -20,7 +20,6 @@ pub enum Orientation {
 #[derive(Clone, Debug, derive_more::From)]
 pub enum Layout {
     GridLayout(GridLayout),
-    PathLayout(PathLayout),
     BoxLayout(BoxLayout),
 }
 
@@ -29,21 +28,18 @@ impl Layout {
         match self {
             Layout::GridLayout(g) => &g.geometry.rect,
             Layout::BoxLayout(g) => &g.geometry.rect,
-            Layout::PathLayout(p) => &p.rect,
         }
     }
     pub fn rect_mut(&mut self) -> &mut LayoutRect {
         match self {
             Layout::GridLayout(g) => &mut g.geometry.rect,
             Layout::BoxLayout(g) => &mut g.geometry.rect,
-            Layout::PathLayout(p) => &mut p.rect,
         }
     }
-    pub fn geometry(&self) -> Option<&LayoutGeometry> {
+    pub fn geometry(&self) -> &LayoutGeometry {
         match self {
-            Layout::GridLayout(l) => Some(&l.geometry),
-            Layout::BoxLayout(l) => Some(&l.geometry),
-            Layout::PathLayout(_) => None,
+            Layout::GridLayout(l) => &l.geometry,
+            Layout::BoxLayout(l) => &l.geometry,
         }
     }
 }
@@ -54,7 +50,6 @@ impl Layout {
         match self {
             Layout::GridLayout(grid) => grid.visit_named_references(visitor),
             Layout::BoxLayout(l) => l.visit_named_references(visitor),
-            Layout::PathLayout(path) => path.visit_named_references(visitor),
         }
     }
 }
@@ -196,21 +191,26 @@ impl LayoutConstraints {
         constraints
     }
 
-    pub fn has_explicit_restrictions(&self) -> bool {
-        self.min_width.is_some()
-            || self.max_width.is_some()
-            || self.min_height.is_some()
-            || self.max_width.is_some()
-            || self.max_height.is_some()
-            || self.preferred_height.is_some()
-            || self.preferred_width.is_some()
-            || self.horizontal_stretch.is_some()
-            || self.vertical_stretch.is_some()
+    pub fn has_explicit_restrictions(&self, orientation: Orientation) -> bool {
+        match orientation {
+            Orientation::Horizontal => {
+                self.min_width.is_some()
+                    || self.max_width.is_some()
+                    || self.preferred_width.is_some()
+                    || self.horizontal_stretch.is_some()
+            }
+            Orientation::Vertical => {
+                self.min_height.is_some()
+                    || self.max_height.is_some()
+                    || self.preferred_height.is_some()
+                    || self.vertical_stretch.is_some()
+            }
+        }
     }
 
     // Iterate over the constraint with a reference to a property, and the corresponding member in the i_slint_core::layout::LayoutInfo struct
-    pub fn for_each_restrictions<'a>(
-        &'a self,
+    pub fn for_each_restrictions(
+        &self,
         orientation: Orientation,
     ) -> impl Iterator<Item = (&NamedReference, &'static str)> {
         let (min, max, preferred, stretch) = match orientation {
@@ -321,9 +321,33 @@ impl Padding {
 }
 
 #[derive(Debug, Clone)]
+pub struct Spacing {
+    pub horizontal: Option<NamedReference>,
+    pub vertical: Option<NamedReference>,
+}
+
+impl Spacing {
+    fn visit_named_references(&mut self, visitor: &mut impl FnMut(&mut NamedReference)) {
+        if let Some(e) = self.horizontal.as_mut() {
+            visitor(&mut *e);
+        }
+        if let Some(e) = self.vertical.as_mut() {
+            visitor(&mut *e);
+        }
+    }
+
+    pub fn orientation(&self, o: Orientation) -> Option<&NamedReference> {
+        match o {
+            Orientation::Horizontal => self.horizontal.as_ref(),
+            Orientation::Vertical => self.vertical.as_ref(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct LayoutGeometry {
     pub rect: LayoutRect,
-    pub spacing: Option<NamedReference>,
+    pub spacing: Spacing,
     pub alignment: Option<NamedReference>,
     pub padding: Padding,
 }
@@ -331,17 +355,18 @@ pub struct LayoutGeometry {
 impl LayoutGeometry {
     pub fn visit_named_references(&mut self, visitor: &mut impl FnMut(&mut NamedReference)) {
         self.rect.visit_named_references(visitor);
-        if let Some(e) = self.spacing.as_mut() {
-            visitor(&mut *e)
-        }
         if let Some(e) = self.alignment.as_mut() {
             visitor(&mut *e)
         }
+        self.spacing.visit_named_references(visitor);
         self.padding.visit_named_references(visitor);
     }
 
     pub fn new(layout_element: &ElementRc) -> Self {
-        let spacing = binding_reference(layout_element, "spacing");
+        let spacing = || binding_reference(layout_element, "spacing");
+        init_fake_property(layout_element, "spacing-horizontal", spacing);
+        init_fake_property(layout_element, "spacing-vertical", spacing);
+
         let alignment = binding_reference(layout_element, "alignment");
 
         let padding = || binding_reference(layout_element, "padding");
@@ -355,6 +380,11 @@ impl LayoutGeometry {
             right: binding_reference(layout_element, "padding-right").or_else(padding),
             top: binding_reference(layout_element, "padding-top").or_else(padding),
             bottom: binding_reference(layout_element, "padding-bottom").or_else(padding),
+        };
+
+        let spacing = Spacing {
+            horizontal: binding_reference(layout_element, "spacing-horizontal").or_else(spacing),
+            vertical: binding_reference(layout_element, "spacing-vertical").or_else(spacing),
         };
 
         let rect = LayoutRect::install_on_element(layout_element);
@@ -451,22 +481,6 @@ impl BoxLayout {
     }
 }
 
-/// Internal representation of a path layout
-#[derive(Debug, Clone)]
-pub struct PathLayout {
-    pub path: Path,
-    pub elements: Vec<ElementRc>,
-    pub rect: LayoutRect,
-    pub offset_reference: Option<NamedReference>,
-}
-
-impl PathLayout {
-    fn visit_named_references(&mut self, visitor: &mut impl FnMut(&mut NamedReference)) {
-        self.rect.visit_named_references(visitor);
-        self.offset_reference.as_mut().map(visitor);
-    }
-}
-
 /// The [`Type`] for a runtime LayoutInfo structure
 pub fn layout_info_type() -> Type {
     Type::Struct {
@@ -479,8 +493,9 @@ pub fn layout_info_type() -> Type {
                     .map(|s| (s.to_string(), Type::Float32)),
             )
             .collect(),
-        name: Some("LayoutInfo".into()),
+        name: Some("slint::private_api::LayoutInfo".into()),
         node: None,
+        rust_attributes: None,
     }
 }
 
@@ -503,7 +518,19 @@ pub fn implicit_layout_info_call(elem: &ElementRc, orientation: Orientation) -> 
                     }
                 }
             }
-            ElementType::Builtin(base_type) if base_type.name == "Rectangle" => {
+            ElementType::Builtin(base_type)
+                if matches!(
+                    base_type.name.as_str(),
+                    "Rectangle"
+                        | "Empty"
+                        | "TouchArea"
+                        | "FocusScope"
+                        | "Opacity"
+                        | "Layer"
+                        | "BoxShadow"
+                        | "Clip"
+                ) =>
+            {
                 // hard-code the value for rectangle because many rectangle end up optimized away and we
                 // don't want to depend on the element.
                 Expression::Struct {
@@ -530,5 +557,26 @@ pub fn implicit_layout_info_call(elem: &ElementRc, orientation: Orientation) -> 
                 source_location: None,
             },
         };
+    }
+}
+
+/// Create a new property based on the name. (it might get a different name if that property exist)
+pub fn create_new_prop(elem: &ElementRc, tentative_name: &str, ty: Type) -> NamedReference {
+    let mut e = elem.borrow_mut();
+    if !e.lookup_property(tentative_name).is_valid() {
+        e.property_declarations.insert(tentative_name.into(), ty.into());
+        drop(e);
+        NamedReference::new(elem, tentative_name)
+    } else {
+        let mut counter = 0;
+        loop {
+            counter += 1;
+            let name = format!("{}{}", tentative_name, counter);
+            if !e.lookup_property(&name).is_valid() {
+                e.property_declarations.insert(name.clone(), ty.into());
+                drop(e);
+                return NamedReference::new(elem, &name);
+            }
+        }
     }
 }

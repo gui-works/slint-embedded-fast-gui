@@ -1,7 +1,10 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-use i_slint_core::input::{FocusEventResult, KeyEventType};
+use i_slint_core::{
+    input::{FocusEventResult, KeyEventType},
+    platform::PointerEventButton,
+};
 
 use super::*;
 
@@ -9,26 +12,23 @@ use super::*;
 #[derive(FieldOffsets, Default, SlintElement)]
 #[pin]
 pub struct NativeCheckBox {
-    pub x: Property<LogicalLength>,
-    pub y: Property<LogicalLength>,
-    pub width: Property<LogicalLength>,
-    pub height: Property<LogicalLength>,
     pub enabled: Property<bool>,
     pub has_focus: Property<bool>,
     pub toggled: Callback<VoidArg>,
     pub text: Property<SharedString>,
+    pub has_hover: Property<bool>,
     pub checked: Property<bool>,
+    widget_ptr: std::cell::Cell<SlintTypeErasedWidgetPtr>,
+    animation_tracker: Property<i32>,
     pub cached_rendering_data: CachedRenderingData,
 }
 
 impl Item for NativeCheckBox {
-    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
-
-    fn geometry(self: Pin<&Self>) -> LogicalRect {
-        LogicalRect::new(
-            LogicalPoint::from_lengths(self.x(), self.y()),
-            LogicalSize::from_lengths(self.width(), self.height()),
-        )
+    fn init(self: Pin<&Self>, _self_rc: &ItemRc) {
+        let animation_tracker_property_ptr = Self::FIELD_OFFSETS.animation_tracker.apply_pin(self);
+        self.widget_ptr.set(cpp! { unsafe [animation_tracker_property_ptr as "void*"] -> SlintTypeErasedWidgetPtr as "std::unique_ptr<SlintTypeErasedWidget>"  {
+            return make_unique_animated_widget<QCheckBox>(animation_tracker_property_ptr);
+        }})
     }
 
     fn layout_info(
@@ -37,21 +37,27 @@ impl Item for NativeCheckBox {
         _window_adapter: &Rc<dyn WindowAdapter>,
     ) -> LayoutInfo {
         let text: qttypes::QString = self.text().as_str().into();
+        let widget: NonNull<()> = SlintTypeErasedWidgetPtr::qwidget_ptr(&self.widget_ptr);
         let size = cpp!(unsafe [
-            text as "QString"
+            text as "QString",
+            widget as "QWidget*"
         ] -> qttypes::QSize as "QSize" {
             ensure_initialized();
             QStyleOptionButton option;
             option.rect = option.fontMetrics.boundingRect(text);
             option.text = std::move(text);
-            return qApp->style()->sizeFromContents(QStyle::CT_CheckBox, &option, option.rect.size(), nullptr);
+            return qApp->style()->sizeFromContents(QStyle::CT_CheckBox, &option, option.rect.size(), widget);
         });
         match orientation {
-            Orientation::Horizontal => {
-                LayoutInfo { min: size.width as f32, stretch: 1., ..LayoutInfo::default() }
-            }
+            Orientation::Horizontal => LayoutInfo {
+                min: size.width as f32,
+                preferred: size.width as f32,
+                stretch: 1.,
+                ..LayoutInfo::default()
+            },
             Orientation::Vertical => LayoutInfo {
                 min: size.height as f32,
+                preferred: size.height as f32,
                 max: size.height as f32,
                 ..LayoutInfo::default()
             },
@@ -60,10 +66,11 @@ impl Item for NativeCheckBox {
 
     fn input_event_filter_before_children(
         self: Pin<&Self>,
-        _: MouseEvent,
+        event: MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
+        Self::FIELD_OFFSETS.has_hover.apply_pin(self).set(!matches!(event, MouseEvent::Exit));
         InputEventFilterResult::ForwardEvent
     }
 
@@ -71,17 +78,18 @@ impl Item for NativeCheckBox {
         self: Pin<&Self>,
         event: MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
-        _self_rc: &i_slint_core::items::ItemRc,
+        self_rc: &i_slint_core::items::ItemRc,
     ) -> InputEventResult {
+        if matches!(event, MouseEvent::Exit) {
+            Self::FIELD_OFFSETS.has_hover.apply_pin(self).set(false);
+        }
         if !self.enabled() {
             return InputEventResult::EventIgnored;
         }
-        if let MouseEvent::Released { position, .. } = event {
-            if LogicalRect::new(
-                LogicalPoint::default(),
-                LogicalSize::from_lengths(self.width(), self.height()),
-            )
-            .contains(position)
+        if let MouseEvent::Released { position, button, .. } = event {
+            let geo = self_rc.geometry();
+            if button == PointerEventButton::Left
+                && LogicalRect::new(LogicalPoint::default(), geo.size).contains(position)
             {
                 Self::FIELD_OFFSETS.checked.apply_pin(self).set(!self.checked());
                 Self::FIELD_OFFSETS.toggled.apply_pin(self).call(&())
@@ -131,6 +139,7 @@ impl Item for NativeCheckBox {
         let checked: bool = this.checked();
         let enabled = this.enabled();
         let has_focus = this.has_focus();
+        let has_hover = this.has_hover();
         let text: qttypes::QString = this.text().as_str().into();
 
         cpp!(unsafe [
@@ -141,10 +150,12 @@ impl Item for NativeCheckBox {
             size as "QSize",
             checked as "bool",
             has_focus as "bool",
+            has_hover as "bool",
             dpr as "float",
             initial_state as "int"
         ] {
             QStyleOptionButton option;
+            option.styleObject = widget;
             option.state |= QStyle::State(initial_state);
             option.text = std::move(text);
             option.rect = QRect(QPoint(), size / dpr);
@@ -156,6 +167,9 @@ impl Item for NativeCheckBox {
             }
             if (has_focus) {
                 option.state |= QStyle::State_HasFocus | QStyle::State_KeyboardFocusChange | QStyle::State_Item;
+            }
+            if (has_hover) {
+                option.state |= QStyle::State_MouseOver;
             }
             qApp->style()->drawControl(QStyle::CE_CheckBox, &option, painter->get(), widget);
         });

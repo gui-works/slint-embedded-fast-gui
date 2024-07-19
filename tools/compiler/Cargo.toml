@@ -1,24 +1,31 @@
-# Copyright © SixtyFPS GmbH <info@slint-ui.com>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 [package]
 name = "slint-compiler"
-version = "0.3.2"
-authors = ["Slint Developers <info@slint-ui.com>"]
-edition = "2021"
-license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
 description = "Slint compiler binary"
-repository = "https://github.com/slint-ui/slint"
-homepage = "https://slint-ui.com"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
 publish = false
 
 [[bin]]
 name = "slint-compiler"
 path = "main.rs"
 
-[dependencies]
-i-slint-compiler = { version = "=0.3.2", path = "../../internal/compiler", features = ["display-diagnostics", "cpp", "rust"]}
+[features]
+software-renderer = ["i-slint-compiler/software-renderer"]
 
-clap = { version = "4.0", features = ["derive", "wrap_help"] }
+default = ["software-renderer"]
+
+[dependencies]
+i-slint-compiler = { workspace = true, features = ["default", "display-diagnostics", "cpp", "rust"]}
+
+clap = { workspace = true }
 proc-macro2 = "1.0.11"
-spin_on = "0.1"
+spin_on = { workspace = true }
+itertools = { workspace = true }

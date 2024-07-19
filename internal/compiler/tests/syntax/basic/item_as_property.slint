@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 struct Str := { foo: Rectangle }
 //                   ^error{'Rectangle' is not a valid type}
@@ -15,14 +15,15 @@ Comp := Rectangle {
 
     callback cb1(Rectangle);
 //               ^error{'Rectangle' is not a valid type}
-    callback cb1() -> Rectangle;
+    callback cb2() -> Rectangle;
 //                    ^error{'Rectangle' is not a valid type}
 }
 
-Foo := Rectangle {
+export Foo := Rectangle {
     xx := Rectangle { }
     Comp {
         r: xx;
 //      ^error{Unknown property}
+//         ^^error{Cannot take reference of an element}
     }
 }

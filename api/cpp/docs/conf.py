@@ -1,5 +1,5 @@
-# Copyright © 2021 SixtyFPS GmbH <info@slint-ui.com>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Software-3.0
 
 # Configuration file for the Sphinx documentation builder.
 #
@@ -21,12 +21,12 @@ import textwrap
 
 # -- Project information -----------------------------------------------------
 
-project = "Slint C++"
-copyright = "2022, info@slint-ui.com"
-author = "info@slint-ui.com"
-
 # The full version, including alpha/beta/rc tags
-version = "0.3.2"
+version = "1.7.0"
+
+project = f'Slint {version} C++ API'
+copyright = "SixtyFPS GmbH"
+author = "Slint Developers <info@slint.dev>"
 
 cpp_index_common_prefix = ["slint::", "slint::interpreter::"]
 
@@ -35,7 +35,8 @@ cpp_index_common_prefix = ["slint::", "slint::interpreter::"]
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
-extensions = ["breathe", "myst_parser", "exhale", "sphinx_markdown_tables"]
+extensions = ["breathe", "myst_parser", "exhale",
+              "sphinx_markdown_tables", "sphinxcontrib.jquery"]
 
 breathe_projects = {"Slint": "./docs/xml"}
 breathe_default_project = "Slint"
@@ -53,17 +54,19 @@ exhale_args = {
             If you choose to load :code:`.slint` files dynamically at run-time, then
             you can use the classes in :ref:`slint::interpreter<namespace_slint__interpreter>`, starting at
             :cpp:class:`slint::interpreter::ComponentCompiler`. You need to include
-            the :code:`slint_interpreter.h` header file.
+            the :code:`slint-interpreter.h` header file.
         """
     ),
     "doxygenStripFromPath": "..",
     "createTreeView": True,
+    "kindsWithContentsDirectives": [],
     "exhaleExecutesDoxygen": True,
     "exhaleDoxygenStdin": """INPUT = ../../api/cpp/include generated_include
 EXCLUDE_SYMBOLS = slint::cbindgen_private* slint::private_api* vtable* SLINT_DECL_ITEM
-EXCLUDE = ../../api/cpp/include/vtable.h ../../api/cpp/include/slint_testing.h
+EXCLUDE = ../../api/cpp/include/vtable.h ../../api/cpp/include/slint_tests_helper.h
 ENABLE_PREPROCESSING = YES
 PREDEFINED += DOXYGEN
+INCLUDE_PATH = generated_include
 WARN_AS_ERROR = YES""",
 }
 
@@ -92,7 +95,7 @@ exclude_patterns = [
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
 #
-html_theme = "sphinx_rtd_theme"
+html_theme = "furo"
 
 html_theme_options = {"collapse_navigation": False}
 
@@ -103,20 +106,25 @@ html_static_path = ["_static"]
 
 html_show_sourcelink = False
 
-html_logo = "https://slint-ui.com/logo/slint-logo-small-light.svg"
+html_logo = "https://slint.dev/logo/slint-logo-small-light.svg"
 
 myst_enable_extensions = [
-    "html_image",
+    "html_image", "colon_fence"
 ]
 
 # Annotate h1/h2 elements with anchors
 myst_heading_anchors = 2
 
+myst_url_schemes = {
+    "slint-reference": f"https://slint.dev/releases/{version}/docs/slint/{{{{path}}}}",
+    'http': None, 'https': None, 'mailto': None,
+}
+
 rst_epilog = """
 .. |ListView| replace:: :code:`ListView`
-.. _ListView: ../markdown/widgets.html#listview
+.. _ListView: ../../slint/src/language/widgets/listview
 .. |Repetition| replace:: :code:`for` - :code:`in`
-.. _Repetition: ../markdown/langref.html#repetition
+.. _Repetition: ../../slint/src/reference/repetitions.html
 """
 
 

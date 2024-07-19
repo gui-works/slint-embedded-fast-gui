@@ -1,19 +1,22 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 import { Button, LineEdit, HorizontalBox } from "std-widgets.slint";
 
-Counter := Window {
-    property <int> value: 0;
+export component Counter inherits Window {
+    private property <int> value: 0;
+
     preferred-height: 30px;
+
     layout := HorizontalBox {
         LineEdit {
             enabled: false;
-            text: value;
+            text: root.value;
         }
+
         Button {
+            clicked => { root.value += 1; }
             text: "Count";
-            clicked => { value += 1; }
         }
     }
 }

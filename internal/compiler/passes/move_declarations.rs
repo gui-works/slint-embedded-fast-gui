@@ -1,14 +1,13 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! This pass moves all declaration of properties or callback to the root
 
-use crate::expression_tree::NamedReference;
-use crate::object_tree::*;
-
+use crate::expression_tree::{Expression, NamedReference};
 use crate::langtype::ElementType;
-use std::collections::BTreeMap;
-use std::collections::HashMap;
+use crate::object_tree::*;
+use core::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 struct Declarations {
@@ -26,10 +25,11 @@ pub fn move_declarations(component: &Rc<Component>) {
 }
 
 fn do_move_declarations(component: &Rc<Component>) {
-    let mut decl = Declarations::take_from_element(&mut *component.root_element.borrow_mut());
+    let mut decl = Declarations::take_from_element(&mut component.root_element.borrow_mut());
     component.popup_windows.borrow().iter().for_each(|f| do_move_declarations(&f.component));
 
     let mut new_root_bindings = HashMap::new();
+    let mut new_root_change_callbacks = HashMap::new();
     let mut new_root_property_analysis = HashMap::new();
 
     let move_bindings_and_animations = &mut |elem: &ElementRc| {
@@ -72,6 +72,19 @@ fn do_move_declarations(component: &Rc<Component>) {
             }
         }
         *elem.borrow().property_analysis.borrow_mut() = new_property_analysis;
+
+        // Also move the changed callback
+        let change_callbacks = core::mem::take(&mut elem.borrow_mut().change_callbacks);
+        let mut new_change_callbacks = BTreeMap::<String, RefCell<Vec<Expression>>>::default();
+        for (k, e) in change_callbacks {
+            let will_be_moved = elem.borrow().property_declarations.contains_key(&k);
+            if will_be_moved {
+                new_root_change_callbacks.insert(map_name(elem, k.as_str()), e);
+            } else {
+                new_change_callbacks.insert(k, e);
+            }
+        }
+        elem.borrow_mut().change_callbacks = new_change_callbacks;
     };
 
     component.optimized_elements.borrow().iter().for_each(|e| move_bindings_and_animations(e));
@@ -83,32 +96,31 @@ fn do_move_declarations(component: &Rc<Component>) {
         fixup_reference(&mut p.y);
         visit_all_named_references(&p.component, &mut fixup_reference)
     });
+    component.init_code.borrow_mut().iter_mut().for_each(|expr| {
+        visit_named_references_in_expression(expr, &mut fixup_reference);
+    });
     for pd in decl.property_declarations.values_mut() {
         pd.is_alias.as_mut().map(fixup_reference);
     }
 
     let move_properties = &mut |elem: &ElementRc| {
-        let elem_decl = Declarations::take_from_element(&mut *elem.borrow_mut());
+        let elem_decl = Declarations::take_from_element(&mut elem.borrow_mut());
         decl.property_declarations.extend(
-            elem_decl.property_declarations.into_iter().map(|(p, d)| (map_name(elem, &*p), d)),
+            elem_decl.property_declarations.into_iter().map(|(p, d)| (map_name(elem, &p), d)),
         );
     };
 
     recurse_elem(&component.root_element, &(), &mut |elem, _| move_properties(elem));
 
-    component.optimized_elements.borrow().iter().for_each(|e| move_properties(e));
+    component.optimized_elements.borrow().iter().for_each(move_properties);
 
     {
         let mut r = component.root_element.borrow_mut();
         r.property_declarations = decl.property_declarations;
-        r.bindings.extend(new_root_bindings.into_iter());
-        r.property_analysis.borrow_mut().extend(new_root_property_analysis.into_iter());
+        r.bindings.extend(new_root_bindings);
+        r.property_analysis.borrow_mut().extend(new_root_property_analysis);
+        r.change_callbacks.extend(new_root_change_callbacks);
     }
-
-    // By now, the optimized item should be unused
-    #[cfg(debug_assertions)]
-    assert_optimized_item_unused(component.optimized_elements.borrow().as_slice());
-    core::mem::take(&mut *component.optimized_elements.borrow_mut());
 }
 
 fn fixup_reference(nr: &mut NamedReference) {
@@ -165,17 +177,5 @@ fn simplify_optimized_items(items: &[ElementRc]) {
                 unreachable!("Only builtin items should be optimized")
             }
         })
-    }
-}
-
-/// Check there are no longer references to optimized items
-#[cfg(debug_assertions)]
-fn assert_optimized_item_unused(items: &[ElementRc]) {
-    for e in items {
-        recurse_elem(e, &(), &mut |e, _| {
-            assert_eq!(Rc::strong_count(e), 1);
-            // no longer working because we have weak count in the named reference holder
-            //assert_eq!(Rc::weak_count(e), 0);
-        });
     }
 }

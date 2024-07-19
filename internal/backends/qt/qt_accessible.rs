@@ -1,11 +1,14 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // cspell:ignore descendents qobject qwidget
 
 use crate::accessible_generated::*;
+use crate::qt_window::QtWindow;
 
-use i_slint_core::accessibility::AccessibleStringProperty;
+use i_slint_core::accessibility::{
+    AccessibilityAction, AccessibleStringProperty, SupportedAccessibilityAction,
+};
 use i_slint_core::item_tree::{ItemRc, ItemWeak};
 use i_slint_core::properties::{PropertyDirtyHandler, PropertyTracker};
 use i_slint_core::window::WindowInner;
@@ -15,7 +18,6 @@ use cpp::*;
 use pin_project::pin_project;
 use qttypes::QString;
 
-use alloc::boxed::Box;
 use core::ffi::c_void;
 use std::pin::Pin;
 
@@ -23,7 +25,7 @@ use std::pin::Pin;
 const NAME: u32 = QAccessible_Text_Name;
 const DESCRIPTION: u32 = QAccessible_Text_Description;
 const VALUE: u32 = QAccessible_Text_Value;
-const CHECKED: u32 = QAccessible_Text_UserText as u32;
+const CHECKED: u32 = QAccessible_Text_UserText;
 const VALUE_MINIMUM: u32 = CHECKED + 1;
 const VALUE_MAXIMUM: u32 = VALUE_MINIMUM + 1;
 const VALUE_STEP: u32 = VALUE_MAXIMUM + 1;
@@ -34,7 +36,7 @@ pub struct AccessibleItemPropertiesTracker {
 }
 
 impl PropertyDirtyHandler for AccessibleItemPropertiesTracker {
-    fn notify(&self) {
+    fn notify(self: Pin<&Self>) {
         let obj = self.obj;
         cpp!(unsafe [obj as "QObject*"] {
             QTimer::singleShot(0, [obj = QPointer(obj)]() {
@@ -61,7 +63,7 @@ pub struct ValuePropertyTracker {
 }
 
 impl PropertyDirtyHandler for ValuePropertyTracker {
-    fn notify(&self) {
+    fn notify(self: Pin<&Self>) {
         let obj = self.obj;
         cpp!(unsafe [obj as "QObject*"] {
             QTimer::singleShot(0, [ obj = QPointer(obj)]() {
@@ -86,7 +88,7 @@ pub struct LabelPropertyTracker {
 }
 
 impl PropertyDirtyHandler for LabelPropertyTracker {
-    fn notify(&self) {
+    fn notify(self: Pin<&Self>) {
         let obj = self.obj;
         cpp!(unsafe [obj as "QObject*"] {
             QTimer::singleShot(0, [obj = QPointer(obj)]() {
@@ -111,7 +113,7 @@ pub struct DescriptionPropertyTracker {
 }
 
 impl PropertyDirtyHandler for DescriptionPropertyTracker {
-    fn notify(&self) {
+    fn notify(self: Pin<&Self>) {
         let obj = self.obj;
         cpp!(unsafe [obj as "QObject*"] {
             QTimer::singleShot(0, [obj = QPointer(obj)]() {
@@ -136,7 +138,7 @@ pub struct FocusDelegationPropertyTracker {
 }
 
 impl PropertyDirtyHandler for FocusDelegationPropertyTracker {
-    fn notify(&self) {
+    fn notify(self: Pin<&Self>) {
         let obj = self.obj;
         cpp!(unsafe [obj as "QObject*"] {
             QTimer::singleShot(0, [obj = QPointer(obj)]() {
@@ -275,10 +277,9 @@ cpp! {{
         Descendents(void *root_item) {
             rustDescendents = rust!(Descendents_ctor [root_item: *mut c_void as "void*"] ->
                     SharedVector<ItemRc> as "void*" {
-                let mut descendents = SharedVector::default();
                 i_slint_core::accessibility::accessible_descendents(
-                        &*(root_item as *mut ItemRc), &mut descendents);
-                descendents
+                        &*(root_item as *mut ItemRc))
+                .collect()
             });
         }
 
@@ -308,10 +309,18 @@ cpp! {{
                     i_slint_core::items::AccessibleRole::Button => QAccessible_Role_Button,
                     i_slint_core::items::AccessibleRole::Checkbox => QAccessible_Role_CheckBox,
                     i_slint_core::items::AccessibleRole::Combobox => QAccessible_Role_ComboBox,
+                    i_slint_core::items::AccessibleRole::List => QAccessible_Role_List,
                     i_slint_core::items::AccessibleRole::Slider => QAccessible_Role_Slider,
                     i_slint_core::items::AccessibleRole::Spinbox => QAccessible_Role_SpinBox,
                     i_slint_core::items::AccessibleRole::Tab => QAccessible_Role_PageTab,
+                    i_slint_core::items::AccessibleRole::TabList => QAccessible_Role_PageTabList,
                     i_slint_core::items::AccessibleRole::Text => QAccessible_Role_StaticText,
+                    i_slint_core::items::AccessibleRole::ProgressIndicator => QAccessible_Role_ProgressBar,
+                    i_slint_core::items::AccessibleRole::Table => QAccessible_Role_Table,
+                    i_slint_core::items::AccessibleRole::Tree => QAccessible_Role_Tree,
+                    i_slint_core::items::AccessibleRole::TextInput => QAccessible_Role_EditableText,
+                    i_slint_core::items::AccessibleRole::Switch => QAccessible_Role_CheckBox,
+                    _ => QAccessible_Role_NoRole,
                 }
             });
         }
@@ -350,12 +359,13 @@ cpp! {{
                     VALUE_MAXIMUM => item.accessible_string_property(AccessibleStringProperty::ValueMaximum),
                     VALUE_STEP => item.accessible_string_property(AccessibleStringProperty::ValueStep),
                     CHECKABLE => item.accessible_string_property(AccessibleStringProperty::Checkable),
-                    _ => Default::default(),
+                    _ => None,
                 };
-                QString::from(string.as_ref())
-            } else {
-                QString::default()
-            }
+                if let Some(string) = string {
+                    return QString::from(string.as_ref())
+                }
+            };
+            QString::default()
         });
     }
 
@@ -510,13 +520,9 @@ cpp! {{
 
         QAccessibleInterface *childAt(int x, int y) const override {
             for (int i = 0; i < childCount(); ++i)  {
-                auto c = child(i)->childAt(x, y);
-                if (c) return c;
-            }
-
-            auto r = rect();
-            if (r.contains(x, y)) {
-                return const_cast<QAccessibleInterface *>(static_cast<const QAccessibleInterface *>(this));
+                auto c = child(i);
+                auto r = c->rect();
+                if (r.contains(x, y)) return c;
             }
             return nullptr;
         }
@@ -537,7 +543,7 @@ cpp! {{
     // Slint_accessible_item:
     // ------------------------------------------------------------------------------
 
-    class Slint_accessible_item : public Slint_accessible, public QAccessibleValueInterface {
+    class Slint_accessible_item : public Slint_accessible, public QAccessibleValueInterface, public QAccessibleActionInterface {
     public:
         Slint_accessible_item(void *item, QObject *obj, QAccessible::Role role, QAccessibleInterface *parent) :
             Slint_accessible(role, parent), m_object(obj)
@@ -549,6 +555,10 @@ cpp! {{
                         unsafe { Box::into_raw(Pin::into_inner_unchecked(data)) }
             });
         }
+
+        QAccessibleActionInterface *actionInterface() { return this; }
+        QAccessibleValueInterface *valueInterface() { return this; }
+
 
         ~Slint_accessible_item() {
             rust!(Slint_accessible_item_dtor [m_data: *mut SlintAccessibleItemData as "void*"] {
@@ -583,7 +593,7 @@ cpp! {{
 
             auto index = rust!(Slint_accessible_item_delegate_focus [m_data: Pin<&SlintAccessibleItemData> as "void*"] -> i32 as "int" {
                 m_data.item.upgrade()
-                    .map(|i| { i.accessible_string_property(AccessibleStringProperty::DelegateFocus) })
+                    .and_then(|i| { i.accessible_string_property(AccessibleStringProperty::DelegateFocus) })
                     .and_then(|s| s.as_str().parse::<i32>().ok()).unwrap_or(-1)
             });
 
@@ -614,6 +624,8 @@ cpp! {{
         void *interface_cast(QAccessible::InterfaceType t) override {
             if (t == QAccessible::ValueInterface && !item_string_property(m_data, QAccessible::Value).isEmpty()) {
                 return static_cast<QAccessibleValueInterface*>(this);
+            } else if (t == QAccessible::ActionInterface) {
+                return static_cast<QAccessibleActionInterface*>(this);
             }
             return QAccessibleInterface::interface_cast(t);
         }
@@ -624,8 +636,11 @@ cpp! {{
         }
 
         void setCurrentValue(const QVariant &value) override {
-            // FIXME: Implement this?
-            Q_UNUSED(value);
+            QString value_string = value.toString();
+            rust!(Slint_accessible_setCurrentValue [m_data: Pin<&SlintAccessibleItemData> as "void*", value_string: qttypes::QString as "QString"] {
+                let Some(item) = m_data.item.upgrade() else {return};
+                item.accessible_action(&AccessibilityAction::SetValue(i_slint_core::format!("{value_string}")));
+            });
         }
 
         QVariant maximumValue() const override {
@@ -640,6 +655,42 @@ cpp! {{
             return item_string_property(m_data, VALUE_STEP);
         }
 
+        QStringList actionNames() const override {
+            int supported = rust!(Slint_accessible_item_supported [m_data: Pin<&SlintAccessibleItemData> as "void*"] -> SupportedAccessibilityAction as "uint" {
+                m_data.item.upgrade().map(|i| i.supported_accessibility_actions()).unwrap_or_default()
+            });
+            QStringList actions;
+            if (supported & rust!(Slint_accessible_item_an1 [] -> SupportedAccessibilityAction as "uint" { SupportedAccessibilityAction::Default }))
+                actions << QAccessibleActionInterface::pressAction();
+            if (supported & rust!(Slint_accessible_item_an2 [] -> SupportedAccessibilityAction as "uint" { SupportedAccessibilityAction::Increment }))
+                actions << QAccessibleActionInterface::increaseAction();
+            if (supported & rust!(Slint_accessible_item_an3 [] -> SupportedAccessibilityAction as "uint" { SupportedAccessibilityAction::Decrement }))
+                actions << QAccessibleActionInterface::decreaseAction();
+            return actions;
+        }
+
+        void doAction(const QString &actionName) override {
+            if (actionName == QAccessibleActionInterface::pressAction()) {
+                rust!(Slint_accessible_item_do_action1 [m_data: Pin<&SlintAccessibleItemData> as "void*"] {
+                    let Some(item) = m_data.item.upgrade() else {return};
+                    item.accessible_action(&AccessibilityAction::Default);
+                });
+            } else if (actionName == QAccessibleActionInterface::increaseAction()) {
+                rust!(Slint_accessible_item_do_action2 [m_data: Pin<&SlintAccessibleItemData> as "void*"] {
+                    let Some(item) = m_data.item.upgrade() else {return};
+                    item.accessible_action(&AccessibilityAction::Increment);
+                });
+            } else if (actionName == QAccessibleActionInterface::decreaseAction()) {
+                rust!(Slint_accessible_item_do_action3 [m_data: Pin<&SlintAccessibleItemData> as "void*"] {
+                    let Some(item) = m_data.item.upgrade() else {return};
+                    item.accessible_action(&AccessibilityAction::Decrement);
+                });
+            }
+        }
+
+        QStringList keyBindingsForAction(const QString &) const override {
+            return QStringList();
+        }
 
     private:
         QObject *m_object = nullptr;
@@ -661,7 +712,7 @@ cpp! {{
         ~Slint_accessible_window()
         {
             rust!(Slint_accessible_window_dtor [m_rustWindow: *mut c_void as "void*"] {
-                alloc::rc::Weak::from_raw(m_rustWindow as _); // Consume the Weak we hold in our void*!
+                alloc::rc::Weak::from_raw(m_rustWindow as *const QtWindow); // Consume the Weak<QtWindow> we hold in our void*!
             });
         }
 

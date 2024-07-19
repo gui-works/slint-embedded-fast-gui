@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
-let slint = require("slint-ui");
-let ui = require("./memory.slint");
+import * as slint from "slint-ui";
+
+let ui = slint.loadFile("memory.slint");
 let window = new ui.MainWindow();
 
-let initial_tiles = window.memory_tiles;
+let initial_tiles = [...window.memory_tiles];
 let tiles = initial_tiles.concat(initial_tiles.map((tile) => Object.assign({}, tile)));
 
 for (let i = tiles.length - 1; i > 0; i--) {
@@ -15,9 +16,9 @@ for (let i = tiles.length - 1; i > 0; i--) {
 }
 
 let model = new slint.ArrayModel(tiles);
-window.memory_tiles = model
+window.memory_tiles = model;
 
-window.check_if_pair_solved.setHandler(function () {
+window.check_if_pair_solved = function () {
     let flipped_tiles = [];
     tiles.forEach((tile, index) => {
         if (tile.image_visible && !tile.solved) {
@@ -39,7 +40,7 @@ window.check_if_pair_solved.setHandler(function () {
             index: tile2_index
         } = flipped_tiles[1];
 
-        let is_pair_solved = tile1.image === tile2.image;
+        let is_pair_solved = tile1.image.path === tile2.image.path;
         if (is_pair_solved) {
             tile1.solved = true;
             model.setRowData(tile1_index, tile1);
@@ -47,16 +48,16 @@ window.check_if_pair_solved.setHandler(function () {
             model.setRowData(tile2_index, tile2);
         } else {
             window.disable_tiles = true;
-            slint.Timer.singleShot(1000, () => {
+            setTimeout(() => {
                 window.disable_tiles = false;
                 tile1.image_visible = false;
                 model.setRowData(tile1_index, tile1);
                 tile2.image_visible = false;
                 model.setRowData(tile2_index, tile2);
-            })
+            }, 1000);
 
         }
     }
-})
+};
 
 window.run();

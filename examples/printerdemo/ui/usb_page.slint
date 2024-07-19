@@ -1,23 +1,23 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 import { DemoPalette, Page, SpinBox, Label, ComboBox, PushButton, CheckBox } from "./common.slint";
 import { StandardListView } from "std-widgets.slint";
 import { PrinterQueue } from "./printer_queue.slint";
 
-struct File := { name: string, preview: image }
+struct File  { name: string, preview: image }
 
-export UsbPage := Page {
-    has-back-button: true;
-    header: "USB";
-
-    property <[File]> files: [
+export component UsbPage inherits Page {
+    in property <[File]> files: [
         { name: ".." },
         { name: "cat.jpg", preview: @image-url("images/cat.jpg") },
         { name: "dog.jpg", preview: @image-url("images/dog.jpg") },
         { name: "elephant.jpg",preview: @image-url("images/elephant.jpg") },
         { name: "snake.jpg", preview: @image-url("images/snake.jpg") },
     ];
+
+    has-back-button: true;
+    header: @tr("USB");
 
     GridLayout {
         padding-top: 46px /* header line height in design */
@@ -32,7 +32,7 @@ export UsbPage := Page {
             Image {
                 height: 100%;
                 width: 100%;
-                source: files[list-view.current-item].preview;
+                source: root.files[list-view.current-item].preview;
                 image-fit: cover;
             }
 
@@ -41,7 +41,7 @@ export UsbPage := Page {
         Label {
             col: 1;
             row: 0;
-            text: "Select File:";
+            text: @tr("Select File:");
             vertical-stretch: 0;
             max-height: 32px;
         }
@@ -64,19 +64,21 @@ export UsbPage := Page {
         }
 
         Row {
-            Label { col: 1; text: "Copies"; }
+            Label { col: 1; text: @tr("Copies"); }
             SpinBox {
                 value: 1;
                 minimum: 1;
             }
         }
+
         Row {
-            Label { col: 1; text: "Color"; }
+            Label { col: 1; text: @tr("Color"); }
             ComboBox {
-                value: "Grayscale";
-                choices: ["Grayscale", "Color"];
+                value: @tr("Grayscale");
+                choices: [@tr("Grayscale"), @tr("Color")];
             }
         }
+
         HorizontalLayout {
             row: 4;
             col: 1;
@@ -88,9 +90,9 @@ export UsbPage := Page {
             }
             PushButton {
                 icon: @image-url("images/print.svg");
-                text: "Start printing";
+                text: @tr("Start printing");
                 clicked => {
-                    PrinterQueue.start-job(files[list-view.current-item].name);
+                    PrinterQueue.start-job(root.files[list-view.current-item].name);
                 }
             }
             Rectangle {

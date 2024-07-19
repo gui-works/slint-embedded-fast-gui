@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 // cSpell: ignore noto subpage
 
@@ -15,21 +15,24 @@ export { PrinterQueue }
 import "./fonts/NotoSans-Regular.ttf";
 import "./fonts/NotoSans-Bold.ttf";
 
-SideBarIcon := Rectangle {
-    property <bool> active;
+component SideBarIcon inherits Rectangle {
+    in-out property <bool> active;
+
     callback activate;
+
     TouchArea {
         pointer-event(event) => {
             if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
                 root.activate();
             }
         }
+
+        width: 170%;
+        height: 150%;
     }
 }
 
-MainWindow := Window {
-    callback quit();
-
+export component MainWindow inherits Window {
     width: 320px;
     height: 240px;
     title: "Slint printer demo";
@@ -39,21 +42,24 @@ MainWindow := Window {
 
     /// Note that this property is overwritten in the .cpp and .rs code.
     /// The data is only in this file so it looks good in the viewer
-    property <[InkLevel]> ink-levels: [
+    in-out property <[InkLevel]> ink-levels: [
                 {color: #0ff, level: 60%},
                 {color: #ff0, level: 80%},
                 {color: #f0f, level: 70%},
                 {color: #000, level: 30%},
             ];
 
-    property<int> active-page: 0;
+    in-out property <int> active-page: 0;
+
+    callback quit();
 
     main-view := Rectangle {
         property <length> margin: 5px;
+
         x: sidebar.x + sidebar.width;
-        y: margin;
-        height: parent.height - margin * 2;
-        width: parent.width - x - margin;
+        y: self.margin;
+        height: parent.height - self.margin * 2;
+        width: parent.width - self.x - self.margin;
         border-radius: 15px;
         background: DemoPalette.page-background-color;
 
@@ -65,42 +71,46 @@ MainWindow := Window {
             height: main-view.height - main-view.border-radius;
 
             home-page := HomePage {
-                y: active-page == 0 ? 0 : active-page > 0 ? - height - 1px : parent.height + 1px;
+                y: root.active-page == 0 ? 0 : root.active-page > 0 ? - self.height - 1px : parent.height + 1px;
                 //animate y { duration: 125ms; easing: ease; }
             }
+
             SettingsPage {
-                y: active-page == 1 ? 0 : active-page > 1 ? - height - 1px : parent.height + 1px;
+                y: root.active-page == 1 ? 0 : root.active-page > 1 ? - self.height - 1px : parent.height + 1px;
                 //animate y { duration: 125ms; easing: ease; }
             }
+
             InkPage {
-                y: active-page == 2 ? 0 : active-page > 2 ? - height - 1px : parent.height + 1px;
+                y: root.active-page == 2 ? 0 : root.active-page > 2 ? - self.height - 1px : parent.height + 1px;
                 //animate y { duration: 125ms; easing: ease; }
                 ink-levels <=> root.ink-levels;
-                page-visible: active-page == 2;
+                page-visible: root.active-page == 2;
             }
         }
     }
 
 
     sidebar := Rectangle {
-        width: 48px;
-        x: 5px;
-
-        callback icon-y(int) -> length;
-        icon-y(index) => {
+        function icon-y(index: int) -> length {
             return 34px // top padding
                 + index * 50px;
         }
 
+
+        width: 48px;
+        x: 5px;
+
         Image {
+            x:0;
             source: @image-url("images/page_selection.svg");
             y: sidebar.icon-y(root.active-page) - 23px;
-            animate y {
-                duration: 125ms;
-            }
             width: 49px;
             height: 86px;
             colorize: DemoPalette.page-background-color;
+
+            animate y {
+                duration: 125ms;
+            }
         }
 
         for page-icon[idx] in [
@@ -108,40 +118,45 @@ MainWindow := Window {
             @image-url("images/settings.svg"),
             @image-url("images/ink.svg"),
         ] : SideBarIcon {
+            activate => {
+                home-page.current-subpage = 0;
+                root.active-page = idx;
+            }
+
             y: sidebar.icon-y(idx)+3px;
-            x: (parent.width - width) / 2;
+            x: (parent.width - self.width) / 2;
             height: 30px;
             width: 30px;
 
             icon := Image {
                 colorize: (root.active-page == idx) ? DemoPalette.active-page-icon-color : DemoPalette.inactive-page-icon-color;
-                animate colorize {
-                    duration: 125ms;
-                }
                 source: page-icon;
                 image-fit: contain;
                 width: 100%;
                 height: 100%;
-            }
 
-            activate => {
-                home-page.current-subpage = 0;
-                root.active-page = idx;
+                animate colorize {
+                    duration: 125ms;
+                }
             }
         }
 
         Rectangle {
             y: sidebar.icon-y(3) ;
-            x: (parent.width - width) / 2;
+            x: (parent.width - self.width) / 2;
             background: #6284FF;
             height: 2px;
             width: 37px;
         }
 
         SideBarIcon {
+            activate => {
+                DemoPalette.night-mode = !DemoPalette.night-mode;
+            }
+
             //y: sidebar.icon-y(3) + 10px;
-            y: parent.height - height - main-view.margin * 2;
-            x: (parent.width - width) / 2;
+            y: parent.height - self.height - main-view.margin * 2;
+            x: (parent.width - self.width) / 2;
             height: 27px;
             width: 27px;
 
@@ -152,11 +167,6 @@ MainWindow := Window {
                 width: 100%;
                 height: 100%;
             }
-
-            activate => {
-                DemoPalette.night-mode = !DemoPalette.night-mode;
-            }
         }
-
     }
 }

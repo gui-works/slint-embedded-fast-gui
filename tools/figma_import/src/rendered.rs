@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use crate::figmatypes::{self, *};
 use std::collections::HashMap;
@@ -52,7 +52,7 @@ impl Ctx {
         writeln!(
             self,
             "id_{} := {} {{ /* {} */",
-            node.id.replace(":", "-").replace(";", "_"),
+            node.id.replace(':', "-").replace(';', "_"),
             element,
             node.name
         )?;
@@ -169,8 +169,8 @@ fn render_vector(
                 if let Some(_imr) = &p.imageRef { /* */ }
             }
             rc.end_element()?;
-            return Ok(false);
         }
+        return Ok(false);
     }
 
     for p in vector.fills.iter() {
@@ -238,7 +238,7 @@ fn render_rectangle(
             writeln!(rc, "Image {{")?;
             writeln!(rc, "    width: 100%; height: 100%;")?;
             writeln!(rc, "    source: @image-url(\"images/{}\");", imr.escape_debug())?;
-            match p.scaleMode.as_ref().map(|x| x.as_str()) {
+            match p.scaleMode.as_deref() {
                 Some("FIT") => writeln!(rc, "    image-fit: contain;")?,
                 _ => (),
             }
@@ -299,14 +299,14 @@ fn render_node(
             render_rectangle(vector, cornerRadius, rc, doc)?
         }
         Node::TEXT { vector, characters, style, .. } => {
-            render_text(characters, style, &vector, rc)?;
+            render_text(characters, style, vector, rc)?;
             false
         }
         _ => false,
     };
 
     for x in node.common().children.iter() {
-        render_node(&x, rc, doc)?;
+        render_node(x, rc, doc)?;
     }
 
     if is_mask {
@@ -329,12 +329,12 @@ fn handle_paint(p: &Paint, rc: &mut Ctx, arg: &str) -> Result<bool, Box<dyn std:
     let mut has_something = false;
     if !p.gradientStops.is_empty() {
         if p.r#type != "GRADIENT_LINEAR" {
-            eprintln!("Warning: unsuported Paint type {:?}", p.r#type);
+            eprintln!("Warning: unsupported paint type {:?}", p.r#type);
             return Ok(false);
         }
         let p1 = *p
             .gradientHandlePositions
-            .get(0)
+            .first()
             .ok_or_else(|| "Gradient with missing 'gradientHandlePositions'".to_string())?;
         let p2 = *p
             .gradientHandlePositions

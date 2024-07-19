@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use anyhow::{Context, Result};
 
@@ -19,12 +19,6 @@ where
 
 pub fn find_reuse() -> Result<PathBuf> {
     which::which("reuse").context("Failed to find reuse")
-}
-
-pub fn install_reuse(sh: &Shell) -> Result<PathBuf> {
-    cmd(sh, "pip", &["install", "reuse"])?.run().context("Failed to pip install reuse.")?;
-
-    find_reuse().context("Could not find reuse after pip installing it")
 }
 
 pub fn reuse_download(sh: &Shell, reuse: &Path) -> Result<String> {
@@ -88,8 +82,8 @@ fn find_licenses_directories(dir: &Path) -> Result<Vec<PathBuf>> {
     let licenses_name: Option<&OsStr> = Some(OsStr::new("LICENSES"));
     let dot_name: &OsStr = &OsStr::new(".");
 
-    for d in
-        std::fs::read_dir(dir)?.filter(|d| if let Ok(d) = d { d.path().is_dir() } else { false })
+    for d in std::fs::read_dir(dir)?
+        .filter(|d| d.as_ref().map_or(false, |e| e.file_type().map_or(false, |f| f.is_dir())))
     {
         let path = d?.path();
         let parent_path = path.parent().expect("This is a subdirectory, so it must have a parent!");
@@ -371,7 +365,7 @@ impl ReuseComplianceCheck {
 
         let sh = Shell::new()?;
 
-        let reuse = find_reuse().or_else(|_| install_reuse(&sh))?;
+        let reuse = find_reuse().context("Can not find reuse. Please make sure it is installed")?;
 
         println!("Reuse binary \"{}\".", reuse.to_string_lossy());
 

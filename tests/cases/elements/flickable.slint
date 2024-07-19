@@ -1,7 +1,9 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 TestCase := Window {
+
+
     width: 500phx;
     height: 500phx;
     no-frame: false;
@@ -13,6 +15,11 @@ TestCase := Window {
         height: parent.height - 20phx;
         viewport_width: 2100phx;
         viewport_height: 2100phx;
+
+        flicked => {
+            root.flicked += viewport_x/1phx * 100000 + viewport_y/1phx;
+        }
+
         inner_ta := TouchArea {
             x: 150phx;
             y: 150phx;
@@ -24,23 +31,28 @@ TestCase := Window {
             clicked => {
                 root.clicked = mouse_x/1phx * 100000 + mouse_y/1phx;
             }
+            double-clicked => {
+                root.double-clicked = mouse_x/1phx * 100000 + mouse_y/1phx;
+            }
         }
 
     }
 
     property<length> offset_x: -f.viewport_x;
     property<length> offset_y: -f.viewport_y;
-    property<bool> inner_ta_pressed <=>  inner_ta.pressed;
-    property<bool> inner_ta_has_hover <=>  inner_ta.has_hover;
+    property<bool> inner_ta_pressed: inner_ta.pressed;
+    property<bool> inner_ta_has_hover: inner_ta.has_hover;
     property<int> clicked;
+    property<int> double-clicked;
+    property <int> flicked;
 }
 
 /*
 
 ```rust
 // Test that basic scrolling works, and that releasing the mouse animates
-use slint::{WindowEvent, PointerEventButton, LogicalPosition};
-let instance = TestCase::new();
+use slint::{platform::WindowEvent, platform::PointerEventButton, LogicalPosition};
+let instance = TestCase::new().unwrap();
 instance.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(300.0, 100.0) });
 slint_testing::mock_elapsed_time(5000);
 instance.window().dispatch_event(WindowEvent::PointerPressed { position: LogicalPosition::new(300.0, 100.0), button: PointerEventButton::Left });
@@ -77,31 +89,62 @@ assert_eq!(instance.get_offset_y(), 112.5);
 assert!(!instance.get_inner_ta_pressed());
 assert!(!instance.get_inner_ta_has_hover());
 assert_eq!(instance.get_clicked(), 0);
+assert_eq!(instance.get_double_clicked(), 0);
 ```
 
 ```rust
 // Test interaction with inner mouse area
-use slint::{WindowEvent, PointerEventButton, LogicalPosition};
-let instance = TestCase::new();
+use slint::{platform::WindowEvent, platform::PointerEventButton, LogicalPosition};
+let instance = TestCase::new().unwrap();
 instance.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(175.0, 175.0) });
 assert!(!instance.get_inner_ta_pressed());
 assert!(instance.get_inner_ta_has_hover());
 assert_eq!(instance.get_clicked(), 0);
+assert_eq!(instance.get_double_clicked(), 0);
 slint_testing::mock_elapsed_time(5000);
 assert!(!instance.get_inner_ta_pressed());
 assert!(instance.get_inner_ta_has_hover());
 assert_eq!(instance.get_clicked(), 0);
+assert_eq!(instance.get_double_clicked(), 0);
 
 // Start a press
 instance.window().dispatch_event(WindowEvent::PointerPressed { position: LogicalPosition::new(175.0, 175.0), button: PointerEventButton::Left });
 //assert!(!instance.get_inner_ta_pressed());
 assert!(instance.get_inner_ta_has_hover());
 assert_eq!(instance.get_clicked(), 0);
+assert_eq!(instance.get_double_clicked(), 0);
 // Release almost immediately
 instance.window().dispatch_event(WindowEvent::PointerReleased { position: LogicalPosition::new(178.0, 173.0), button: PointerEventButton::Left });
-//assert!(!instance.get_inner_ta_pressed());
+assert!(!instance.get_inner_ta_pressed());
 assert!(instance.get_inner_ta_has_hover());
 assert_eq!(instance.get_clicked(), 18_00013);
+assert_eq!(instance.get_double_clicked(), 0);
+assert_eq!(instance.get_offset_x(), 0.);
+assert_eq!(instance.get_offset_y(), 0.);
+
+instance.set_clicked(-1);
+
+slint_testing::mock_elapsed_time(1000);
+
+// - Press, move a triny, then release quickly:  should click
+// Start a press
+instance.window().dispatch_event(WindowEvent::PointerPressed { position: LogicalPosition::new(165.0, 175.0), button: PointerEventButton::Left });
+assert!(!instance.get_inner_ta_pressed());
+assert!(instance.get_inner_ta_has_hover());
+assert_eq!(instance.get_clicked(), -1);
+// make a small move
+instance.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(166.0, 174.0) });
+assert!(!instance.get_inner_ta_pressed());
+assert!(instance.get_inner_ta_has_hover());
+slint_testing::mock_elapsed_time(30);
+instance.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(167.0, 175.0) });
+assert!(!instance.get_inner_ta_pressed());
+// and release
+instance.window().dispatch_event(WindowEvent::PointerReleased { position: LogicalPosition::new(165.0, 174.0), button: PointerEventButton::Left });
+assert!(!instance.get_inner_ta_pressed());
+assert!(instance.get_inner_ta_has_hover());
+assert_eq!(instance.get_clicked(), 5_00014);
+assert_eq!(instance.get_double_clicked(), 0);
 assert_eq!(instance.get_offset_x(), 0.);
 assert_eq!(instance.get_offset_y(), 0.);
 
@@ -112,6 +155,7 @@ instance.window().dispatch_event(WindowEvent::PointerPressed { position: Logical
 assert!(!instance.get_inner_ta_pressed());
 assert!(instance.get_inner_ta_has_hover());
 assert_eq!(instance.get_clicked(), -1);
+assert_eq!(instance.get_double_clicked(), 0);
 assert_eq!(instance.get_offset_x(), 0.);
 assert_eq!(instance.get_offset_y(), 0.);
 
@@ -120,13 +164,14 @@ slint_testing::mock_elapsed_time(300);
 assert!(instance.get_inner_ta_pressed()); // only now we are pressed
 assert!(instance.get_inner_ta_has_hover());
 assert_eq!(instance.get_clicked(), -1);
+assert_eq!(instance.get_double_clicked(), 0);
 assert_eq!(instance.get_offset_x(), 0.);
 assert_eq!(instance.get_offset_y(), 0.);
 
 instance.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(100.0, 120.0) });
 assert!(!instance.get_inner_ta_pressed()); // We should no longer be pressed
-//FIXME: we currently loose the has-hover when the flickable is flicking
-// assert!(instance.get_inner_ta_has_hover()); // We still have the mouse
+// no hover when the flickable is flicking
+assert!(!instance.get_inner_ta_has_hover());
 assert_eq!(instance.get_clicked(), -1); // not clicked
 assert_eq!(instance.get_offset_x(), 75.);
 assert_eq!(instance.get_offset_y(), 55.);
@@ -135,8 +180,9 @@ slint_testing::mock_elapsed_time(10000);
 
 instance.window().dispatch_event(WindowEvent::PointerReleased { position: LogicalPosition::new(100.0, 120.0), button: PointerEventButton::Left });
 assert!(!instance.get_inner_ta_pressed());
-//FIXME: assert!(instance.get_inner_ta_has_hover());
+assert!(instance.get_inner_ta_has_hover());
 assert_eq!(instance.get_clicked(), -1); // not clicked
+assert_eq!(instance.get_double_clicked(), 0);
 assert_eq!(instance.get_offset_x(), 75.);
 assert_eq!(instance.get_offset_y(), 55.);
 
@@ -144,12 +190,101 @@ instance.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPo
 slint_testing::mock_elapsed_time(1000);
 
 assert!(!instance.get_inner_ta_pressed());
-//FIXME: assert!(!instance.get_inner_ta_has_hover());
+assert!(!instance.get_inner_ta_has_hover());
 assert_eq!(instance.get_clicked(), -1);
+assert_eq!(instance.get_double_clicked(), 0);
 assert!((instance.get_offset_x() - 75.).abs() < 5.); // only small animation on release
 assert!((instance.get_offset_y() - 55.).abs() < 5.);
+```
+
+```rust
+// Test wheel events
+use slint::{LogicalPosition, platform::{WindowEvent, Key} };
+let instance = TestCase::new().unwrap();
+instance.window().dispatch_event(WindowEvent::PointerScrolled { position: LogicalPosition::new(175.0, 175.0), delta_x: -30.0, delta_y: -50.0 });
+assert_eq!(instance.get_offset_x(), 30.);
+assert_eq!(instance.get_offset_y(), 50.);
+
+// When shift is pressed, it invert the direction
+// (this test don't work on macos because on macos the backend does the inversion, not the core lib)
+if !cfg!(target_os = "macos") {
+    slint_testing::send_keyboard_char(&instance, Key::Shift.into(), true);
+    instance.window().dispatch_event(WindowEvent::PointerScrolled { position: LogicalPosition::new(175.0, 175.0), delta_x: 15.0, delta_y: -60.0 });
+    slint_testing::send_keyboard_char(&instance, Key::Shift.into(), false);
+    assert_eq!(instance.get_offset_x(), 30. + 60.);
+    assert_eq!(instance.get_offset_y(), 50. - 15.);
+}
+```
+
+```rust
+// Test flicked-Callback behaviour
+use slint::{LogicalPosition, platform::{WindowEvent, PointerEventButton} };
+let instance = TestCase::new().unwrap();
+assert_eq!(instance.get_flicked(), 0);
+
+// test scrolling behaviour
+instance.window().dispatch_event(WindowEvent::PointerScrolled { position: LogicalPosition::new(175.0, 175.0), delta_x: -30.0, delta_y: -50.0 });
+dbg!(instance.get_flicked());
+assert_eq!(instance.get_flicked(), -3000050); //flicked got called after scrolling
+instance.set_flicked(0);
+
+// test dragging bevaviour
+instance.window().dispatch_event(WindowEvent::PointerPressed { position: LogicalPosition::new(175.0, 175.0), button: PointerEventButton::Left });
+slint_testing::mock_elapsed_time(300);
+assert_eq!(instance.get_flicked(), 0); //flicked didn't get called by just pressing
+instance.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(100.0, 120.0) });
+slint_testing::mock_elapsed_time(10000);
+assert_eq!(instance.get_flicked(), -10500105); //flicked got called during drag
+instance.set_flicked(0);
+instance.window().dispatch_event(WindowEvent::PointerReleased { position: LogicalPosition::new(100.0, 120.0), button: PointerEventButton::Left });
+assert_eq!(instance.get_flicked(), -10500105); //flicked got called after drag
+instance.set_flicked(0);
 
 ```
 
+```rust
+// Test double click
+// Test interaction with inner mouse area
+use slint::{platform::WindowEvent, platform::PointerEventButton, LogicalPosition};
+let instance = TestCase::new().unwrap();
+instance.window().dispatch_event(WindowEvent::PointerMoved { position: LogicalPosition::new(175.0, 175.0) });
+assert!(instance.get_inner_ta_has_hover());
+assert_eq!(instance.get_clicked(), 0);
+assert_eq!(instance.get_double_clicked(), 0);
+slint_testing::mock_elapsed_time(5000);
+assert!(!instance.get_inner_ta_pressed());
+assert!(instance.get_inner_ta_has_hover());
+assert_eq!(instance.get_clicked(), 0);
+assert_eq!(instance.get_double_clicked(), 0);
+
+// Start a press
+instance.window().dispatch_event(WindowEvent::PointerPressed { position: LogicalPosition::new(175.0, 175.0), button: PointerEventButton::Left });
+assert_eq!(instance.get_clicked(), 0);
+assert_eq!(instance.get_double_clicked(), 0);
+slint_testing::mock_elapsed_time(50);
+instance.window().dispatch_event(WindowEvent::PointerReleased { position: LogicalPosition::new(178.0, 173.0), button: PointerEventButton::Left });
+assert!(!instance.get_inner_ta_pressed());
+assert!(instance.get_inner_ta_has_hover());
+assert_eq!(instance.get_clicked(), 18_00013);
+assert_eq!(instance.get_double_clicked(), 0);
+assert_eq!(instance.get_offset_x(), 0.);
+assert_eq!(instance.get_offset_y(), 0.);
+instance.set_clicked(0);
+
+// second press after 50ms
+slint_testing::mock_elapsed_time(50);
+instance.window().dispatch_event(WindowEvent::PointerPressed { position: LogicalPosition::new(176.0, 174.0), button: PointerEventButton::Left });
+assert_eq!(instance.get_clicked(), 0);
+assert_eq!(instance.get_double_clicked(), 0);
+slint_testing::mock_elapsed_time(50);
+instance.window().dispatch_event(WindowEvent::PointerReleased { position: LogicalPosition::new(175.0, 176.0), button: PointerEventButton::Left });
+assert!(!instance.get_inner_ta_pressed());
+assert!(instance.get_inner_ta_has_hover());
+assert_eq!(instance.get_clicked(), 15_00016);
+assert_eq!(instance.get_double_clicked(), 15_00016);
+assert_eq!(instance.get_offset_x(), 0.);
+assert_eq!(instance.get_offset_y(), 0.);
+```
 
 */
+

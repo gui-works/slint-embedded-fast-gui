@@ -1,16 +1,18 @@
-# Copyright © SixtyFPS GmbH <info@slint-ui.com>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 [package]
 name = "slint-build"
-version = "0.3.2"
-authors = ["Slint Developers <info@slint-ui.com>"]
-edition = "2021"
-license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
 description = "Helper for Slint build script"
-repository = "https://github.com/slint-ui/slint"
-homepage = "https://slint-ui.com"
-rust-version = "1.60"
+authors.workspace = true
+edition.workspace = true
+homepage = "https://slint.rs"
+keywords.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+categories = ["gui", "rendering::engine", "development-tools::build-utils"]
 
 [lib]
 path = "lib.rs"
@@ -19,8 +21,8 @@ path = "lib.rs"
 default = []
 
 [dependencies]
-i-slint-compiler = { version = "=0.3.2", path = "../../../internal/compiler", features = ["rust", "display-diagnostics"] }
+i-slint-compiler = { workspace = true, features = ["default", "rust", "display-diagnostics", "software-renderer"] }
 
-spin_on = "0.1"
+spin_on = { workspace = true }
 thiserror = "1"
-toml_edit = "0.15"
+toml_edit = { workspace = true }

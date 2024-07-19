@@ -1,0 +1,48 @@
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+import { MaterialPalette, MaterialFontSettings } from "styling.slint";
+
+// A container widget with a title.
+export component GroupBox {
+    in property <string> title <=> i-text.text;
+    in property <bool> enabled: true;
+
+    states [
+        disabled when !root.enabled : {
+            i-background.border-color: MaterialPalette.control-foreground;
+            i-background.opacity: 0.38;
+            i-text.opacity: 0.38;
+        }
+    ]
+
+    VerticalLayout {
+        spacing: 4px;
+
+        i-text := Text {
+            color: MaterialPalette.control-foreground;
+            // FIXME after Roboto font can be loaded
+            //font-family: MaterialFontSettings.body-small.font;
+            font-size: MaterialFontSettings.body-large.font-size;
+            font-weight: MaterialFontSettings.body-small.font-weight;
+            overflow: elide;
+            horizontal-alignment: center;
+        }
+
+        i-background := Rectangle {
+            border-radius: 16px;
+            border-width: 1px;
+            border-color: MaterialPalette.border;
+            vertical-stretch: 1;
+            background: MaterialPalette.alternate-background;
+
+            HorizontalLayout {
+                padding: 16px;
+
+                GridLayout {
+                    @children
+                }
+            }
+        }
+    }
+}

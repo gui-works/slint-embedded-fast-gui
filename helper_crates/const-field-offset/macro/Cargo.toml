@@ -1,15 +1,15 @@
-# Copyright © SixtyFPS GmbH <info@slint-ui.com>
+# Copyright © SixtyFPS GmbH <info@slint.dev>
 # SPDX-License-Identifier: MIT OR Apache-2.0
 
 [package]
 name = "const-field-offset-macro"
-version = "0.1.2"
-authors = ["Slint Developers <info@slint-ui.com>"]
+version = "0.1.5"
+authors = ["Slint Developers <info@slint.dev>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Procedural macro to generate constant field offset from repr(c) struct"
 repository = "https://github.com/slint-ui/slint"
-homepage = "https://slint-ui.com"
+homepage = "https://slint.dev"
 
 [lib]
 path = "macro.rs"
@@ -19,10 +19,10 @@ proc-macro = true
 field-offset-trait = []
 
 [dependencies]
-syn = { version = "1.0", features = ["derive"] }
+syn = { version = "2.0", features = ["derive"] }
 quote = "1.0"
 proc-macro2 = "1.0"
 
 [dev-dependencies]
-memoffset = "0.7.1"
+memoffset = "0.9.0"
 const-field-offset = { path = "..", features = ["field-offset-trait"] }

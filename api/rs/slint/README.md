@@ -1,3 +1,5 @@
+<!-- Copyright © SixtyFPS GmbH <info@slint.dev> ; SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 -->
+
 # Slint
 
 [![Crates.io](https://img.shields.io/crates/v/slint)](https://crates.io/crates/slint)
@@ -5,14 +7,14 @@
 
 # A Rust UI toolkit
 
-[Slint](https://slint-ui.com/) is a UI toolkit that supports different programming languages.
-Slint is the Rust API to interact with a Slint UI design from Rust.
+[Slint](https://slint.rs) is a Rust based UI toolkit to build native user interfaces on desktop platforms and for embedded devices.
+This crate provides the Rust APIs to interact with the user interface implemented in Slint.
 
-The complete Rust documentation can be viewed online at https://slint-ui.com/docs/rust/slint/.
+The complete Rust documentation for Slint can be viewed online at https://slint.rs/docs/rust/slint/.
 
 ## Getting Started
 
-The [crate documentation](https://slint-ui.com/docs/rust/slint/) shows how to use this crate.
+The [crate documentation](https://slint.dev/docs/rust/slint/) shows how to use this crate.
 
 ### Hello World
 
@@ -22,14 +24,14 @@ In your `Cargo.toml` add:
 
 ```toml
 [dependencies]
-slint = "0.3.1"
+slint = "1.7.0"
 ```
 
 And in your `main.rs`:
 
-```rust
+```rust,no_run
 slint::slint!{
-    HelloWorld := Window {
+    export component HelloWorld {
         Text {
             text: "hello world";
             color: green;
@@ -37,11 +39,11 @@ slint::slint!{
     }
 }
 fn main() {
-    HelloWorld::new().run();
+    HelloWorld::new().unwrap().run().unwrap();
 }
 ```
 
-The [`slint` crate documentation](https://slint-ui.com/docs/rust/slint/)
+The [`slint` crate documentation](https://slint.dev/docs/rust/slint/)
 contains more advanced examples and alternative ways to use this crate.
 
 To quickly get started, you can use the [Template Repository](https://github.com/slint-ui/slint-rust-template) with
@@ -60,7 +62,3 @@ You can quickly try out the [examples](/examples) by cloning this repo and runni
 # Runs the "printerdemo" example
 cargo run --release --bin printerdemo
 ```
-
-### Minimum Supported Rust Version
-
- This crate's minimum supported `rustc` version is 1.60.

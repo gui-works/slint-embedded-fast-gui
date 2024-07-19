@@ -1,12 +1,12 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 import { SpinBox, Button, CheckBox, Slider, GroupBox, StandardListView } from "std-widgets.slint";
 import { Label, Page, Preview } from "common.slint";
 
-export FaxPage := Page {
+export component FaxPage inherits Page {
+    in-out property <string> fax-number <=> text.text;
 
-    property<string> fax-number <=> text.text;
     callback fax-number-erase;
     callback fax-send;
 
@@ -65,26 +65,27 @@ export FaxPage := Page {
                         text: num >= 0 ? num : "⌫";
                     }
                     key-area := TouchArea {
-                        width: 100%;
-                        height: 100%;
                         clicked => {
                             if (num >= 0) {
-                                fax-number += num;
+                                root.fax-number += num;
                             } else {
-                                fax-number-erase();
+                                root.fax-number-erase();
                             }
                         }
+
+                        width: 100%;
+                        height: 100%;
                     }
                 }
             }
         }
 
         send := Button {
+            clicked => { root.fax-send(); }
+
             row: 4;
             col: 2;
             text: "Send";
-            font-size: 28px;
-            clicked => { root.fax-send(); }
         }
     }
 }

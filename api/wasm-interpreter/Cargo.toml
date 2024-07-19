@@ -1,24 +1,26 @@
-# Copyright © SixtyFPS GmbH <info@slint-ui.com>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 [package]
 name = "slint-wasm-interpreter"
-version = "0.3.2"
-authors = ["Slint Developers <info@slint-ui.com>"]
-edition = "2021"
-license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
-publish = false
 description = "Slint wasm glue"
-repository = "https://github.com/slint-ui/slint"
-homepage = "https://slint-ui.com"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
+publish = false
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-slint-interpreter = { path = "../../internal/interpreter", default-features = false, features = ["std", "backend-winit", "renderer-winit-femtovg", "compat-0-3-0"] }
+slint-interpreter = { workspace = true, features = ["std", "backend-winit", "renderer-femtovg", "compat-1-2", "internal"] }
+send_wrapper = { workspace = true }
 
-vtable = { version = "0.1.6", path="../../helper_crates/vtable" }
+vtable = { workspace = true }
 
 console_error_panic_hook = { version = "0.1.6", optional = true }
 js-sys = "0.3.44"

@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use core::marker::PhantomData;
 
@@ -19,11 +19,7 @@ impl<'a> LineBreakIterator<'a> {
         let iterator = unicode_linebreak::linebreaks(text).filter(|(offset, opportunity)| {
             // unicode-linebreaks emits a mandatory break at the end of the text. We're not interested
             // in that.
-            if *offset == text.len() && matches!(opportunity, BreakOpportunity::Mandatory) {
-                false
-            } else {
-                true
-            }
+            *offset != text.len() || !matches!(opportunity, BreakOpportunity::Mandatory)
         });
 
         Self { breaks: iterator.collect(), pos: 0, phantom: Default::default() }

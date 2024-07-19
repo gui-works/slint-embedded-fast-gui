@@ -1,8 +1,9 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 #![allow(non_snake_case)]
 #![allow(non_camel_case_types)]
+#![allow(clippy::upper_case_acronyms)]
 
 use clap::Parser;
 use futures::prelude::*;
@@ -132,14 +133,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .get(
                         prototypeStartNodeID
                             .as_ref()
-                            .ok_or_else(|| Error("No start node".into()))?
+                            .ok_or_else(|| Error("No start node in this project. Use '--node' to specify which node to render".into()))?
                             .as_str(),
                     )
                     .ok_or_else(|| Error("Start node not found".into()))?
             };
             let result = rendered::render(node.name.as_str(), render_node, *backgroundColor, &doc)?;
 
-            std::fs::write("figma_output/main.slint", &result)?;
+            std::fs::write("figma_output/main.slint", result)?;
         }
     }
 

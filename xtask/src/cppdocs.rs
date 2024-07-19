@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // cspell:ignore cppdocs pipenv pipfile
 
@@ -49,16 +49,17 @@ fn symlink_files_in_dir<S: AsRef<Path>, T: AsRef<Path>, TS: AsRef<Path>>(
         let file_name = path.file_name().unwrap();
         let symlink_source = target_to_source.as_ref().to_path_buf().join(&file_name);
         let symlink_target = target.as_ref().to_path_buf().join(path.file_name().unwrap());
-        if path.is_file() {
+        let filetype = entry.file_type().context("Cannot determine file type")?;
+        if filetype.is_file() {
             symlink_file(symlink_source, symlink_target).context("Could not symlink file")?;
-        } else if path.is_dir() {
+        } else if filetype.is_dir() {
             symlink_dir(symlink_source, symlink_target).context("Could not symlink directory")?;
         }
     }
     Ok(())
 }
 
-pub fn generate(show_warnings: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn generate(show_warnings: bool, experimental: bool) -> Result<(), Box<dyn std::error::Error>> {
     let root = super::root_dir();
 
     let docs_source_dir = root.join("api/cpp");
@@ -76,15 +77,33 @@ pub fn generate(show_warnings: bool) -> Result<(), Box<dyn std::error::Error>> {
     )
     .context("Error creating symlinks from docs source to docs build dir")?;
 
-    symlink_dir(["..", "..", "docs"].iter().collect::<PathBuf>(), docs_build_dir.join("markdown"))?;
-
     symlink_file(
         ["..", "..", "api", "cpp", "README.md"].iter().collect::<PathBuf>(),
         docs_build_dir.join("README.md"),
     )?;
 
     let generated_headers_dir = docs_build_dir.join("generated_include");
-    cbindgen::gen_all(&root, &generated_headers_dir)?;
+    let enabled_features = cbindgen::EnabledFeatures {
+        interpreter: true,
+        testing: true,
+        backend_qt: true,
+        backend_winit: true,
+        backend_winit_x11: false,
+        backend_winit_wayland: false,
+        backend_linuxkms: true,
+        backend_linuxkms_noseat: false,
+        renderer_femtovg: true,
+        renderer_skia: true,
+        renderer_skia_opengl: false,
+        renderer_skia_vulkan: false,
+        renderer_software: true,
+        gettext: true,
+        accessibility: true,
+        system_testing: true,
+        freestanding: true,
+        experimental,
+    };
+    cbindgen::gen_all(&root, &generated_headers_dir, enabled_features)?;
 
     let pip_env = vec![(OsString::from("PIPENV_PIPFILE"), docs_source_dir.join("docs/Pipfile"))];
 

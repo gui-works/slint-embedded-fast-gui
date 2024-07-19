@@ -1,3 +1,5 @@
+<!-- Copyright © SixtyFPS GmbH <info@slint.dev> ; SPDX-License-Identifier: MIT -->
+
 # iot-dashboard
 
 This example is a clone of https://github.com/uwerat/qskinny/tree/master/examples/iotdashboard from
@@ -10,11 +12,11 @@ the C++ QSkinny code to self-contained .slint.
 
 ## Online preview:
 
-https://slint-ui.com/snapshots/master/editor/preview.html?load_url=https://raw.githubusercontent.com/slint-ui/slint/master/examples/iot-dashboard/main.slint
+https://slint.dev/snapshots/master/editor/preview.html?load_url=https://raw.githubusercontent.com/slint-ui/slint/master/examples/iot-dashboard/main.slint
 
 ## Screenshot
 
-![Screenshot of the IOT Dashboard](https://slint-ui.com/resources/iot-dashboard_screenshot.png "IOT Dashboard")
+![Screenshot of the IOT Dashboard](https://slint.dev/resources/iot-dashboard_screenshot.png "IOT Dashboard")
 
 ## Loading dynamic widgets from C++
 

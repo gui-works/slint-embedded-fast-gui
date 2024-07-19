@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use std::rc::Rc;
 
@@ -20,7 +20,7 @@ fn check_expression(component: &Rc<Component>, e: &Expression, diag: &mut BuildD
     match e {
         Expression::MemberFunction { .. } => {
             // Must already have been be reported.
-            debug_assert!(diag.has_error());
+            debug_assert!(diag.has_errors());
         }
         Expression::BuiltinMacroReference(_, node) => {
             diag.push_error("Builtin function must be called".into(), node);
@@ -28,6 +28,11 @@ fn check_expression(component: &Rc<Component>, e: &Expression, diag: &mut BuildD
         Expression::BuiltinFunctionReference(BuiltinFunction::GetWindowScaleFactor, loc) => {
             if component.is_global() {
                 diag.push_error("Cannot convert between logical and physical length in a global component, because the scale factor is not known".into(), loc);
+            }
+        }
+        Expression::BuiltinFunctionReference(BuiltinFunction::GetWindowDefaultFontSize, loc) => {
+            if component.is_global() {
+                diag.push_error("Cannot convert between rem and logical length in a global component, because the default font size is not known".into(), loc);
             }
         }
         _ => e.visit(|e| check_expression(component, e, diag)),

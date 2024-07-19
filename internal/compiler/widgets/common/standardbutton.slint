@@ -1,20 +1,28 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 import { StyleMetrics, Button } from "std-widgets-impl.slint";
 
-export StandardButton := Button {
-    property <StandardButtonKind> kind;
-    text:
-        kind == StandardButtonKind.ok ? "OK" :
-        kind == StandardButtonKind.cancel ? "Cancel" :
-        kind == StandardButtonKind.apply ? "Apply" :
-        kind == StandardButtonKind.close ? "Close" :
-        kind == StandardButtonKind.reset ? "Reset" :
-        kind == StandardButtonKind.help ? "Help" :
-        kind == StandardButtonKind.yes ? "Yes" :
-        kind == StandardButtonKind.no ? "No" :
-        kind == StandardButtonKind.abort ? "Abort" :
-        kind == StandardButtonKind.retry ? "Retry" :
-        kind == StandardButtonKind.ignore ? "Ignore" : "";
+export component StandardButton {
+    in property <StandardButtonKind> kind;
+    in property <bool> enabled <=> btn.enabled;
+    out property <bool> has-focus <=> btn.has-focus;
+    out property <bool> pressed <=> btn.pressed;
+
+    callback clicked <=> btn.clicked;
+
+    btn := Button {
+        text:
+            root.kind == StandardButtonKind.ok ? "OK" :
+            root.kind == StandardButtonKind.cancel ? "Cancel" :
+            root.kind == StandardButtonKind.apply ? "Apply" :
+            root.kind == StandardButtonKind.close ? "Close" :
+            root.kind == StandardButtonKind.reset ? "Reset" :
+            root.kind == StandardButtonKind.help ? "Help" :
+            root.kind == StandardButtonKind.yes ? "Yes" :
+            root.kind == StandardButtonKind.no ? "No" :
+            root.kind == StandardButtonKind.abort ? "Abort" :
+            root.kind == StandardButtonKind.retry ? "Retry" :
+            root.kind == StandardButtonKind.ignore ? "Ignore" : "";
+    }
 }

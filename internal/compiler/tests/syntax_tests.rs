@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! This test is trying to compile all the *.slint files in the sub directories and check that compilation
 //! errors are properly reported
@@ -12,13 +12,16 @@
 //!
 //! Meaning that there must an error following with an error message for that regular expression in the position
 //! on the line above at the column pointed by the caret.
-//! If there are two carets: ` ^^error{some_regexpr}`  then it means two line above, and so on with more carets.
+//! If there are two carets: ` ^^error{some_regexp}`  then it means two line above, and so on with more carets.
 //! `^warning{regexp}` is also supported.
 
+use i_slint_compiler::ComponentSelection;
 use std::path::{Path, PathBuf};
 
 #[test]
 fn syntax_tests() -> std::io::Result<()> {
+    use rayon::prelude::*;
+
     if let Some(specific_test) = std::env::args()
         .skip(1)
         .skip_while(|arg| arg.starts_with("--") || arg == "syntax_tests")
@@ -30,28 +33,42 @@ fn syntax_tests() -> std::io::Result<()> {
         assert!(process_file(&path)?);
         return Ok(());
     }
-    let mut success = true;
+
+    let mut test_entries = Vec::new();
     for entry in std::fs::read_dir(format!("{}/tests/syntax", env!("CARGO_MANIFEST_DIR")))? {
         let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
+        if entry.file_type().map_or(false, |f| f.is_dir()) {
+            let path = entry.path();
             for test_entry in path.read_dir()? {
                 let test_entry = test_entry?;
                 let path = test_entry.path();
                 if let Some(ext) = path.extension() {
                     if ext == "60" || ext == "slint" {
-                        success &= process_file(&path)?;
+                        test_entries.push(path);
                     }
                 }
             }
         }
     }
+
+    let success = test_entries
+        .par_iter()
+        .try_fold(
+            || true,
+            |mut success, path| {
+                success &= process_file(path)?;
+                Ok::<bool, std::io::Error>(success)
+            },
+        )
+        .try_reduce(|| true, |success, result| Ok(success & result))?;
+
     assert!(success);
+
     Ok(())
 }
 
 fn process_file(path: &std::path::Path) -> std::io::Result<bool> {
-    let source = std::fs::read_to_string(&path)?;
+    let source = std::fs::read_to_string(path)?;
     std::panic::catch_unwind(|| process_file_source(path, source, false)).unwrap_or_else(|err| {
         println!("Panic while processing {}: {:?}", path.display(), err);
         Ok(false)
@@ -62,7 +79,7 @@ fn process_diagnostics(
     compile_diagnostics: &i_slint_compiler::diagnostics::BuildDiagnostics,
     path: &Path,
     source: &str,
-    silent: bool,
+    _silent: bool,
 ) -> std::io::Result<bool> {
     let mut success = true;
 
@@ -136,15 +153,14 @@ fn process_diagnostics(
         }
     }
 
-    if !i_slint_compiler::parser::enable_experimental() {
-        diags.retain(|e| !e.message().contains("SLINT_EXPERIMENTAL_SYNTAX"));
-    }
+    // Ignore deprecated warning about old syntax, because our tests still use the old syntax a lot
+    diags.retain(|d| !(d.message().contains("':='") && d.message().contains("deprecated")));
 
     if !diags.is_empty() {
         println!("{:?}: Unexpected errors/warnings: {:#?}", path, diags);
 
         #[cfg(feature = "display-diagnostics")]
-        if !silent {
+        if !_silent {
             let mut to_report = i_slint_compiler::diagnostics::BuildDiagnostics::default();
             for d in diags {
                 to_report.push_compiler_error(d.clone());
@@ -168,22 +184,24 @@ fn process_file_source(
 ) -> std::io::Result<bool> {
     let mut parse_diagnostics = i_slint_compiler::diagnostics::BuildDiagnostics::default();
     let syntax_node =
-        i_slint_compiler::parser::parse(source.clone(), Some(path), &mut parse_diagnostics);
+        i_slint_compiler::parser::parse(source.clone(), Some(path), None, &mut parse_diagnostics);
 
-    if parse_diagnostics.has_error() && !i_slint_compiler::parser::enable_experimental() {
-        if parse_diagnostics.iter().all(|e| e.message().contains("SLINT_EXPERIMENTAL_SYNTAX")) {
-            // All the diagnostics are about experimental syntax, just clear them so we continue with the next step
-            parse_diagnostics = i_slint_compiler::diagnostics::BuildDiagnostics::default();
-        };
-    }
-
-    let has_parse_error = parse_diagnostics.has_error();
+    let has_parse_error = parse_diagnostics.has_errors();
     let mut compiler_config = i_slint_compiler::CompilerConfiguration::new(
         i_slint_compiler::generator::OutputFormat::Interpreter,
     );
+    compiler_config.embed_resources = i_slint_compiler::EmbedResourcesKind::OnlyBuiltinResources;
+    compiler_config.enable_experimental = true;
     compiler_config.style = Some("fluent".into());
-    let compile_diagnostics = if !parse_diagnostics.has_error() {
-        let (_, build_diags) = spin_on::spin_on(i_slint_compiler::compile_syntax_node(
+    compiler_config.components_to_generate =
+        if source.contains("config:generate_all_exported_windows") {
+            ComponentSelection::ExportedWindows
+        } else {
+            // Otherwise we'd have lots of warnings about not inheriting Window
+            ComponentSelection::LastExported
+        };
+    let compile_diagnostics = if !parse_diagnostics.has_errors() {
+        let (_, build_diags, _) = spin_on::spin_on(i_slint_compiler::compile_syntax_node(
             syntax_node.clone(),
             parse_diagnostics,
             compiler_config.clone(),
@@ -198,7 +216,7 @@ fn process_file_source(
 
     for p in &compile_diagnostics.all_loaded_files {
         let source = if p.is_absolute() {
-            std::fs::read_to_string(&p)?
+            std::fs::read_to_string(p)?
         } else {
             // probably std-widgets.slint
             String::new()
@@ -227,22 +245,22 @@ fn self_test() -> std::io::Result<()> {
     // this should succeed
     assert!(process(
         r#"
-Foo := Rectangle { x: 0px; }
+export Foo := Rectangle { x: 0px; }
     "#
     )?);
 
     // unless we expected an error
     assert!(!process(
         r#"
-Foo := Rectangle { x: 0px; }
-//     ^error{i want an error}
+export Foo := Rectangle { x: 0px; }
+//            ^error{i want an error}
     "#
     )?);
 
     // An error should fail
     assert!(!process(
         r#"
-Foo := Rectangle foo { x:0px; }
+export Foo := Rectangle foo { x:0px; }
     "#
     )?);
 

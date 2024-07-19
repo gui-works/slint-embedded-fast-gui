@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 #![no_std]
 #![cfg_attr(not(feature = "simulator"), no_main)]
@@ -21,7 +21,7 @@ struct PrinterQueueData {
 impl PrinterQueueData {
     fn push_job(&self, title: slint::SharedString) {
         self.data.push(PrinterQueueItem {
-            status: "WAITING...".into(),
+            status: JobStatus::Waiting,
             progress: 0,
             title,
             owner: env!("CARGO_PKG_AUTHORS").into(),
@@ -35,13 +35,16 @@ impl PrinterQueueData {
 #[mcu_board_support::entry]
 fn main() -> ! {
     mcu_board_support::init();
-    let main_window = MainWindow::new();
-    main_window.set_ink_levels(slint::VecModel::from_slice(&[
-        InkLevel { color: slint::Color::from_rgb_u8(0, 255, 255), level: 0.40 },
-        InkLevel { color: slint::Color::from_rgb_u8(255, 0, 255), level: 0.20 },
-        InkLevel { color: slint::Color::from_rgb_u8(255, 255, 0), level: 0.50 },
-        InkLevel { color: slint::Color::from_rgb_u8(0, 0, 0), level: 0.80 },
-    ]));
+    let main_window = MainWindow::new().unwrap();
+    main_window.set_ink_levels(
+        [
+            InkLevel { color: slint::Color::from_rgb_u8(0, 255, 255), level: 0.40 },
+            InkLevel { color: slint::Color::from_rgb_u8(255, 0, 255), level: 0.20 },
+            InkLevel { color: slint::Color::from_rgb_u8(255, 255, 0), level: 0.50 },
+            InkLevel { color: slint::Color::from_rgb_u8(0, 0, 0), level: 0.80 },
+        ]
+        .into(),
+    );
 
     let default_queue: Vec<PrinterQueueItem> =
         main_window.global::<PrinterQueue>().get_printer_queue().iter().collect();
@@ -75,7 +78,7 @@ fn main() -> ! {
                 if printer_queue.data.row_count() > 0 {
                     let mut top_item = printer_queue.data.row_data(0).unwrap();
                     top_item.progress += 1;
-                    top_item.status = "PRINTING".into();
+                    top_item.status = JobStatus::Printing;
                     if top_item.progress > 100 {
                         printer_queue.data.remove(0);
                         if printer_queue.data.row_count() == 0 {
@@ -91,7 +94,7 @@ fn main() -> ! {
         },
     );
 
-    main_window.run();
+    main_window.run().unwrap();
 
     panic!("The MCU demo should not quit")
 }

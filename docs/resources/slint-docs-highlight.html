@@ -3,19 +3,17 @@
     It can be injected via the `--html-in-header slint-docs-highlight.html` option of rustdoc, is included via _templates/layout.html
     in sphinx and via head.hbs in mdbook.
 -->
-<link rel="stylesheet" href="https://slint-ui.com/resources/highlightjs/11.0.1/default.min.css">
-<script src="https://slint-ui.com/resources/highlightjs/11.0.1/highlight.min.js"></script>
+<link rel="stylesheet" href="https://slint.dev/resources/highlightjs/11.0.1/default.min.css">
+<script src="https://slint.dev/resources/highlightjs/11.0.1/highlight.min.js"></script>
 <script>
   function highlight_slint(hljs) {
     const KEYWORDS = {
       keyword:
-        'struct export import signal property animate for in if states transitions parent root self',
-      literal:
-        'true false',
+        "animate callback component export for function global if import in in-out inherits out parent private property public pure root self signal states struct transitions",
+      literal: "false true",
       built_in:
-        'Rectangle Image Text TouchArea Flickable Clip TextInput Window GridLayout Row HorizontalLayout VerticalLayout Path MoveTo LineTo ArcTo CubicTo QuadraticTo Close FocusScope Clip PopupWindow',
-      type:
-        'bool string int float length logical_length duration resource',
+        "ArcTo Clip Close Colors CubicTo Flickable FocusScope GridLayout HorizontalLayout Image LineTo Math MoveTo Path PopupWindow QuadraticTo Rectangle Row Text TextInput TouchArea VerticalLayout Window animation-tick debug",
+      type: "bool duration easing float int length logical_length relative-font-size resource string",
     };
 
     return {
@@ -52,7 +50,7 @@
   };
 
   // Tags used in fenced code blocks
-  for (let tag of ["slint", "slint,no-preview", "slint,ignore"]) {
+  for (let tag of ["slint", "slint,no-preview", "slint,no-auto-preview", "slint,ignore"]) {
     hljs.registerLanguage(tag, highlight_slint);
   }
 
@@ -93,10 +91,29 @@
       // For use with the mdbook Tutorial
       hljs.highlightAll();
 
-      // The Sphinx/my_st generated HTML for code blocks does not use <code> tags, so highlight.js'
-      // default selector "pre code" does not match. Let's do it by hand:
+      // The Sphinx/my_st generated HTML for code blocks doesn't use <code> tags, so highlight.js'
+      // default selector "pre code" doesn't match. Let's do it by hand:
       for (block of document.querySelectorAll("div[class*=highlight-slint] div.highlight pre")) {
         hljs.highlightElement(block)
+      }
+    }
+
+    // Fix up links that sphinx handles but for rustdoc we need to resolve manually:
+    {
+      let target_url = null;
+      if (document.location.hostname == "snapshots.slint.dev") {
+        target_url = `https://snapshots.slint.dev/master/docs/slint/`;
+      } else {
+        let version = document.querySelector("span.version");
+        if (version !== null) {
+          target_url = `https://slint.dev/releases/${version.innerText}/docs/slint/`;
+        }
+      }
+
+      if (target_url !== null) {
+        for (let link of document.querySelectorAll("a[href^='slint-reference:']")) {
+          link.href = link.href.replace("slint-reference:", target_url);
+        }
       }
     }
   });

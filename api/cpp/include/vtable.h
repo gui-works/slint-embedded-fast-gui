@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 #pragma once
 
@@ -8,6 +8,10 @@
 #include <algorithm>
 #include <optional>
 #include <atomic>
+
+#ifdef __APPLE__
+#    include <AvailabilityMacros.h>
+#endif
 
 namespace vtable {
 
@@ -119,8 +123,12 @@ public:
     template<typename... Args>
     static VRc make(Args... args)
     {
+#if !defined(__APPLE__) || MAC_OS_X_VERSION_MIN_REQUIRED >= MAC_OS_X_VERSION_10_14
         auto mem = ::operator new(sizeof(VRcInner<VTable, X>),
                                   static_cast<std::align_val_t>(alignof(VRcInner<VTable, X>)));
+#else
+        auto mem = ::operator new(sizeof(VRcInner<VTable, X>));
+#endif
         auto inner = new (mem) VRcInner<VTable, X>;
         new (&inner->data) X(args...);
         return VRc(inner);
@@ -131,7 +139,10 @@ public:
     X *operator->() { return &inner->data; }
     X &operator*() { return inner->data; }
 
-    VRc<VTable, Dyn> into_dyn() const { return *reinterpret_cast<const VRc<VTable, Dyn> *>(this); }
+    const VRc<VTable, Dyn> &into_dyn() const
+    {
+        return *reinterpret_cast<const VRc<VTable, Dyn> *>(this);
+    }
 
     VRef<VTable> borrow() const { return { inner->vtable, inner->data_ptr() }; }
 
@@ -173,7 +184,7 @@ public:
         return { VRc<VTable, X>(inner) };
     }
 
-    VWeak<VTable, Dyn> into_dyn() const
+    const VWeak<VTable, Dyn> &into_dyn() const
     {
         return *reinterpret_cast<const VWeak<VTable, Dyn> *>(this);
     }

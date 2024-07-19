@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 /*!
 This module contains brush related types for the run-time library.
@@ -8,7 +8,7 @@ This module contains brush related types for the run-time library.
 use super::Color;
 use crate::properties::InterpolatedPropertyValue;
 use crate::SharedVector;
-use euclid::default::Point2D;
+use euclid::default::{Point2D, Size2D};
 
 #[cfg(not(feature = "std"))]
 use num_traits::float::Float;
@@ -69,6 +69,22 @@ impl Brush {
         }
     }
 
+    /// Returns true if this brush is fully opaque
+    ///
+    /// ```
+    /// # use i_slint_core::graphics::*;
+    /// assert!(!Brush::default().is_opaque());
+    /// assert!(!Brush::SolidColor(Color::from_argb_u8(25, 255, 128, 140)).is_opaque());
+    /// assert!(Brush::SolidColor(Color::from_rgb_u8(128, 140, 210)).is_opaque());
+    /// ```
+    pub fn is_opaque(&self) -> bool {
+        match self {
+            Brush::SolidColor(c) => c.alpha() == 255,
+            Brush::LinearGradient(g) => g.stops().all(|s| s.color.alpha() == 255),
+            Brush::RadialGradient(g) => g.stops().all(|s| s.color.alpha() == 255),
+        }
+    }
+
     /// Returns a new version of this brush that has the brightness increased
     /// by the specified factor. This is done by calling [`Color::brighter`] on
     /// all the colors of this brush.
@@ -107,6 +123,51 @@ impl Brush {
                 g.stops()
                     .map(|s| GradientStop { color: s.color.darker(factor), position: s.position }),
             )),
+        }
+    }
+
+    /// Returns a new version of this brush with the opacity decreased by `factor`.
+    ///
+    /// The transparency is obtained by multiplying the alpha channel by `(1 - factor)`.
+    ///
+    /// See also [`Color::transparentize`]
+    #[must_use]
+    pub fn transparentize(&self, amount: f32) -> Self {
+        match self {
+            Brush::SolidColor(c) => Brush::SolidColor(c.transparentize(amount)),
+            Brush::LinearGradient(g) => Brush::LinearGradient(LinearGradientBrush::new(
+                g.angle(),
+                g.stops().map(|s| GradientStop {
+                    color: s.color.transparentize(amount),
+                    position: s.position,
+                }),
+            )),
+            Brush::RadialGradient(g) => {
+                Brush::RadialGradient(RadialGradientBrush::new_circle(g.stops().map(|s| {
+                    GradientStop { color: s.color.transparentize(amount), position: s.position }
+                })))
+            }
+        }
+    }
+
+    /// Returns a new version of this brush with the related color's opacities
+    /// set to `alpha`.
+    #[must_use]
+    pub fn with_alpha(&self, alpha: f32) -> Self {
+        match self {
+            Brush::SolidColor(c) => Brush::SolidColor(c.with_alpha(alpha)),
+            Brush::LinearGradient(g) => Brush::LinearGradient(LinearGradientBrush::new(
+                g.angle(),
+                g.stops().map(|s| GradientStop {
+                    color: s.color.with_alpha(alpha),
+                    position: s.position,
+                }),
+            )),
+            Brush::RadialGradient(g) => {
+                Brush::RadialGradient(RadialGradientBrush::new_circle(g.stops().map(|s| {
+                    GradientStop { color: s.color.with_alpha(alpha), position: s.position }
+                })))
+            }
         }
     }
 }
@@ -171,15 +232,35 @@ pub struct GradientStop {
     pub position: f32,
 }
 
-/// Returns the start / end points of a gradient within the [-0.5; 0.5] unit square, based on the angle (in degree).
-pub fn line_for_angle(angle: f32) -> (Point2D<f32>, Point2D<f32>) {
-    let angle = angle.to_radians();
-    let r = (angle.sin().abs() + angle.cos().abs()) / 2.;
-    let (y, x) = (angle - core::f32::consts::PI / 2.).sin_cos();
-    let (y, x) = (y * r, x * r);
-    let start = Point2D::new(0.5 - x, 0.5 - y);
-    let end = Point2D::new(0.5 + x, 0.5 + y);
-    (start, end)
+/// Returns the start / end points of a gradient within a rectangle of the given size, based on the angle (in degree).
+pub fn line_for_angle(angle: f32, size: Size2D<f32>) -> (Point2D<f32>, Point2D<f32>) {
+    let angle = (angle + 90.).to_radians();
+    let (s, c) = angle.sin_cos();
+
+    let (a, b) = if s.abs() < f32::EPSILON {
+        let y = size.height / 2.;
+        return if c < 0. {
+            (Point2D::new(0., y), Point2D::new(size.width, y))
+        } else {
+            (Point2D::new(size.width, y), Point2D::new(0., y))
+        };
+    } else if c * s < 0. {
+        // Intersection between the gradient line, and an orthogonal line that goes through (height, 0)
+        let x = (s * size.width + c * size.height) * s / 2.;
+        let y = -c * x / s + size.height;
+        (Point2D::new(x, y), Point2D::new(size.width - x, size.height - y))
+    } else {
+        // Intersection between the gradient line, and an orthogonal line that goes through (0, 0)
+        let x = (s * size.width - c * size.height) * s / 2.;
+        let y = -c * x / s;
+        (Point2D::new(size.width - x, size.height - y), Point2D::new(x, y))
+    };
+
+    if s > 0. {
+        (a, b)
+    } else {
+        (b, a)
+    }
 }
 
 impl InterpolatedPropertyValue for Brush {

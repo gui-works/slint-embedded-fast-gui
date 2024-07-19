@@ -1,16 +1,15 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! module for the SharedVector and related things
 #![allow(unsafe_code)]
 #![warn(missing_docs)]
 use core::fmt::Debug;
-use core::iter::FromIterator;
 use core::mem::MaybeUninit;
 use core::ops::Deref;
 use core::ptr::NonNull;
 
-use atomic_polyfill as atomic;
+use portable_atomic as atomic;
 
 #[repr(C)]
 struct SharedVectorHeader {
@@ -164,7 +163,7 @@ impl<T: Clone> SharedVector<T> {
     }
 
     /// Ensure that the reference count is 1 so the array can be changed.
-    /// If that's not tha case, the array will be cloned
+    /// If that's not the case, the array will be cloned
     fn detach(&mut self, new_capacity: usize) {
         let is_shared =
             unsafe { self.inner.as_ref().header.refcount.load(atomic::Ordering::Relaxed) } != 1;
@@ -188,12 +187,6 @@ impl<T: Clone> SharedVector<T> {
     }
 
     /// Return a mutable slice to the array. If the array was shared, this will make a copy of the array.
-    #[deprecated(note = "Use make_mut_slice() instead")]
-    pub fn as_slice_mut(&mut self) -> &mut [T] {
-        self.make_mut_slice()
-    }
-
-    /// Return a mutable slice to the array. If the array was shared, this will make a copy of the array.
     pub fn make_mut_slice(&mut self) -> &mut [T] {
         self.detach(self.len());
         unsafe { core::slice::from_raw_parts_mut(self.as_ptr() as *mut T, self.len()) }
@@ -208,6 +201,20 @@ impl<T: Clone> SharedVector<T> {
                 value,
             );
             self.inner.as_mut().header.size += 1;
+        }
+    }
+
+    /// Removes last element from the array and returns it.
+    /// If the array was shared, this will make a copy of the array.
+    pub fn pop(&mut self) -> Option<T> {
+        if self.is_empty() {
+            None
+        } else {
+            self.detach(self.len());
+            unsafe {
+                self.inner.as_mut().header.size -= 1;
+                Some(core::ptr::read(self.inner.as_mut().data.as_mut_ptr().add(self.len())))
+            }
         }
     }
 
@@ -229,7 +236,7 @@ impl<T: Clone> SharedVector<T> {
         }
         self.detach(new_len);
         // Safety: detach ensured that the array is not shared.
-        let mut inner = unsafe { self.inner.as_mut() };
+        let inner = unsafe { self.inner.as_mut() };
 
         if inner.header.size >= new_len {
             self.shrink(new_len);
@@ -253,7 +260,7 @@ impl<T: Clone> SharedVector<T> {
             unsafe { self.inner.as_ref().header.refcount.load(atomic::Ordering::Relaxed) } == 1
         );
         // Safety: caller (and above debug_assert) must ensure that the array is not shared.
-        let mut inner = unsafe { self.inner.as_mut() };
+        let inner = unsafe { self.inner.as_mut() };
 
         while inner.header.size > new_len {
             inner.header.size -= 1;
@@ -307,18 +314,11 @@ impl<T: Clone> From<&[T]> for SharedVector<T> {
     }
 }
 
-macro_rules! from_array {
-    ($($n:literal)*) => { $(
-        // FIXME: remove the Clone bound
-        impl<T: Clone> From<[T; $n]> for SharedVector<T> {
-            fn from(array: [T; $n]) -> Self {
-                array.iter().cloned().collect()
-            }
-        }
-    )+ };
+impl<T, const N: usize> From<[T; N]> for SharedVector<T> {
+    fn from(array: [T; N]) -> Self {
+        array.into_iter().collect()
+    }
 }
-
-from_array! {0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31}
 
 impl<T> FromIterator<T> for SharedVector<T> {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
@@ -431,6 +431,43 @@ impl<T: Clone> IntoIterator for SharedVector<T> {
                 IntoIterInner::Shared(self, 0)
             }
         })
+    }
+}
+
+#[cfg(feature = "serde")]
+use serde::ser::SerializeSeq;
+#[cfg(feature = "serde")]
+impl<T> serde::Serialize for SharedVector<T>
+where
+    T: serde::Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut seq = serializer.serialize_seq(Some(self.len()))?;
+        for item in self.iter() {
+            seq.serialize_element(item)?;
+        }
+        seq.end()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de, T> serde::Deserialize<'de> for SharedVector<T>
+where
+    T: Clone + serde::Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let mut elements: alloc::vec::Vec<T> = serde::Deserialize::deserialize(deserializer)?;
+        let mut shared_vec = SharedVector::with_capacity(elements.len());
+        for elem in elements.drain(..) {
+            shared_vec.push(elem);
+        }
+        Ok(shared_vec)
     }
 }
 
@@ -590,6 +627,18 @@ fn test_vector_clear() {
     assert_eq!(copy.capacity(), orig_cap);
 }
 
+#[test]
+fn pop_test() {
+    let mut x: SharedVector<i32> = SharedVector::from([1, 2, 3]);
+    let y = x.clone();
+    assert_eq!(x.pop(), Some(3));
+    assert_eq!(x.pop(), Some(2));
+    assert_eq!(x.pop(), Some(1));
+    assert_eq!(x.pop(), None);
+    assert!(x.is_empty());
+    assert_eq!(y.as_slice(), &[1, 2, 3]);
+}
+
 #[cfg(feature = "ffi")]
 pub(crate) mod ffi {
     use super::*;
@@ -611,4 +660,13 @@ pub(crate) mod ffi {
     pub unsafe extern "C" fn slint_shared_vector_empty() -> *const u8 {
         &SHARED_NULL as *const _ as *const u8
     }
+}
+
+#[cfg(feature = "serde")]
+#[test]
+fn test_serialize_deserialize_sharedvector() {
+    let v = SharedVector::from([1, 2, 3]);
+    let serialized = serde_json::to_string(&v).unwrap();
+    let deserialized: SharedVector<i32> = serde_json::from_str(&serialized).unwrap();
+    assert_eq!(v, deserialized);
 }

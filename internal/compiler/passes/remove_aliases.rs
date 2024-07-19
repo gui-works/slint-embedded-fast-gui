@@ -1,15 +1,16 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! This pass removes the property used in a two ways bindings
 
 use crate::diagnostics::BuildDiagnostics;
-use crate::expression_tree::{BindingExpression, NamedReference};
+use crate::expression_tree::{BindingExpression, Expression, NamedReference};
 use crate::object_tree::*;
 use std::cell::RefCell;
 use std::collections::{btree_map::Entry, HashMap, HashSet};
 use std::rc::Rc;
 
+// The property in the key is to be removed, and replaced by the property in the value
 type Mapping = HashMap<NamedReference, NamedReference>;
 
 #[derive(Default, Debug)]
@@ -23,10 +24,10 @@ impl PropertySets {
         if !std::rc::Weak::ptr_eq(
             &p1.element().borrow().enclosing_component,
             &p2.element().borrow().enclosing_component,
-        ) && (p1.element().borrow().enclosing_component.upgrade().unwrap().is_global()
-            == p2.element().borrow().enclosing_component.upgrade().unwrap().is_global())
+        ) && !p1.element().borrow().enclosing_component.upgrade().unwrap().is_global()
+            && !p2.element().borrow().enclosing_component.upgrade().unwrap().is_global()
         {
-            // We can  only merge aliases if they are in the same Component. (unless one of them is global)
+            // We can only merge aliases if they are in the same Component. (unless one of them is global)
             // TODO: actually we could still merge two alias in a component pointing to the same
             // property in a parent component
             return;
@@ -60,7 +61,7 @@ impl PropertySets {
     }
 }
 
-pub fn remove_aliases(component: &Rc<Component>, diag: &mut BuildDiagnostics) {
+pub fn remove_aliases(doc: &Document, diag: &mut BuildDiagnostics) {
     // collect all sets that are linked together
     let mut property_sets = PropertySets::default();
 
@@ -77,10 +78,9 @@ pub fn remove_aliases(component: &Rc<Component>, diag: &mut BuildDiagnostics) {
         }
     };
 
-    recurse_elem_including_sub_components(component, &(), &mut |e, &()| process_element(e));
-    for g in &component.used_types.borrow().globals {
-        process_element(&g.root_element)
-    }
+    doc.visit_all_used_components(|component| {
+        recurse_elem_including_sub_components(component, &(), &mut |e, &()| process_element(e))
+    });
 
     // The key will be removed and replaced by the named reference
     let mut aliases_to_remove = Mapping::new();
@@ -92,7 +92,7 @@ pub fn remove_aliases(component: &Rc<Component>, diag: &mut BuildDiagnostics) {
         let mut set_iter = set.iter();
         if let Some(mut best) = set_iter.next().cloned() {
             for candidate in set_iter {
-                best = best_property(component, best.clone(), candidate.clone());
+                best = best_property(best.clone(), candidate.clone());
             }
             for x in set.iter() {
                 if *x != best {
@@ -102,54 +102,67 @@ pub fn remove_aliases(component: &Rc<Component>, diag: &mut BuildDiagnostics) {
         }
     }
 
-    // Do the replacements
-    visit_all_named_references(component, &mut |nr: &mut NamedReference| {
-        if let Some(new) = aliases_to_remove.get(nr) {
-            *nr = new.clone();
-        }
+    doc.visit_all_used_components(|component| {
+        // Do the replacements
+        visit_all_named_references(component, &mut |nr: &mut NamedReference| {
+            if let Some(new) = aliases_to_remove.get(nr) {
+                *nr = new.clone();
+            }
+        })
     });
 
     // Remove the properties
     for (remove, to) in aliases_to_remove {
         let elem = remove.element();
+        let to_elem = to.element();
 
         // adjust the bindings
         let old_binding = elem.borrow_mut().bindings.remove(remove.name());
-        let must_simplify = if let Some(mut binding) = old_binding.map(RefCell::into_inner) {
-            remove_from_binding_expression(&mut binding, &to);
-            if binding.has_binding() {
-                let to_elem = to.element();
-                match to_elem.borrow_mut().bindings.entry(to.name().to_owned()) {
-                    Entry::Occupied(mut e) => {
-                        let b = e.get_mut().get_mut();
-                        remove_from_binding_expression(b, &to);
-                        if b.priority < binding.priority || !b.has_binding() {
-                            b.merge_with(&binding);
-                        } else {
-                            binding.merge_with(b);
-                            *b = binding;
-                        }
-                    }
-                    Entry::Vacant(e) => {
-                        e.insert(binding.into());
-                    }
-                };
-                false
-            } else {
-                true
+        let mut old_binding = old_binding.map(RefCell::into_inner).unwrap_or_else(|| {
+            // ensure that we set an expression, because the right hand side of a binding always wins,
+            // and if that was not set, we must still kee the default then
+            let mut b = BindingExpression::from(Expression::default_value_for_type(&to.ty()));
+            b.priority = to_elem
+                .borrow_mut()
+                .bindings
+                .get(to.name())
+                .map_or(i32::MAX, |x| x.borrow().priority.saturating_add(1));
+            b
+        });
+
+        remove_from_binding_expression(&mut old_binding, &to);
+
+        let same_component = std::rc::Weak::ptr_eq(
+            &elem.borrow().enclosing_component,
+            &to_elem.borrow().enclosing_component,
+        );
+        match to_elem.borrow_mut().bindings.entry(to.name().to_owned()) {
+            Entry::Occupied(mut e) => {
+                let b = e.get_mut().get_mut();
+                remove_from_binding_expression(b, &to);
+                if !same_component || b.priority < old_binding.priority || !b.has_binding() {
+                    b.merge_with(&old_binding);
+                } else {
+                    old_binding.merge_with(b);
+                    *b = old_binding;
+                }
             }
-        } else {
-            true
+            Entry::Vacant(e) => {
+                if same_component && old_binding.has_binding() {
+                    e.insert(old_binding.into());
+                }
+            }
         };
 
-        if must_simplify {
-            let to_elem = to.element();
-            let mut to_elem = to_elem.borrow_mut();
-            if let Some(b) = to_elem.bindings.get_mut(to.name()) {
-                remove_from_binding_expression(b.get_mut(), &to);
-                if !b.get_mut().has_binding() {
-                    to_elem.bindings.remove(to.name());
-                }
+        // Adjust the change callbacks
+        {
+            let mut elem = elem.borrow_mut();
+            if let Some(old_change_callback) = elem.change_callbacks.remove(remove.name()) {
+                drop(elem);
+                to_elem
+                    .borrow_mut()
+                    .change_callbacks
+                    .insert(to.name().to_owned(), old_change_callback);
             }
         }
 
@@ -183,8 +196,14 @@ pub fn remove_aliases(component: &Rc<Component>, diag: &mut BuildDiagnostics) {
                 }
             } else {
                 // This is not a declaration, we must re-create the binding
-                elem.bindings
-                    .insert(remove.name().to_owned(), BindingExpression::new_two_way(to).into());
+                elem.bindings.insert(
+                    remove.name().to_owned(),
+                    BindingExpression::new_two_way(to.clone()).into(),
+                );
+                drop(elem);
+                if remove.is_externally_modified() {
+                    to.mark_as_set();
+                }
             }
         }
     }
@@ -195,18 +214,13 @@ fn is_declaration(x: &NamedReference) -> bool {
 }
 
 /// Out of two named reference, return the one which is the best to keep.
-fn best_property(
-    component: &Rc<Component>,
-    p1: NamedReference,
-    p2: NamedReference,
-) -> NamedReference {
+fn best_property(p1: NamedReference, p2: NamedReference) -> NamedReference {
     // Try to find which is the more canonical property
     macro_rules! canonical_order {
         ($x: expr) => {{
             (
                 !$x.element().borrow().enclosing_component.upgrade().unwrap().is_global(),
                 is_declaration(&$x),
-                !Rc::ptr_eq(&component.root_element, &$x.element()),
                 $x.element().borrow().id.clone(),
                 $x.name(),
             )

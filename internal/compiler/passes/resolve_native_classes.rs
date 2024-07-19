@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! After inlining and moving declarations, all Element::base_type should be Type::BuiltinElement. This pass resolves them
 //! to NativeClass and picking a variant that only contains the used properties.
@@ -52,7 +52,9 @@ pub fn resolve_native_classes(component: &Component) {
 fn lookup_property_distance(mut class: Rc<NativeClass>, name: &str) -> (usize, Rc<NativeClass>) {
     let mut distance = 0;
     loop {
-        if class.properties.contains_key(name) {
+        if class.properties.contains_key(name)
+            || (class.parent.is_none() && ["x", "y", "width", "height"].contains(&name))
+        {
             return (distance, class);
         }
         distance += 1;
@@ -69,7 +71,7 @@ fn select_minimal_class_based_on_property_usage<'a>(
         minimal_class = class;
     }
     let (_min_distance, minimal_class) = properties_used.fold(
-        (std::usize::MAX, minimal_class),
+        (usize::MAX, minimal_class),
         |(current_distance, current_class), prop_name| {
             let (prop_distance, prop_class) = lookup_property_distance(class.clone(), prop_name);
 
@@ -140,12 +142,20 @@ fn select_minimal_class() {
             ["border-width".to_owned()].iter()
         )
         .class_name,
-        "BorderRectangle",
+        "BasicBorderRectangle",
     );
     assert_eq!(
         select_minimal_class_based_on_property_usage(
             &rect.native_class,
             ["border-width".to_owned(), "x".to_owned()].iter()
+        )
+        .class_name,
+        "BasicBorderRectangle",
+    );
+    assert_eq!(
+        select_minimal_class_based_on_property_usage(
+            &rect.native_class,
+            ["border-top-left-radius".to_owned(), "x".to_owned()].iter()
         )
         .class_name,
         "BorderRectangle",

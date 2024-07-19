@@ -1,0 +1,13 @@
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+export component Switch inherits NativeCheckBox {
+    accessible-checkable: true;
+    accessible-checked <=> root.checked;
+    accessible-label <=> root.text;
+    accessible-role: switch;
+    accessible-action-default => {
+        root.checked = !root.checked;
+        root.toggled();
+    }
+}

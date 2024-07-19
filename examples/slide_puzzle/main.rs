@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 use slint::Model;
 use std::cell::RefCell;
@@ -23,11 +23,11 @@ fn shuffle() -> Vec<i8> {
             inversions += positions[x + 1..].iter().filter(|x| **x >= 0 && **x < v).count();
         }
         //((blank on odd row from bottom) == (#inversions even))
-        let blank_row = positions.iter().position(|x| *x == -1).unwrap() as usize / 4;
+        let blank_row = positions.iter().position(|x| *x == -1).unwrap() / 4;
         inversions % 2 != blank_row % 2
     }
 
-    let mut vec = ((-1)..15).into_iter().collect::<Vec<i8>>();
+    let mut vec = ((-1)..15).collect::<Vec<i8>>();
     use rand::seq::SliceRandom;
     let mut rng = rand::thread_rng();
     vec.shuffle(&mut rng);
@@ -171,7 +171,8 @@ pub fn main() {
     #[cfg(all(debug_assertions, target_arch = "wasm32"))]
     console_error_panic_hook::set_once();
 
-    let main_window = MainWindow::new();
+    let main_window = MainWindow::new().unwrap();
+
     let state = Rc::new(RefCell::new(AppState {
         pieces: Rc::new(slint::VecModel::<Piece>::from(vec![Piece::default(); 15])),
         main_window: main_window.as_weak(),
@@ -229,5 +230,5 @@ pub fn main() {
             state_copy.borrow().auto_play_timer.stop();
         }
     });
-    main_window.run();
+    main_window.run().unwrap();
 }

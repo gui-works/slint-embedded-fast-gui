@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Assign the Element::item_index on each elements
 
@@ -44,7 +44,7 @@ pub fn generate_item_indices(component: &Rc<Component>) {
 }
 
 struct Helper {
-    current_item_index: usize,
+    current_item_index: u32,
 }
 impl crate::generator::ItemTreeBuilder for Helper {
     // true when not at the root
@@ -62,6 +62,19 @@ impl crate::generator::ItemTreeBuilder for Helper {
             if let crate::langtype::ElementType::Component(c) = &item.borrow().base_type {
                 generate_item_indices(c);
             }
+        }
+        self.current_item_index += 1;
+    }
+
+    fn push_component_placeholder_item(
+        &mut self,
+        item: &crate::object_tree::ElementRc,
+        _container_count: u32,
+        _parent_index: u32,
+        component_state: &Self::SubComponentState,
+    ) {
+        if !component_state {
+            item.borrow().item_index.set(self.current_item_index).unwrap();
         }
         self.current_item_index += 1;
     }

@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Compute binding analysis and attempt to find binding loops
 
@@ -9,19 +9,12 @@ use std::rc::Rc;
 
 use by_address::ByAddress;
 
-use crate::diagnostics::BuildDiagnostics;
-use crate::diagnostics::Spanned;
-use crate::expression_tree::BindingExpression;
-use crate::expression_tree::BuiltinFunction;
-use crate::expression_tree::Expression;
+use crate::diagnostics::{BuildDiagnostics, Spanned};
+use crate::expression_tree::{BindingExpression, BuiltinFunction, Expression};
 use crate::langtype::ElementType;
-
-use crate::layout::LayoutItem;
-use crate::layout::Orientation;
+use crate::layout::{LayoutItem, Orientation};
 use crate::namedreference::NamedReference;
-use crate::object_tree::Document;
-use crate::object_tree::PropertyAnimation;
-use crate::object_tree::{Component, ElementRc};
+use crate::object_tree::{find_parent_element, Document, ElementRc, PropertyAnimation};
 use derive_more as dm;
 
 /// Maps the alias in the other direction than what the BindingExpression::two_way_binding does.
@@ -30,11 +23,10 @@ use derive_more as dm;
 type ReverseAliases = HashMap<NamedReference, Vec<NamedReference>>;
 
 pub fn binding_analysis(doc: &Document, diag: &mut BuildDiagnostics) {
-    let component = &doc.root_component;
     let mut reverse_aliases = Default::default();
-    mark_used_base_properties(component);
-    propagate_is_set_on_aliases(component, &mut reverse_aliases);
-    perform_binding_analysis(component, &reverse_aliases, diag);
+    mark_used_base_properties(doc);
+    propagate_is_set_on_aliases(doc, &mut reverse_aliases);
+    perform_binding_analysis(doc, &reverse_aliases, diag);
 }
 
 /// A reference to a property which might be deep in a component path.
@@ -77,7 +69,7 @@ impl PropertyPath {
                 #[cfg(debug_assertions)]
                 fn check_that_element_is_in_the_component(
                     e: &ElementRc,
-                    c: &Rc<Component>,
+                    c: &Rc<crate::object_tree::Component>,
                 ) -> bool {
                     let enclosing = e.borrow().enclosing_component.upgrade().unwrap();
                     Rc::ptr_eq(c, &enclosing)
@@ -125,20 +117,18 @@ struct AnalysisContext {
 }
 
 fn perform_binding_analysis(
-    component: &Rc<Component>,
+    doc: &Document,
     reverse_aliases: &ReverseAliases,
     diag: &mut BuildDiagnostics,
 ) {
-    for c in &component.used_types.borrow().sub_components {
-        perform_binding_analysis(c, reverse_aliases, diag);
-    }
-
     let mut context = AnalysisContext::default();
-    crate::object_tree::recurse_elem_including_sub_components_no_borrow(
-        component,
-        &(),
-        &mut |e, _| analyze_element(e, &mut context, reverse_aliases, diag),
-    );
+    doc.visit_all_used_components(|component| {
+        crate::object_tree::recurse_elem_including_sub_components_no_borrow(
+            component,
+            &(),
+            &mut |e, _| analyze_element(e, &mut context, reverse_aliases, diag),
+        )
+    });
 }
 
 fn analyze_element(
@@ -151,22 +141,56 @@ fn analyze_element(
         if binding.borrow().analysis.is_some() {
             continue;
         }
-        analyse_binding(
+        analyze_binding(
             &PropertyPath::from(NamedReference::new(elem, name)),
             context,
             reverse_aliases,
             diag,
         );
     }
-    for (_, nr) in &elem.borrow().accessibility_props.0 {
-        process_property(&PropertyPath::from(nr.clone()), context, reverse_aliases, diag);
+    const P: ReadType = ReadType::PropertyRead;
+    for nr in elem.borrow().accessibility_props.0.values() {
+        process_property(&PropertyPath::from(nr.clone()), P, context, reverse_aliases, diag);
+    }
+    if let Some(g) = elem.borrow().geometry_props.as_ref() {
+        process_property(&g.x.clone().into(), P, context, reverse_aliases, diag);
+        process_property(&g.y.clone().into(), P, context, reverse_aliases, diag);
+        process_property(&g.width.clone().into(), P, context, reverse_aliases, diag);
+        process_property(&g.height.clone().into(), P, context, reverse_aliases, diag);
+    }
+
+    if let Some(component) = elem.borrow().enclosing_component.upgrade() {
+        if Rc::ptr_eq(&component.root_element, elem) {
+            for e in component.init_code.borrow().iter() {
+                recurse_expression(e, &mut |prop, r| {
+                    process_property(prop, r, context, reverse_aliases, diag);
+                });
+            }
+        }
+    }
+
+    if let Some(repeated) = &elem.borrow().repeated {
+        recurse_expression(&repeated.model, &mut |prop, r| {
+            process_property(prop, r, context, reverse_aliases, diag);
+        });
+        if let Some(lv) = &repeated.is_listview {
+            process_property(&lv.viewport_y.clone().into(), P, context, reverse_aliases, diag);
+            process_property(&lv.viewport_height.clone().into(), P, context, reverse_aliases, diag);
+            process_property(&lv.viewport_width.clone().into(), P, context, reverse_aliases, diag);
+            process_property(&lv.listview_height.clone().into(), P, context, reverse_aliases, diag);
+            process_property(&lv.listview_width.clone().into(), P, context, reverse_aliases, diag);
+        }
+    }
+    if let Some((h, v)) = &elem.borrow().layout_info_prop {
+        process_property(&h.clone().into(), P, context, reverse_aliases, diag);
+        process_property(&v.clone().into(), P, context, reverse_aliases, diag);
     }
 }
 
 #[derive(Copy, Clone, dm::BitAnd, dm::BitOr, dm::BitAndAssign, dm::BitOrAssign)]
 struct DependsOnExternal(bool);
 
-fn analyse_binding(
+fn analyze_binding(
     current: &PropertyPath,
     context: &mut AnalysisContext,
     reverse_aliases: &ReverseAliases,
@@ -182,7 +206,7 @@ fn analyse_binding(
             .borrow()
             .span
             .clone()
-            .or_else(|| element.borrow().node.as_ref().map(|n| n.to_source_location()));
+            .unwrap_or_else(|| element.borrow().to_source_location());
         diag.push_error(format!("Property '{name}' cannot refer to itself"), &span);
         return depends_on_external;
     }
@@ -197,11 +221,9 @@ fn analyse_binding(
                 break;
             }
 
-            let span =
-                binding.span.clone().or_else(|| elem.node.as_ref().map(|n| n.to_source_location()));
             diag.push_error(
                 format!("The binding for the property '{}' is part of a binding loop", p.name()),
-                &span,
+                &binding.span.clone().unwrap_or_else(|| elem.to_source_location()),
             );
 
             if it == current {
@@ -218,7 +240,9 @@ fn analyse_binding(
         return DependsOnExternal(true);
     }
 
-    binding.borrow_mut().analysis = Some(Default::default());
+    if let Ok(mut b) = binding.try_borrow_mut() {
+        b.analysis = Some(Default::default());
+    };
     context.currently_analyzing.insert(current.clone());
 
     let b = binding.borrow();
@@ -226,6 +250,7 @@ fn analyse_binding(
         if nr != &current.prop {
             depends_on_external |= process_property(
                 &current.relative(&nr.clone().into()),
+                ReadType::PropertyRead,
                 context,
                 reverse_aliases,
                 diag,
@@ -233,13 +258,14 @@ fn analyse_binding(
         }
     }
 
-    let mut process_prop = |prop: &PropertyPath| {
+    let mut process_prop = |prop: &PropertyPath, r| {
         depends_on_external |=
-            process_property(&current.relative(prop), context, reverse_aliases, diag);
+            process_property(&current.relative(prop), r, context, reverse_aliases, diag);
         for x in reverse_aliases.get(&prop.prop).unwrap_or(&Default::default()) {
             if x != &current.prop && x != &prop.prop {
                 depends_on_external |= process_property(
                     &current.relative(&x.clone().into()),
+                    ReadType::PropertyRead,
                     context,
                     reverse_aliases,
                     diag,
@@ -260,7 +286,11 @@ fn analyse_binding(
         }
     }
     drop(b);
-    binding.borrow_mut().analysis.as_mut().unwrap().is_const = is_const;
+
+    if let Ok(mut b) = binding.try_borrow_mut() {
+        // We have a loop (through different component so we're still borrowed)
+        b.analysis.as_mut().unwrap().is_const = is_const;
+    }
 
     match &binding.borrow().animation {
         Some(PropertyAnimation::Static(e)) => analyze_element(e, context, reverse_aliases, diag),
@@ -279,11 +309,20 @@ fn analyse_binding(
     depends_on_external
 }
 
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum ReadType {
+    // Read from the native code
+    NativeRead,
+    // Read from another property binding in Slint
+    PropertyRead,
+}
+
 /// Process the property `prop`
 ///
 /// This will visit all the bindings from that property
 fn process_property(
     prop: &PropertyPath,
+    read_type: ReadType,
     context: &mut AnalysisContext,
     reverse_aliases: &ReverseAliases,
     diag: &mut BuildDiagnostics,
@@ -298,7 +337,9 @@ fn process_property(
         .or_default()
     {
         a => {
-            a.is_read = true;
+            if read_type == ReadType::PropertyRead {
+                a.is_read = true;
+            }
             DependsOnExternal(prop.elements.is_empty() && a.is_set_externally)
         }
     };
@@ -308,7 +349,7 @@ fn process_property(
     loop {
         let element = prop.prop.element();
         if element.borrow().bindings.contains_key(prop.prop.name()) {
-            analyse_binding(&prop, context, reverse_aliases, diag);
+            analyze_binding(&prop, context, reverse_aliases, diag);
         }
         let next = if let ElementType::Component(base) = &element.borrow().base_type {
             if element.borrow().property_declarations.contains_key(prop.prop.name()) {
@@ -331,19 +372,22 @@ fn process_property(
 }
 
 // Same as in crate::visit_all_named_references_in_element, but not mut
-fn recurse_expression(expr: &Expression, vis: &mut impl FnMut(&PropertyPath)) {
+fn recurse_expression(expr: &Expression, vis: &mut impl FnMut(&PropertyPath, ReadType)) {
+    const P: ReadType = ReadType::PropertyRead;
     expr.visit(|sub| recurse_expression(sub, vis));
     match expr {
-        Expression::PropertyReference(r) | Expression::CallbackReference(r) => {
-            vis(&r.clone().into())
-        }
+        Expression::PropertyReference(r)
+        | Expression::CallbackReference(r, _)
+        | Expression::FunctionReference(r, _) => vis(&r.clone().into(), P),
         Expression::LayoutCacheAccess { layout_cache_prop, .. } => {
-            vis(&layout_cache_prop.clone().into())
+            vis(&layout_cache_prop.clone().into(), P)
         }
         Expression::SolveLayout(l, o) | Expression::ComputeLayoutInfo(l, o) => {
             // we should only visit the layout geometry for the orientation
             if matches!(expr, Expression::SolveLayout(..)) {
-                l.rect().size_reference(*o).map(|nr| vis(&nr.clone().into()));
+                if let Some(nr) = l.rect().size_reference(*o) {
+                    vis(&nr.clone().into(), P);
+                }
             }
             match l {
                 crate::layout::Layout::GridLayout(l) => {
@@ -352,25 +396,17 @@ fn recurse_expression(expr: &Expression, vis: &mut impl FnMut(&PropertyPath)) {
                 crate::layout::Layout::BoxLayout(l) => {
                     visit_layout_items_dependencies(l.elems.iter(), *o, vis)
                 }
-                crate::layout::Layout::PathLayout(l) => {
-                    for it in &l.elements {
-                        vis(&NamedReference::new(it, "width").into());
-                        vis(&NamedReference::new(it, "height").into());
-                    }
-                }
             }
-            if let Some(g) = l.geometry() {
-                let mut g = g.clone();
-                g.rect = Default::default(); // already visited;
-                g.visit_named_references(&mut |nr| vis(&nr.clone().into()))
-            }
+
+            let mut g = l.geometry().clone();
+            g.rect = Default::default(); // already visited;
+            g.visit_named_references(&mut |nr| vis(&nr.clone().into(), P))
         }
-        Expression::FunctionCall { function, arguments, .. } => {
-            if let Expression::BuiltinFunctionReference(
+        Expression::FunctionCall { function, arguments, .. } => match &**function {
+            Expression::BuiltinFunctionReference(
                 BuiltinFunction::ImplicitLayoutInfo(orientation),
                 _,
-            ) = &**function
-            {
+            ) => {
                 if let [Expression::ElementReference(item)] = arguments.as_slice() {
                     visit_implicit_layout_info_dependencies(
                         *orientation,
@@ -379,7 +415,18 @@ fn recurse_expression(expr: &Expression, vis: &mut impl FnMut(&PropertyPath)) {
                     );
                 }
             }
-        }
+            Expression::BuiltinFunctionReference(BuiltinFunction::ItemAbsolutePosition, _) => {
+                if let Some(Expression::ElementReference(item)) = arguments.first() {
+                    let mut item = item.upgrade().unwrap();
+                    while let Some(parent) = find_parent_element(&item) {
+                        item = parent;
+                        vis(&NamedReference::new(&item, "x").into(), ReadType::NativeRead);
+                        vis(&NamedReference::new(&item, "y").into(), ReadType::NativeRead);
+                    }
+                }
+            }
+            _ => {}
+        },
         _ => {}
     }
 }
@@ -387,7 +434,7 @@ fn recurse_expression(expr: &Expression, vis: &mut impl FnMut(&PropertyPath)) {
 fn visit_layout_items_dependencies<'a>(
     items: impl Iterator<Item = &'a LayoutItem>,
     orientation: Orientation,
-    vis: &mut impl FnMut(&PropertyPath),
+    vis: &mut impl FnMut(&PropertyPath, ReadType),
 ) {
     for it in items {
         let mut element = it.element.clone();
@@ -396,21 +443,24 @@ fn visit_layout_items_dependencies<'a>(
         }
 
         if let Some(nr) = element.borrow().layout_info_prop(orientation) {
-            vis(&nr.clone().into());
+            vis(&nr.clone().into(), ReadType::PropertyRead);
         } else {
             if let ElementType::Component(base) = &element.borrow().base_type {
                 if let Some(nr) = base.root_element.borrow().layout_info_prop(orientation) {
-                    vis(&PropertyPath {
-                        elements: vec![ByAddress(element.clone())],
-                        prop: nr.clone(),
-                    });
+                    vis(
+                        &PropertyPath {
+                            elements: vec![ByAddress(element.clone())],
+                            prop: nr.clone(),
+                        },
+                        ReadType::PropertyRead,
+                    );
                 }
             }
             visit_implicit_layout_info_dependencies(orientation, &element, vis);
         }
 
         for (nr, _) in it.constraints.for_each_restrictions(orientation) {
-            vis(&nr.clone().into())
+            vis(&nr.clone().into(), ReadType::PropertyRead)
         }
     }
 }
@@ -419,23 +469,24 @@ fn visit_layout_items_dependencies<'a>(
 fn visit_implicit_layout_info_dependencies(
     orientation: crate::layout::Orientation,
     item: &ElementRc,
-    vis: &mut impl FnMut(&PropertyPath),
+    vis: &mut impl FnMut(&PropertyPath, ReadType),
 ) {
     let base_type = item.borrow().base_type.to_string();
+    const N: ReadType = ReadType::NativeRead;
     match base_type.as_str() {
         "Image" => {
-            vis(&NamedReference::new(item, "source").into());
+            vis(&NamedReference::new(item, "source").into(), N);
             if orientation == Orientation::Vertical {
-                vis(&NamedReference::new(item, "width").into());
+                vis(&NamedReference::new(item, "width").into(), N);
             }
         }
         "Text" | "TextInput" => {
-            vis(&NamedReference::new(item, "text").into());
-            vis(&NamedReference::new(item, "font-family").into());
-            vis(&NamedReference::new(item, "font-size").into());
-            vis(&NamedReference::new(item, "font-weight").into());
-            vis(&NamedReference::new(item, "letter-spacing").into());
-            vis(&NamedReference::new(item, "wrap").into());
+            vis(&NamedReference::new(item, "text").into(), N);
+            vis(&NamedReference::new(item, "font-family").into(), N);
+            vis(&NamedReference::new(item, "font-size").into(), N);
+            vis(&NamedReference::new(item, "font-weight").into(), N);
+            vis(&NamedReference::new(item, "letter-spacing").into(), N);
+            vis(&NamedReference::new(item, "wrap").into(), N);
             let wrap_set = item.borrow().is_binding_set("wrap", false)
                 || item
                     .borrow()
@@ -444,12 +495,12 @@ fn visit_implicit_layout_info_dependencies(
                     .get("wrap")
                     .map_or(false, |a| a.is_set || a.is_set_externally);
             if wrap_set && orientation == Orientation::Vertical {
-                vis(&NamedReference::new(item, "width").into());
+                vis(&NamedReference::new(item, "width").into(), N);
             }
             if base_type.as_str() == "TextInput" {
-                vis(&NamedReference::new(item, "single-line").into());
+                vis(&NamedReference::new(item, "single-line").into(), N);
             } else {
-                vis(&NamedReference::new(item, "overflow").into());
+                vis(&NamedReference::new(item, "overflow").into(), N);
             }
         }
 
@@ -468,38 +519,36 @@ fn visit_implicit_layout_info_dependencies(
 ///    property <int> foo; // must ensure that this is not considered as const, because the alias with bar
 /// }
 /// ```
-fn propagate_is_set_on_aliases(component: &Rc<Component>, reverse_aliases: &mut ReverseAliases) {
-    crate::object_tree::recurse_elem_including_sub_components_no_borrow(
-        component,
-        &(),
-        &mut |e, _| {
-            for (name, binding) in &e.borrow().bindings {
-                if !binding.borrow().two_way_bindings.is_empty() {
-                    check_alias(e, name, &binding.borrow());
+fn propagate_is_set_on_aliases(doc: &Document, reverse_aliases: &mut ReverseAliases) {
+    doc.visit_all_used_components(|component| {
+        crate::object_tree::recurse_elem_including_sub_components_no_borrow(
+            component,
+            &(),
+            &mut |e, _| visit_element(e, reverse_aliases),
+        );
+    });
 
-                    let nr = NamedReference::new(e, name);
-                    for a in &binding.borrow().two_way_bindings {
-                        if a != &nr
-                            && !a
-                                .element()
-                                .borrow()
-                                .enclosing_component
-                                .upgrade()
-                                .unwrap()
-                                .is_global()
-                        {
-                            reverse_aliases.entry(a.clone()).or_default().push(nr.clone())
-                        }
+    fn visit_element(e: &ElementRc, reverse_aliases: &mut ReverseAliases) {
+        for (name, binding) in &e.borrow().bindings {
+            if !binding.borrow().two_way_bindings.is_empty() {
+                check_alias(e, name, &binding.borrow());
+
+                let nr = NamedReference::new(e, name);
+                for a in &binding.borrow().two_way_bindings {
+                    if a != &nr
+                        && !a.element().borrow().enclosing_component.upgrade().unwrap().is_global()
+                    {
+                        reverse_aliases.entry(a.clone()).or_default().push(nr.clone())
                     }
                 }
             }
-            for decl in e.borrow().property_declarations.values() {
-                if let Some(alias) = &decl.is_alias {
-                    mark_alias(alias)
-                }
+        }
+        for decl in e.borrow().property_declarations.values() {
+            if let Some(alias) = &decl.is_alias {
+                mark_alias(alias)
             }
-        },
-    );
+        }
+    }
 
     fn check_alias(e: &ElementRc, name: &str, binding: &BindingExpression) {
         // Note: since the analysis hasn't been run, any property access will result in a non constant binding. this is slightly non-optimal
@@ -525,37 +574,34 @@ fn propagate_is_set_on_aliases(component: &Rc<Component>, reverse_aliases: &mut 
     }
 
     fn mark_alias(alias: &NamedReference) {
+        alias.mark_as_set();
         if !alias.is_externally_modified() {
-            alias.mark_as_set();
             if let Some(bind) = alias.element().borrow().bindings.get(alias.name()) {
                 propagate_alias(&bind.borrow())
             }
         }
     }
-
-    for c in &component.used_types.borrow().sub_components {
-        propagate_is_set_on_aliases(c, reverse_aliases);
-    }
 }
 
 /// Make sure that the is_set_externally is true for all bindings
-fn mark_used_base_properties(component: &Rc<Component>) {
-    crate::object_tree::recurse_elem_including_sub_components_no_borrow(
-        component,
-        &(),
-        &mut |element, _| {
-            if !matches!(element.borrow().base_type, ElementType::Component(_)) {
-                return;
-            }
-            for (name, binding) in &element.borrow().bindings {
-                if binding.borrow().has_binding() {
-                    crate::namedreference::mark_property_set_derived_in_base(element.clone(), name);
+fn mark_used_base_properties(doc: &Document) {
+    doc.visit_all_used_components(|component| {
+        crate::object_tree::recurse_elem_including_sub_components_no_borrow(
+            component,
+            &(),
+            &mut |element, _| {
+                if !matches!(element.borrow().base_type, ElementType::Component(_)) {
+                    return;
                 }
-            }
-        },
-    );
-
-    for c in &component.used_types.borrow().sub_components {
-        mark_used_base_properties(c);
-    }
+                for (name, binding) in &element.borrow().bindings {
+                    if binding.borrow().has_binding() {
+                        crate::namedreference::mark_property_set_derived_in_base(
+                            element.clone(),
+                            name,
+                        );
+                    }
+                }
+            },
+        );
+    });
 }

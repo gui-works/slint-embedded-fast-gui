@@ -1,10 +1,10 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 use slint::{Model, ModelExt, SharedString, StandardListViewItem, VecModel};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-slint::slint!(import { MainWindow } from "crud.slint";);
+slint::slint!(export { MainWindow } from "crud.slint";);
 
 #[derive(Clone)]
 struct Name {
@@ -12,7 +12,7 @@ struct Name {
     last: String,
 }
 pub fn main() {
-    let main_window = MainWindow::new();
+    let main_window = MainWindow::new().unwrap();
 
     let prefix = Rc::new(RefCell::new(SharedString::from("")));
     let prefix_for_wrapper = prefix.clone();
@@ -84,5 +84,5 @@ pub fn main() {
         });
     }
 
-    main_window.run();
+    main_window.run().unwrap();
 }

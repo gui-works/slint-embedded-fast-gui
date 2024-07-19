@@ -1,14 +1,20 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 #include "printerdemo.h"
+#include "slint.h"
 
+#include <cstdlib>
 #include <ctime>
+#ifdef HAVE_GETTEXT
+#    include <locale>
+#    include <libintl.h>
+#endif
 
 struct InkLevelModel : slint::Model<InkLevel>
 {
-    int row_count() const override { return m_data.size(); }
-    std::optional<InkLevel> row_data(int i) const override
+    size_t row_count() const override { return m_data.size(); }
+    std::optional<InkLevel> row_data(size_t i) const override
     {
         if (i < row_count())
             return { m_data[i] };
@@ -23,6 +29,11 @@ struct InkLevelModel : slint::Model<InkLevel>
 
 int main()
 {
+#ifdef HAVE_GETTEXT
+    bindtextdomain("printerdemo", SRC_DIR "/../lang");
+    std::locale::global(std::locale(""));
+#endif
+
     auto printer_demo = MainWindow::create();
     printer_demo->set_ink_levels(std::make_shared<InkLevelModel>());
     printer_demo->on_quit([] { std::exit(0); });
@@ -39,7 +50,7 @@ int main()
         char time_buf[100] = { 0 };
         std::strftime(time_buf, sizeof(time_buf), "%H:%M:%S %d/%m/%Y", std::localtime(&now));
         PrinterQueueItem item;
-        item.status = "WAITING...";
+        item.status = "waiting";
         item.progress = 0;
         item.title = std::move(name);
         item.owner = "joe@example.com";
@@ -59,11 +70,19 @@ int main()
             if (top_item.progress > 100) {
                 printer_queue->erase(0);
             } else {
-                top_item.status = "PRINTING";
+                top_item.status = "printing";
                 printer_queue->set_row_data(0, top_item);
             }
         }
     });
+
+#if defined(HAVE_GETTEXT) && defined(SLINT_FEATURE_GETTEXT)
+    printer_demo->global<PrinterSettings>().on_change_language([](int l) {
+        static const char *langs[] = { "en", "fr" };
+        setenv("LANGUAGE", langs[l], true);
+        slint::update_all_translations();
+    });
+#endif
 
     printer_demo->run();
 }

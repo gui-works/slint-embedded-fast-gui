@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
@@ -15,7 +15,7 @@ struct EGLUnderlay {
     rotation_time_location: glow::UniformLocation,
     vbo: glow::Buffer,
     vao: glow::VertexArray,
-    start_time: instant::Instant,
+    start_time: web_time::Instant,
 }
 
 impl EGLUnderlay {
@@ -109,7 +109,7 @@ impl EGLUnderlay {
                 rotation_time_location,
                 vbo,
                 vao,
-                start_time: instant::Instant::now(),
+                start_time: web_time::Instant::now(),
             }
         }
     }
@@ -176,7 +176,7 @@ pub fn main() {
     #[cfg(all(debug_assertions, target_arch = "wasm32"))]
     console_error_panic_hook::set_once();
 
-    let app = App::new();
+    let app = App::new().unwrap();
 
     let mut underlay = None;
 
@@ -190,7 +190,7 @@ pub fn main() {
                 let context = match graphics_api {
                     #[cfg(not(target_arch = "wasm32"))]
                     slint::GraphicsAPI::NativeOpenGL { get_proc_address } => unsafe {
-                        glow::Context::from_loader_function(|s| get_proc_address(s))
+                        glow::Context::from_loader_function_cstr(|s| get_proc_address(s))
                     },
                     #[cfg(target_arch = "wasm32")]
                     slint::GraphicsAPI::WebGL { canvas_element_id, context_type } => {
@@ -238,5 +238,5 @@ pub fn main() {
         std::process::exit(1);
     }
 
-    app.run();
+    app.run().unwrap();
 }

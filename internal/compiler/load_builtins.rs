@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 /*!
     Parse the contents of builtins.slint and fill the builtin type registry
@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::expression_tree::Expression;
+use crate::expression_tree::{BuiltinFunction, Expression};
 use crate::langtype::{
     BuiltinElement, BuiltinPropertyInfo, DefaultSizeBinding, ElementType, NativeClass, Type,
 };
@@ -20,9 +20,9 @@ use crate::typeregister::TypeRegister;
 /// Parse the contents of builtins.slint and fill the builtin type registry
 /// `register` is the register to fill with the builtin types.
 /// At this point, it really should already contain the basic Types (string, int, ...)
-pub fn load_builtins(register: &mut TypeRegister) {
+pub(crate) fn load_builtins(register: &mut TypeRegister) {
     let mut diag = crate::diagnostics::BuildDiagnostics::default();
-    let node = crate::parser::parse(include_str!("builtins.slint").into(), None, &mut diag);
+    let node = crate::parser::parse(include_str!("builtins.slint").into(), None, None, &mut diag);
     if !diag.is_empty() {
         let vec = diag.to_string_vec();
         #[cfg(feature = "display-diagnostics")]
@@ -32,22 +32,6 @@ pub fn load_builtins(register: &mut TypeRegister) {
 
     assert_eq!(node.kind(), crate::parser::SyntaxKind::Document);
     let doc: syntax_nodes::Document = node.into();
-
-    // parse structs
-    for s in doc.StructDeclaration().chain(doc.ExportsList().flat_map(|e| e.StructDeclaration())) {
-        let external_name = identifier_text(&s.DeclaredIdentifier()).unwrap();
-        let mut ty = object_tree::type_struct_from_node(s.ObjectType(), &mut diag, register);
-        if let Type::Struct { name, .. } = &mut ty {
-            *name = Some(
-                parse_annotation("name", &s.ObjectType())
-                    .map_or_else(|| external_name.clone(), |s| s.unwrap())
-                    .to_owned(),
-            );
-        } else {
-            unreachable!()
-        }
-        register.insert_type_with_name(ty, external_name);
-    }
 
     let mut natives = HashMap::<String, Rc<BuiltinElement>>::new();
 
@@ -78,26 +62,41 @@ pub fn load_builtins(register: &mut TypeRegister) {
             e.PropertyDeclaration()
                 .filter(|p| p.TwoWayBinding().is_none()) // aliases are handled further down
                 .map(|p| {
+                    let prop_name = identifier_text(&p.DeclaredIdentifier()).unwrap();
+
                     let mut info = BuiltinPropertyInfo::new(object_tree::type_from_node(
                         p.Type().unwrap(),
                         *diag.borrow_mut(),
                         register,
                     ));
 
-                    if let Some(e) = p.BindingExpression() {
-                        if e.Expression()
-                            .and_then(|e| e.QualifiedName())
-                            .and_then(|q| q.child_text(SyntaxKind::Identifier))
-                            .map(|s| s == "native_output")
-                            == Some(true)
-                        {
-                            info.is_native_output = true;
-                        } else {
-                            let ty = info.ty.clone();
-                            info.default_value = Some(compiled(e, register, ty));
+                    info.property_visibility = PropertyVisibility::Private;
+
+                    for token in p.children_with_tokens() {
+                        if token.kind() != SyntaxKind::Identifier {
+                            continue;
+                        }
+                        match (token.as_token().unwrap().text(), info.property_visibility) {
+                            ("in", PropertyVisibility::Private) => {
+                                info.property_visibility = PropertyVisibility::Input
+                            }
+                            ("out", PropertyVisibility::Private) => {
+                                info.property_visibility = PropertyVisibility::Output
+                            }
+                            ("in-out", PropertyVisibility::Private) => {
+                                info.property_visibility = PropertyVisibility::InOut
+                            }
+                            ("property", _) => (),
+                            _ => unreachable!("invalid property keyword when parsing builtin file for property {id}::{prop_name}"),
                         }
                     }
-                    (identifier_text(&p.DeclaredIdentifier()).unwrap(), info)
+
+                    if let Some(e) = p.BindingExpression() {
+                        let ty = info.ty.clone();
+                        info.default_value = Some(compiled(e, register, ty));
+                    }
+
+                    (prop_name, info)
                 })
                 .chain(e.CallbackDeclaration().map(|s| {
                     (
@@ -118,7 +117,7 @@ pub fn load_builtins(register: &mut TypeRegister) {
                             }),
                         }),
                     )
-                })),
+                }))
         );
         n.deprecated_aliases = e
             .PropertyDeclaration()
@@ -142,18 +141,30 @@ pub fn load_builtins(register: &mut TypeRegister) {
             Global,
             NativeParent(Rc<BuiltinElement>),
         }
-        let base = if let Some(base) = e.QualifiedName() {
-            let base = QualifiedTypeName::from_node(base).to_string();
-            if base != "-" {
-                let base = natives.get(&base).unwrap().clone();
-                n.parent = Some(base.native_class.clone());
-                Base::NativeParent(base)
-            } else {
-                Base::None
-            }
-        } else {
+        let base = if c.child_text(SyntaxKind::Identifier).map_or(false, |t| t == "global") {
             Base::Global
+        } else if let Some(base) = e.QualifiedName() {
+            let base = QualifiedTypeName::from_node(base).to_string();
+            let base = natives.get(&base).unwrap().clone();
+            n.parent = Some(base.native_class.clone());
+            Base::NativeParent(base)
+        } else {
+            Base::None
         };
+
+        let member_functions = e
+            .Function()
+            .map(|f| {
+                let name = identifier_text(&f.DeclaredIdentifier()).unwrap();
+                (name.clone(), BuiltinFunction::ItemMemberFunction(name))
+            })
+            .collect::<Vec<_>>();
+        n.properties.extend(
+            member_functions
+                .iter()
+                .map(|(name, fun)| (name.clone(), BuiltinPropertyInfo::new(fun.ty()))),
+        );
+
         let mut builtin = BuiltinElement::new(Rc::new(n));
         builtin.is_global = matches!(base, Base::Global);
         let properties = &mut builtin.properties;
@@ -163,6 +174,7 @@ pub fn load_builtins(register: &mut TypeRegister) {
         properties
             .extend(builtin.native_class.properties.iter().map(|(k, v)| (k.clone(), v.clone())));
 
+        builtin.member_functions.extend(member_functions);
         builtin.disallow_global_types_as_child_elements =
             parse_annotation("disallow_global_types_as_child_elements", &e).is_some();
         builtin.is_non_item_type = parse_annotation("is_non_item_type", &e).is_some();
@@ -185,7 +197,7 @@ pub fn load_builtins(register: &mut TypeRegister) {
             .collect();
         if let Some(builtin_name) = exports.get(&id) {
             if !matches!(&base, Base::Global) {
-                builtin.name = builtin_name.clone();
+                builtin.name.clone_from(builtin_name);
                 register.add_builtin(Rc::new(builtin));
             } else {
                 let glob = Rc::new(Component {
@@ -231,7 +243,7 @@ fn compiled(
         &mut crate::lookup::LookupCtx::empty_context(type_register, &mut diag),
     )
     .maybe_convert_to(ty, &node, &mut diag);
-    if diag.has_error() {
+    if diag.has_errors() {
         let vec = diag.to_string_vec();
         #[cfg(feature = "display-diagnostics")]
         diag.print();

@@ -1,6 +1,8 @@
+<!-- Copyright © SixtyFPS GmbH <info@slint.dev> ; SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0 -->
+
 # Viewer for Slint
 
-This program is a viewer for `.slint` files from the [Slint Project](https://slint-ui.com).
+This program is a viewer for `.slint` files from the [Slint Project](https://slint.dev).
 
 ## Installation
 
@@ -34,9 +36,11 @@ slint-viewer path/to/myfile.slint
    This option is incompatible with `--auto-reload`
  - `--load-data <file>`: Load the values of public properties from a json file.
  - `-I <path>`: Add an include path to look for imported .slint files or images.
+ - `-L <library=path>`: Add a library path to look for `@library` imports.
  - `--style <style>`: Set the style. Defaults to `native` if the Qt backend is compiled, otherwise `fluent`
  - `--backend <backend>`: Override the Slint rendering backend
  - `--on <callback> <handler>`: Set a callback handler, see [callback handler](#callback-handlers)
+ - `--component <name>`: Load the component with the given name. If not specified, load the last exported component
 
 Instead of a path to a file, one can use `-` for the standard input or the standard output.
 
@@ -50,7 +54,7 @@ callback. These will be shell escaped.
 Example: Imagine we have a myfile.slint looking like this:
 
 ```slint
-MyApp := Window {
+export component MyApp inherits Window {
   callback open-url(string);
   //...
 }

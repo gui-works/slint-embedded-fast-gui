@@ -1,3 +1,5 @@
+<!-- Copyright © SixtyFPS GmbH <info@slint.dev> ; SPDX-License-Identifier: MIT -->
+
 # Slint MCU backend
 
 See also the [MCU docs](../../api/rs/slint/mcu.md)
@@ -48,12 +50,10 @@ cargo run -p printerdemo_mcu --features=simulator --release
 
 ### On the Raspberry Pi Pico
 
-You need nightly rust because that's the only way to get an allocator.
-
 Build the demo with:
 
 ```sh
-cargo +nightly build -p printerdemo_mcu --no-default-features --features=mcu-board-support/pico-st7789 --target=thumbv6m-none-eabi --release
+cargo build -p printerdemo_mcu --no-default-features --features=mcu-board-support/pico-st7789 --target=thumbv6m-none-eabi --release
 ```
 
 The resulting file can be flashed conveniently with [elf2uf2-rs](https://github.com/jonil/elf2uf2-rs). Install it using `cargo install`:
@@ -82,7 +82,7 @@ and to connect the pico via a probe (for example another pico running the probe)
 Then you can simply run with `cargo run`
 
 ```sh
-CARGO_TARGET_THUMBV6M_NONE_EABI_LINKER="flip-link" CARGO_TARGET_THUMBV6M_NONE_EABI_RUNNER="probe-run --chip RP2040" cargo +nightly run -p printerdemo_mcu --no-default-features --features=mcu-board-support/pico-st7789 --target=thumbv6m-none-eabi --release
+CARGO_TARGET_THUMBV6M_NONE_EABI_LINKER="flip-link" CARGO_TARGET_THUMBV6M_NONE_EABI_RUNNER="probe-run --chip RP2040" cargo run -p printerdemo_mcu --no-default-features --features=mcu-board-support/pico-st7789 --target=thumbv6m-none-eabi --release
 ```
 
 #### Flashing and Debugging the Pico with `probe-rs`'s VSCode Plugin
@@ -97,9 +97,6 @@ Add this build task to your `.vscode/tasks.json`:
 		{
 			"type": "cargo",
 			"command": "build",
-			"env": {
-				"RUSTUP_TOOLCHAIN": "nightly"
-			},
 			"args": [
 				"--package=printerdemo_mcu",
 				"--features=mcu-pico-st7789",
@@ -164,20 +161,34 @@ This was tested using a second Raspberry Pi Pico programmed as a probe with [Dap
 Using [probe-run](https://github.com/knurling-rs/probe-run) (`cargo install probe-run`)
 
 ```sh
-CARGO_TARGET_THUMBV7EM_NONE_EABIHF_RUNNER="probe-run --chip STM32H735IGKx" cargo +nightly run -p printerdemo_mcu --no-default-features  --features=mcu-board-support/stm32h735g --target=thumbv7em-none-eabihf --release
+CARGO_PROFILE_RELEASE_OPT_LEVEL=s CARGO_TARGET_THUMBV7EM_NONE_EABIHF_RUNNER="probe-run --chip STM32H735IGKx" cargo run -p printerdemo_mcu --no-default-features  --features=mcu-board-support/stm32h735g --target=thumbv7em-none-eabihf --release
 ```
 
-### ESP32-S2-Kaluga-1
+### ESP32
 
-A esp toolchain is required: https://esp-rs.github.io/book/dependencies/installing-rust.html#xtensa-esp32-esp32-s2-esp32-s3
-Also `cargo instal espflash`
+#### Prerequisites
+
+ * ESP Rust Toolchain: https://esp-rs.github.io/book/installation/installation.html
+ * `espflash`: Install via `cargo install espflash`.
+
+When flashing, with `esplash`, you will be prompted to select a USB port. If this port is always the same, then you can also pass it as a parameter on the command line to avoid the prompt. For example if
+`/dev/ttyUSB1` is the device file for your port, the command line changes to `espflash --monitor /dev/ttyUSB1 path/to/binary/to/flash_and_monitor`.
+
+#### ESP32-S2-Kaluga-1
+
 
 To compile and run the demo:
 
 ```sh
-cargo +esp build -p printerdemo_mcu --target xtensa-esp32s2-none-elf --no-default-features --features=mcu-board-support/esp32-s2-kaluga-1 --release --config examples/mcu-board-support/esp32_s2_kaluga_1/cargo-config.toml
-espflash --monitor /dev/ttyUSB1 target/xtensa-esp32s2-none-elf/release/printerdemo_mcu
+cargo +esp run -p printerdemo_mcu --target xtensa-esp32s2-none-elf --no-default-features --features=mcu-board-support/esp32-s2-kaluga-1 --release --config examples/mcu-board-support/esp32_s2_kaluga_1/cargo-config.toml
 ```
 
 The device needs to be connected with the two USB cables (one for power, one for data)
 
+#### ESP32-S3-Box
+
+To compile and run the demo:
+
+```sh
+cargo +esp run -p printerdemo_mcu --target xtensa-esp32s3-none-elf --no-default-features --features=mcu-board-support/esp32-s3-box --release --config examples/mcu-board-support/esp32_s3_box/cargo-config.toml
+```

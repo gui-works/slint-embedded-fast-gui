@@ -1,10 +1,10 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // cSpell: ignore sharedvector textlayout
 
 #![doc = include_str!("README.md")]
-#![doc(html_logo_url = "https://slint-ui.com/logo/slint-logo-square-light.svg")]
+#![doc(html_logo_url = "https://slint.dev/logo/slint-logo-square-light.svg")]
 #![deny(unsafe_code)]
 #![cfg_attr(not(feature = "std"), no_std)]
 extern crate alloc;
@@ -15,12 +15,17 @@ pub(crate) mod unsafe_single_threaded;
 compile_error!(
     "At least one of the following feature need to be enabled: `std` or `unsafe-single-threaded`"
 );
+#[cfg(all(not(feature = "std"), feature = "unsafe-single-threaded"))]
+use crate::unsafe_single_threaded::thread_local;
 
 pub mod accessibility;
 pub mod animations;
 pub mod api;
 pub mod callbacks;
-pub mod component;
+pub mod component_factory;
+pub mod context;
+pub mod date_time;
+pub mod future;
 pub mod graphics;
 pub mod input;
 pub mod item_focus;
@@ -33,17 +38,18 @@ pub mod model;
 pub mod platform;
 pub mod properties;
 pub mod renderer;
+#[cfg(feature = "rtti")]
+pub mod rtti;
 pub mod sharedvector;
 pub mod slice;
+#[cfg(feature = "software-renderer")]
 pub mod software_renderer;
 pub mod string;
 pub mod tests;
 pub mod textlayout;
 pub mod timers;
+pub mod translations;
 pub mod window;
-
-#[cfg(feature = "rtti")]
-pub mod rtti;
 
 #[doc(inline)]
 pub use string::SharedString;
@@ -72,55 +78,17 @@ pub use graphics::RgbaColor;
 #[cfg(feature = "std")]
 #[doc(inline)]
 pub use graphics::PathData;
-use platform::Platform;
+
+#[doc(inline)]
+pub use graphics::BorderRadius;
+
+pub use context::{with_platform, SlintContext};
 
 #[cfg(not(slint_int_coord))]
 pub type Coord = f32;
 #[cfg(slint_int_coord)]
 pub type Coord = i32;
 
-/// Internal function to access the platform abstraction.
-/// The factory function is called if the platform abstraction is not yet
-/// initialized, and should be given by the platform_selector
-pub fn with_platform<R>(
-    factory: impl FnOnce() -> alloc::boxed::Box<dyn Platform + 'static>,
-    f: impl FnOnce(&dyn Platform) -> R,
-) -> R {
-    platform::PLATFORM_INSTANCE.with(|p| match p.get() {
-        Some(p) => f(&**p),
-        None => {
-            platform::set_platform(factory())
-                .expect("platform already initialized in another thread");
-            f(&**p.get().unwrap())
-        }
-    })
-}
-
-/// One need to use at least one function in each module in order to get them
-/// exported in the final binary.
-/// This only use functions from modules which are not otherwise used.
-#[doc(hidden)]
-#[cold]
-#[cfg(not(target_arch = "wasm32"))]
-pub fn use_modules() -> usize {
-    #[cfg(feature = "ffi")]
-    {
-        tests::slint_mock_elapsed_time as usize
-            + callbacks::ffi::slint_callback_init as usize
-            + sharedvector::ffi::slint_shared_vector_empty as usize
-            + layout::ffi::slint_solve_grid_layout as usize
-            + item_tree::ffi::slint_visit_item_tree as usize
-            + graphics::ffi::slint_new_path_elements as usize
-            + properties::ffi::slint_property_init as usize
-            + string::ffi::slint_shared_string_bytes as usize
-            + window::ffi::slint_windowrc_drop as usize
-            + component::ffi::slint_register_component as usize
-            + timers::ffi::slint_timer_start as usize
-            + graphics::color::ffi::slint_color_brighter as usize
-            + graphics::image::ffi::slint_image_size as usize
-    }
-    #[cfg(not(feature = "ffi"))]
-    {
-        0
-    }
-}
+/// This type is not exported from the public API crate, so function having this
+/// parameter cannot be called from the public API without naming it
+pub struct InternalToken;

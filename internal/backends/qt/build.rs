@@ -1,9 +1,12 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-// cSpell: ignore combobox groupbox lineedit listviewitem scrollview spinbox stylemetrics
+// cSpell: ignore listviewitem stylemetrics
 
+#[cfg(feature = "enable")]
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(no_qt)");
+
     println!("cargo:rerun-if-env-changed=SLINT_NO_QT");
     if std::env::var("TARGET").map_or(false, |t| t.starts_with("wasm"))
         || std::env::var("SLINT_NO_QT").is_ok()
@@ -50,9 +53,19 @@ fn main() {
     println!("cargo:rerun-if-changed=qt_widgets/listviewitem.rs");
     println!("cargo:rerun-if-changed=qt_widgets/scrollview.rs");
     println!("cargo:rerun-if-changed=qt_widgets/slider.rs");
+    println!("cargo:rerun-if-changed=qt_widgets/progress_indicator.rs");
     println!("cargo:rerun-if-changed=qt_widgets/spinbox.rs");
     println!("cargo:rerun-if-changed=qt_widgets/stylemetrics.rs");
+    println!("cargo:rerun-if-changed=qt_widgets/palette.rs");
     println!("cargo:rerun-if-changed=qt_widgets/tabwidget.rs");
+    println!("cargo:rerun-if-changed=qt_widgets/tableheadersection.rs");
     println!("cargo:rerun-if-changed=qt_window.rs");
     println!("cargo:SUPPORTS_NATIVE_STYLE=1");
+}
+
+#[cfg(not(feature = "enable"))]
+fn main() {
+    println!("cargo:rustc-cfg=no_qt");
+    println!("cargo:rustc-check-cfg=cfg(no_qt)");
+    return;
 }

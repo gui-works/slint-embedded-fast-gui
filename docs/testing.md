@@ -1,3 +1,4 @@
+<!-- Copyright © SixtyFPS GmbH <info@slint.dev> ; SPDX-License-Identifier: MIT -->
 # Slint tests
 
 This documents describe the testing infrastructure of Slint
@@ -6,8 +7,8 @@ This documents describe the testing infrastructure of Slint
 
 The syntax tests are testing that the compiler show the right error messages in case of error.
 
-The syntax tests are located in `slint_compiler/tests/syntax/` and it is driven by the
-[`syntax_tests.rs`](../slint_compiler/tests/syntax_tests.rs) file. More info in the comments of that file.
+The syntax tests are located in `slint_compiler/tests/syntax/` and it's driven by the
+[`syntax_tests.rs`](../internal/compiler/tests/syntax_tests.rs) file. More info in the comments of that file.
 
 In summary, each .slint files have comments with `^error` like so:
 
@@ -25,7 +26,6 @@ The syntax test can be run alone with
 ```sh
 cargo test --test syntax_tests
 ```
-
 
 ## Driver tests
 
@@ -52,9 +52,9 @@ property equal to bool.
 example:
 
 ```slint
-Foo := Rectangle {
+export component Foo inherits Rectangle {
    // test would fail if that property was false
-   property <bool> test: 1 + 1 == 2;
+   in-out property <bool> test: 1 + 1 == 2;
 }
 ```
 
@@ -71,7 +71,7 @@ Example: to test all the layout test:
 SLINT_TEST_FILTER=layout cargo test -p test-driver-rust
 ```
 
-Instead of putting everything in a slint! macro, it is possible to tell the driver to do the
+Instead of putting everything in a slint! macro, it's possible to tell the driver to do the
 compilation in the build.rs, with the builod-time feature:
 
 ```
@@ -97,12 +97,27 @@ Note that there are also C++ unit tests that can be run by CMake
 This is used to test the NodeJS API. It takes the ```` ```js ```` blocks in comment and make .js file
 with it that loads the .slint and runs node with it.
 Each test is run in a different node process.
-You need to build the node integration before running the tests, even if the change was on the compiler
 
 ```
-cargo  build -p slint-node  && cargo  test -p test-driver-nodejs
+cargo  test -p test-driver-nodejs
 ```
 
+## Screenshot tests
+
+This is used to test renderer backends. At the moment it supports the `SoftwareRenderer`. Each `.slint` file in `tests/screenshots/cases` will be loaded
+rendered and the results will be compared to the reference images in `tests/screenshots/references`.
+
+To generate references images for all test files in `tests/screenshots/cases` run:
+
+```
+SLINT_CREATE_SCREENSHOTS=1 cargo test -p test-driver-screenshots
+```
+
+To start the tests run and compare images:
+
+```
+cargo test -p test-driver-screenshots
+```
 
 ## Doctests
 

@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT OR Apache-2.0
 
 // cSpell: ignore asyncness constness containee defaultness impls qself supertraits vref
 
@@ -70,8 +70,8 @@ This macro does the following transformation:
 For function type fields:
  - The ABI of each functions is changed to `extern "C"`
  - `unsafe` is added to the signature, since it is unsafe to call these functions directly from
-  the vtable without having a valid pointer to the actual object. But if the original function was
-  marked unsafe, the unsafety is forwarded to the trait.
+   the vtable without having a valid pointer to the actual object. But if the original function was
+   marked unsafe, the unsafety is forwarded to the trait.
  - If a field is called `drop`, then it is understood that this is the destructor for a VBox.
    It must have the type `fn(VRefMut<MyVTable>)`
  - If two fields called `drop_in_place` and `dealloc` are present, then they are understood to be
@@ -199,10 +199,10 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
         attrs: input
             .attrs
             .iter()
-            .filter(|a| a.path.get_ident().as_ref().map(|i| *i == "doc").unwrap_or(false))
+            .filter(|a| a.path().get_ident().as_ref().map(|i| *i == "doc").unwrap_or(false))
             .cloned()
             .collect(),
-        vis: Visibility::Public(VisPublic { pub_token: Default::default() }),
+        vis: Visibility::Public(Default::default()),
         unsafety: None,
         auto_token: None,
         trait_token: Default::default(),
@@ -212,6 +212,7 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
         supertraits: Default::default(),
         brace_token: Default::default(),
         items: Default::default(),
+        restriction: Default::default(),
     };
 
     let additional_doc = format!(
@@ -230,7 +231,7 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     for field in &mut fields.named {
         // The vtable can only be accessed in unsafe code, so it is ok if all its fields are Public
-        field.vis = Visibility::Public(VisPublic { pub_token: Default::default() });
+        field.vis = Visibility::Public(Default::default());
 
         let ident = field.ident.as_ref().unwrap();
         let mut some = None;
@@ -282,9 +283,6 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let mut call_code = None;
             let mut self_call = None;
             let mut forward_code = None;
-
-            #[derive(Default)]
-            struct SelfInfo {}
 
             let mut has_self = false;
 
@@ -356,6 +354,8 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                             reference: Some(Default::default()),
                             mutability,
                             self_token: Default::default(),
+                            colon_token: None,
+                            ty: Box::new(parse_quote!(& #mutability Self)),
                         }));
                         call_code =
                             Some(quote!(#call_code <#self_ty>::from_raw(self.vtable, self.ptr),));
@@ -365,9 +365,9 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                         // Pinned
                         sig.inputs.push(FnArg::Typed(PatType {
                             attrs: param.attrs.clone(),
-                            pat: Box::new(parse2(quote!(self)).unwrap()),
+                            pat: Box::new(Pat::parse_single.parse2(quote!(self)).unwrap()),
                             colon_token: Default::default(),
-                            ty: parse2(quote!(core::pin::Pin<& #mutability Self>)).unwrap(),
+                            ty: parse_quote!(core::pin::Pin<& #mutability Self>),
                         }));
 
                         call_code = Some(
@@ -393,7 +393,7 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     return Error::new(a.span(), "invalid ABI").to_compile_error().into();
                 }
             } else {
-                f.abi = sig_extern.abi.clone();
+                f.abi.clone_from(&sig_extern.abi);
             }
 
             let mut wrap_trait_call = None;
@@ -405,7 +405,7 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
                 // Check if this is a constructor functions
                 if let ReturnType::Type(_, ret) = &f.output {
-                    if match_generic_type(&**ret, "VBox", &vtable_name) {
+                    if match_generic_type(ret, "VBox", &vtable_name) {
                         // Change VBox<VTable> to Self
                         sig.output = parse_str("-> Self").unwrap();
                         wrap_trait_call = Some(quote! {
@@ -436,8 +436,8 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                             // Safety: The vtable is valid and inner is a type corresponding to the vtable,
                             // which was allocated such that drop is expected.
                             unsafe {
-                                let ptr = &*ptr;
-                                (ptr.vtable.as_ref().#ident)(VRefMut::from_raw(ptr.vtable, ptr.ptr)) }
+                                let (vtable, ptr) = ((*ptr).vtable, (*ptr).ptr);
+                                (vtable.as_ref().#ident)(VRefMut::from_raw(vtable, ptr)) }
                         }
                         fn new_box<X: HasStaticVTable<#vtable_name>>(value: X) -> VBox<#vtable_name> {
                             // Put the object on the heap and get a pointer to it
@@ -486,20 +486,20 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 continue;
             }
 
-            generated_trait.items.push(TraitItem::Method(TraitItemMethod {
+            generated_trait.items.push(TraitItem::Fn(TraitItemFn {
                 attrs: field.attrs.clone(),
                 sig: sig.clone(),
                 default: None,
                 semi_token: Some(Default::default()),
             }));
 
-            generated_to_fn_trait.push(ImplItemMethod {
+            generated_to_fn_trait.push(ImplItemFn {
                 attrs: field.attrs.clone(),
-                vis: Visibility::Public(VisPublic { pub_token: Default::default() }),
+                vis: Visibility::Public(Default::default()),
                 defaultness: None,
                 sig: sig.clone(),
-                block: parse2(if has_self {
-                    quote!({
+                block: if has_self {
+                    parse_quote!({
                         // Safety: this rely on the vtable being valid, and the ptr being a valid instance for this vtable
                         #[allow(unsafe_code)]
                         unsafe {
@@ -513,9 +513,8 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     })
                 } else {
                     // This should never happen: nobody should be able to access the Trait Object directly.
-                    quote!({ panic!("Calling Sized method on a Trait Object") })
-                })
-                .unwrap(),
+                    parse_quote!({ panic!("Calling Sized method on a Trait Object") })
+                },
             });
 
             if !has_self {
@@ -526,21 +525,22 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                         reference: Some(Default::default()),
                         mutability: None,
                         self_token: Default::default(),
+                        colon_token: None,
+                        ty: Box::new(parse_quote!(&Self)),
                     }),
                 );
                 sig.output = sig_extern.output.clone();
-                generated_type_assoc_fn.push(ImplItemMethod {
+                generated_type_assoc_fn.push(ImplItemFn {
                     attrs: field.attrs.clone(),
                     vis: generated_trait.vis.clone(),
                     defaultness: None,
                     sig,
-                    block: parse2(quote!({
+                    block: parse_quote!({
                         let vtable = self;
                         // Safety: this rely on the vtable being valid, and the ptr being a valid instance for this vtable
                         #[allow(unsafe_code)]
                         unsafe { (self.#ident)(#call_code) }
-                    }))
-                    .unwrap(),
+                    }),
                 });
 
                 vtable_ctor.push(quote!(#ident: {
@@ -558,7 +558,9 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     ReturnType::Default => quote!(),
                     // If the return type contains a implicit lifetime, it is safe to erase it while returning it
                     // because a sound implementation of the trait wouldn't allow unsound things here
-                    ReturnType::Type(_, r) => quote!(core::mem::transmute::<#r, #r>),
+                    ReturnType::Type(_, r) => {
+                        quote!(#[allow(clippy::useless_transmute)] core::mem::transmute::<#r, #r>)
+                    }
                 };
                 vtable_ctor.push(quote!(#ident: {
                     #sig_extern {
@@ -586,10 +588,10 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let const_type = if let Some(o) = field
                 .attrs
                 .iter()
-                .position(|a| a.path.get_ident().map(|a| a == "field_offset").unwrap_or(false))
+                .position(|a| a.path().get_ident().map(|a| a == "field_offset").unwrap_or(false))
             {
                 let a = field.attrs.remove(o);
-                let member_type = match parse2::<Type>(a.tokens) {
+                let member_type = match a.parse_args::<Type>() {
                     Err(e) => return e.to_compile_error().into(),
                     Ok(ty) => ty,
                 };
@@ -609,11 +611,10 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 // add `: Sized` to the trait in case it does not have it
                 if generated_trait_assoc_const.supertraits.is_empty() {
                     generated_trait_assoc_const.colon_token = Some(Default::default());
-                    generated_trait_assoc_const.supertraits.push(parse2(quote!(Sized)).unwrap());
+                    generated_trait_assoc_const.supertraits.push(parse_quote!(Sized));
                 }
 
-                let offset_type =
-                    parse2::<Type>(quote!(vtable::FieldOffset<Self, #member_type>)).unwrap();
+                let offset_type: Type = parse_quote!(vtable::FieldOffset<Self, #member_type>);
 
                 vtable_ctor.push(quote!(#ident: T::#ident.get_byte_offset(),));
 
@@ -621,27 +622,25 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
                 let vis = &field.vis;
                 generated_to_fn_trait.push(
-                    parse2(quote! {
+                    parse_quote! {
                         #(#attrs)*
                         #vis fn #ident(&self) -> &#member_type {
                             unsafe {
                                 &*(self.ptr.as_ptr().add(self.vtable.as_ref().#ident) as *const #member_type)
                             }
                         }
-                    })
-                    .unwrap(),
+                    },
                 );
                 let ident_mut = quote::format_ident!("{}_mut", ident);
                 generated_to_fn_trait.push(
-                    parse2(quote! {
+                    parse_quote! {
                         #(#attrs)*
                         #vis fn #ident_mut(&mut self) -> &mut #member_type {
                             unsafe {
                                 &mut *(self.ptr.as_ptr().add(self.vtable.as_ref().#ident) as *mut #member_type)
                             }
                         }
-                    })
-                    .unwrap(),
+                    },
                 );
 
                 offset_type
@@ -658,12 +657,13 @@ pub fn vtable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 ty: const_type,
                 default: None,
                 semi_token: Default::default(),
+                generics: Default::default(),
             }));
         };
     }
 
     let vis = input.vis;
-    input.vis = Visibility::Public(VisPublic { pub_token: Default::default() });
+    input.vis = Visibility::Public(Default::default());
 
     let new_trait_extra = generated_trait_assoc_const.as_ref().map(|x| {
         let i = &x.ident;

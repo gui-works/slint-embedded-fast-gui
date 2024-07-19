@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Passes that fills the root component used_global
 
@@ -8,12 +8,11 @@ use crate::{
     object_tree::*,
 };
 use std::collections::BTreeSet;
-use std::rc::Rc;
 
 /// Fill the root_component's used_globals
 pub fn collect_custom_fonts<'a>(
-    root_component: &Rc<Component>,
-    all_docs: impl Iterator<Item = &'a crate::object_tree::Document> + 'a,
+    doc: &Document,
+    all_docs: impl Iterator<Item = &'a Document> + 'a,
     embed_fonts: bool,
 ) {
     let mut all_fonts = BTreeSet::new();
@@ -32,7 +31,7 @@ pub fn collect_custom_fonts<'a>(
         Box::new(|font_path| {
             Expression::NumberLiteral(
                 {
-                    let mut resources = root_component.embedded_file_resources.borrow_mut();
+                    let mut resources = doc.embedded_file_resources.borrow_mut();
                     let resource_id = match resources.get(font_path) {
                         Some(r) => r.id,
                         None => {
@@ -56,11 +55,13 @@ pub fn collect_custom_fonts<'a>(
         Box::new(|font_path| Expression::StringLiteral(font_path.clone()))
     };
 
-    root_component.setup_code.borrow_mut().extend(all_fonts.into_iter().map(|font_path| {
-        Expression::FunctionCall {
-            function: Box::new(registration_function.clone()),
-            arguments: vec![prepare_font_registration_argument(font_path)],
-            source_location: None,
-        }
-    }));
+    for c in doc.exported_roots() {
+        c.init_code.borrow_mut().font_registration_code.extend(all_fonts.iter().map(|font_path| {
+            Expression::FunctionCall {
+                function: Box::new(registration_function.clone()),
+                arguments: vec![prepare_font_registration_argument(font_path)],
+                source_location: None,
+            }
+        }));
+    }
 }

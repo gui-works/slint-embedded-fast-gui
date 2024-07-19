@@ -1,7 +1,7 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-use crate::dynamic_component::InstanceRef;
+use crate::dynamic_item_tree::InstanceRef;
 use crate::eval::{self, ComponentInstance, EvalLocalContext};
 use crate::Value;
 use i_slint_compiler::expression_tree::Expression;
@@ -11,10 +11,9 @@ use i_slint_compiler::namedreference::NamedReference;
 use i_slint_compiler::object_tree::ElementRc;
 use i_slint_core::items::DialogButtonRole;
 use i_slint_core::layout::{self as core_layout};
-use i_slint_core::model::RepeatedComponent;
+use i_slint_core::model::RepeatedItemTree;
 use i_slint_core::slice::Slice;
 use i_slint_core::window::WindowAdapter;
-use std::convert::TryInto;
 use std::rc::Rc;
 use std::str::FromStr;
 
@@ -68,7 +67,6 @@ pub(crate) fn compute_layout_info(
             }
             .into()
         }
-        Layout::PathLayout(_) => unimplemented!(),
     }
 }
 
@@ -137,27 +135,6 @@ pub(crate) fn solve_layout(
             )
             .into()
         }
-        Layout::PathLayout(path_layout) => {
-            let repeated_indices = repeater_indices(&path_layout.elements, component);
-            core_layout::solve_path_layout(
-                &core_layout::PathLayoutData {
-                    width: path_layout.rect.width_reference.as_ref().map(expr_eval).unwrap_or(0.),
-                    height: path_layout.rect.height_reference.as_ref().map(expr_eval).unwrap_or(0.),
-                    x: 0.,
-                    y: 0.,
-                    elements: eval::eval_expression(
-                        &Expression::PathData(path_layout.path.clone()),
-                        local_context,
-                    )
-                    .try_into()
-                    .unwrap(),
-                    offset: path_layout.offset_reference.as_ref().map_or(0., expr_eval),
-                    item_count: path_layout.elements.len() as u32,
-                },
-                Slice::from(repeated_indices.as_slice()),
-            )
-            .into()
-        }
     }
 }
 
@@ -166,7 +143,7 @@ fn padding_and_spacing(
     orientation: Orientation,
     expr_eval: &impl Fn(&NamedReference) -> f32,
 ) -> (core_layout::Padding, f32) {
-    let spacing = layout_geometry.spacing.as_ref().map_or(0., expr_eval);
+    let spacing = layout_geometry.spacing.orientation(orientation).map_or(0., expr_eval);
     let (begin, end) = layout_geometry.padding.begin_end(orientation);
     let padding =
         core_layout::Padding { begin: begin.map_or(0., expr_eval), end: end.map_or(0., expr_eval) };
@@ -187,7 +164,7 @@ fn grid_layout_data(
             let mut layout_info = get_layout_info(
                 &cell.item.element,
                 component,
-                eval::window_adapter_ref(component).unwrap(),
+                &component.window_adapter(),
                 orientation,
             );
             fill_layout_info_constraints(
@@ -210,27 +187,27 @@ fn box_layout_data(
     expr_eval: &impl Fn(&NamedReference) -> f32,
     mut repeater_indices: Option<&mut Vec<u32>>,
 ) -> (Vec<core_layout::BoxLayoutCellData>, i_slint_core::items::LayoutAlignment) {
-    let window_adapter = eval::window_adapter_ref(component).unwrap();
+    let window_adapter = component.window_adapter();
     let mut cells = Vec::with_capacity(box_layout.elems.len());
     for cell in &box_layout.elems {
         if cell.element.borrow().repeated.is_some() {
             generativity::make_guard!(guard);
-            let rep = crate::dynamic_component::get_repeater_by_name(
+            let rep = crate::dynamic_item_tree::get_repeater_by_name(
                 component,
                 cell.element.borrow().id.as_str(),
                 guard,
             );
             rep.0.as_ref().ensure_updated(|| {
-                let instance = crate::dynamic_component::instantiate(
+                let instance = crate::dynamic_item_tree::instantiate(
                     rep.1.clone(),
-                    Some(component.borrow()),
-                    window_adapter,
+                    component.self_weak().get().cloned(),
+                    None,
+                    None,
                     Default::default(),
                 );
-                instance.run_setup_code();
                 instance
             });
-            let component_vec = rep.0.as_ref().components_vec();
+            let component_vec = rep.0.as_ref().instances_vec();
             if let Some(ri) = repeater_indices.as_mut() {
                 ri.push(cells.len() as _);
                 ri.push(component_vec.len() as _);
@@ -242,7 +219,7 @@ fn box_layout_data(
             );
         } else {
             let mut layout_info =
-                get_layout_info(&cell.element, component, window_adapter, orientation);
+                get_layout_info(&cell.element, component, &window_adapter, orientation);
             fill_layout_info_constraints(
                 &mut layout_info,
                 &cell.constraints,
@@ -264,40 +241,6 @@ fn box_layout_data(
         })
         .unwrap_or_default();
     (cells, alignment)
-}
-
-fn repeater_indices(children: &[ElementRc], component: InstanceRef) -> Vec<u32> {
-    let window_adapter = eval::window_adapter_ref(component).unwrap();
-
-    let mut idx = 0;
-    let mut ri = Vec::new();
-    for e in children {
-        if e.borrow().repeated.is_some() {
-            generativity::make_guard!(guard);
-            let rep = crate::dynamic_component::get_repeater_by_name(
-                component,
-                e.borrow().id.as_str(),
-                guard,
-            );
-            rep.0.as_ref().ensure_updated(|| {
-                let instance = crate::dynamic_component::instantiate(
-                    rep.1.clone(),
-                    Some(component.borrow()),
-                    window_adapter,
-                    Default::default(),
-                );
-                instance.run_setup_code();
-                instance
-            });
-            let component_vec = rep.0.as_ref().components_vec();
-            ri.push(idx);
-            ri.push(component_vec.len() as _);
-            idx += component_vec.len() as u32;
-        } else {
-            idx += 1;
-        }
-    }
-    ri
 }
 
 pub(crate) fn fill_layout_info_constraints(
@@ -369,12 +312,12 @@ pub(crate) fn get_layout_info(
         eval::load_property(component, &nr.element(), nr.name()).unwrap().try_into().unwrap()
     } else {
         let item = &component
-            .component_type
+            .description
             .items
             .get(elem.id.as_str())
             .unwrap_or_else(|| panic!("Internal error: Item {} not found", elem.id));
         unsafe {
-            item.item_from_component(component.as_ptr())
+            item.item_from_item_tree(component.as_ptr())
                 .as_ref()
                 .layout_info(to_runtime(orientation), window_adapter)
         }

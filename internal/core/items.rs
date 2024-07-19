@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // cSpell: ignore nesw
 
@@ -22,14 +22,15 @@ When adding an item or a property, it needs to be kept in sync with different pl
 
 use crate::graphics::{Brush, Color, Point};
 use crate::input::{
-    FocusEvent, FocusEventResult, InputEventFilterResult, InputEventResult, KeyEvent,
-    KeyEventResult, KeyEventType, MouseEvent,
+    FocusEvent, FocusEventResult, InputEventFilterResult, InputEventResult, KeyEventResult,
+    KeyEventType, MouseEvent,
 };
-use crate::item_rendering::CachedRenderingData;
+use crate::item_rendering::{CachedRenderingData, RenderBorderRectangle};
 pub use crate::item_tree::ItemRc;
-use crate::layout::{LayoutInfo, Orientation};
+use crate::layout::LayoutInfo;
 use crate::lengths::{
-    LogicalLength, LogicalPoint, LogicalRect, LogicalSize, LogicalVector, PointLengths,
+    LogicalBorderRadius, LogicalLength, LogicalPoint, LogicalRect, LogicalSize, LogicalVector,
+    PointLengths, RectLengths,
 };
 #[cfg(feature = "rtti")]
 use crate::rtti::*;
@@ -42,6 +43,8 @@ use core::pin::Pin;
 use i_slint_core_macros::*;
 use vtable::*;
 
+mod component_container;
+pub use self::component_container::*;
 mod flickable;
 pub use flickable::*;
 mod text;
@@ -61,6 +64,7 @@ type ItemRendererRef<'a> = &'a mut dyn crate::item_rendering::ItemRenderer;
 pub type VoidArg = ();
 pub type KeyEventArg = (KeyEvent,);
 type PointerEventArg = (PointerEvent,);
+type PointerScrollEventArg = (PointerScrollEvent,);
 type PointArg = (Point,);
 
 #[cfg(all(feature = "ffi", windows))]
@@ -93,15 +97,11 @@ macro_rules! declare_item_vtable {
 /// children should be handled by the caller, of if the item took care of that (for example
 /// through layer indirection)
 #[repr(C)]
+#[derive(Default)]
 pub enum RenderingResult {
+    #[default]
     ContinueRenderingChildren,
     ContinueRenderingWithoutChildren,
-}
-
-impl Default for RenderingResult {
-    fn default() -> Self {
-        Self::ContinueRenderingChildren
-    }
 }
 
 /// Items are the nodes in the render tree.
@@ -111,10 +111,7 @@ pub struct ItemVTable {
     /// This function is called by the run-time after the memory for the item
     /// has been allocated and initialized. It will be called before any user specified
     /// bindings are set.
-    pub init: extern "C" fn(core::pin::Pin<VRef<ItemVTable>>, window_adapter: &WindowAdapterRc),
-
-    /// Returns the geometry of this item (relative to its parent item)
-    pub geometry: extern "C" fn(core::pin::Pin<VRef<ItemVTable>>) -> LogicalRect,
+    pub init: extern "C" fn(core::pin::Pin<VRef<ItemVTable>>, my_item: &ItemRc),
 
     /// offset in bytes from the *const ItemImpl.
     /// isize::MAX  means None
@@ -166,6 +163,7 @@ pub struct ItemVTable {
         core::pin::Pin<VRef<ItemVTable>>,
         backend: &mut ItemRendererRef,
         self_rc: &ItemRc,
+        size: LogicalSize,
     ) -> RenderingResult,
 }
 
@@ -178,22 +176,11 @@ pub type ItemRef<'a> = vtable::VRef<'a, ItemVTable>;
 #[pin]
 /// The implementation of an empty items that does nothing
 pub struct Empty {
-    pub x: Property<LogicalLength>,
-    pub y: Property<LogicalLength>,
-    pub width: Property<LogicalLength>,
-    pub height: Property<LogicalLength>,
     pub cached_rendering_data: CachedRenderingData,
 }
 
 impl Item for Empty {
-    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
-
-    fn geometry(self: Pin<&Self>) -> LogicalRect {
-        LogicalRect::new(
-            LogicalPoint::from_lengths(self.x(), self.y()),
-            LogicalSize::from_lengths(self.width(), self.height()),
-        )
-    }
+    fn init(self: Pin<&Self>, _self_rc: &ItemRc) {}
 
     fn layout_info(
         self: Pin<&Self>,
@@ -243,6 +230,7 @@ impl Item for Empty {
         self: Pin<&Self>,
         _backend: &mut ItemRendererRef,
         _self_rc: &ItemRc,
+        _size: LogicalSize,
     ) -> RenderingResult {
         RenderingResult::ContinueRenderingChildren
     }
@@ -265,22 +253,11 @@ declare_item_vtable! {
 /// The implementation of the `Rectangle` element
 pub struct Rectangle {
     pub background: Property<Brush>,
-    pub x: Property<LogicalLength>,
-    pub y: Property<LogicalLength>,
-    pub width: Property<LogicalLength>,
-    pub height: Property<LogicalLength>,
     pub cached_rendering_data: CachedRenderingData,
 }
 
 impl Item for Rectangle {
-    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
-
-    fn geometry(self: Pin<&Self>) -> LogicalRect {
-        LogicalRect::new(
-            LogicalPoint::from_lengths(self.x(), self.y()),
-            LogicalSize::from_lengths(self.width(), self.height()),
-        )
-    }
+    fn init(self: Pin<&Self>, _self_rc: &ItemRc) {}
 
     fn layout_info(
         self: Pin<&Self>,
@@ -330,8 +307,9 @@ impl Item for Rectangle {
         self: Pin<&Self>,
         backend: &mut ItemRendererRef,
         self_rc: &ItemRc,
+        size: LogicalSize,
     ) -> RenderingResult {
-        (*backend).draw_rectangle(self, self_rc);
+        (*backend).draw_rectangle(self, self_rc, size);
         RenderingResult::ContinueRenderingChildren
     }
 }
@@ -350,28 +328,17 @@ declare_item_vtable! {
 #[repr(C)]
 #[derive(FieldOffsets, Default, SlintElement)]
 #[pin]
-/// The implementation of the `BorderRectangle` element
-pub struct BorderRectangle {
+/// The implementation of the `BasicBorderRectangle` element
+pub struct BasicBorderRectangle {
     pub background: Property<Brush>,
-    pub x: Property<LogicalLength>,
-    pub y: Property<LogicalLength>,
-    pub width: Property<LogicalLength>,
-    pub height: Property<LogicalLength>,
     pub border_width: Property<LogicalLength>,
     pub border_radius: Property<LogicalLength>,
     pub border_color: Property<Brush>,
     pub cached_rendering_data: CachedRenderingData,
 }
 
-impl Item for BorderRectangle {
-    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
-
-    fn geometry(self: Pin<&Self>) -> LogicalRect {
-        LogicalRect::new(
-            LogicalPoint::from_lengths(self.x(), self.y()),
-            LogicalSize::from_lengths(self.width(), self.height()),
-        )
-    }
+impl Item for BasicBorderRectangle {
+    fn init(self: Pin<&Self>, _self_rc: &ItemRc) {}
 
     fn layout_info(
         self: Pin<&Self>,
@@ -421,9 +388,130 @@ impl Item for BorderRectangle {
         self: Pin<&Self>,
         backend: &mut ItemRendererRef,
         self_rc: &ItemRc,
+        size: LogicalSize,
     ) -> RenderingResult {
-        (*backend).draw_border_rectangle(self, self_rc);
+        (*backend).draw_border_rectangle(self, self_rc, size, &self.cached_rendering_data);
         RenderingResult::ContinueRenderingChildren
+    }
+}
+
+impl RenderBorderRectangle for BasicBorderRectangle {
+    fn background(self: Pin<&Self>) -> Brush {
+        self.background()
+    }
+    fn border_width(self: Pin<&Self>) -> LogicalLength {
+        self.border_width()
+    }
+    fn border_radius(self: Pin<&Self>) -> LogicalBorderRadius {
+        LogicalBorderRadius::from_length(self.border_radius())
+    }
+    fn border_color(self: Pin<&Self>) -> Brush {
+        self.border_color()
+    }
+}
+
+impl ItemConsts for BasicBorderRectangle {
+    const cached_rendering_data_offset: const_field_offset::FieldOffset<
+        BasicBorderRectangle,
+        CachedRenderingData,
+    > = BasicBorderRectangle::FIELD_OFFSETS.cached_rendering_data.as_unpinned_projection();
+}
+
+declare_item_vtable! {
+    fn slint_get_BasicBorderRectangleVTable() -> BasicBorderRectangleVTable for BasicBorderRectangle
+}
+
+#[repr(C)]
+#[derive(FieldOffsets, Default, SlintElement)]
+#[pin]
+/// The implementation of the `BorderRectangle` element
+pub struct BorderRectangle {
+    pub background: Property<Brush>,
+    pub border_width: Property<LogicalLength>,
+    pub border_radius: Property<LogicalLength>,
+    pub border_top_left_radius: Property<LogicalLength>,
+    pub border_top_right_radius: Property<LogicalLength>,
+    pub border_bottom_left_radius: Property<LogicalLength>,
+    pub border_bottom_right_radius: Property<LogicalLength>,
+    pub border_color: Property<Brush>,
+    pub cached_rendering_data: CachedRenderingData,
+}
+
+impl Item for BorderRectangle {
+    fn init(self: Pin<&Self>, _self_rc: &ItemRc) {}
+
+    fn layout_info(
+        self: Pin<&Self>,
+        _orientation: Orientation,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+    ) -> LayoutInfo {
+        LayoutInfo { stretch: 1., ..LayoutInfo::default() }
+    }
+
+    fn input_event_filter_before_children(
+        self: Pin<&Self>,
+        _: MouseEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> InputEventFilterResult {
+        InputEventFilterResult::ForwardAndIgnore
+    }
+
+    fn input_event(
+        self: Pin<&Self>,
+        _: MouseEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> InputEventResult {
+        InputEventResult::EventIgnored
+    }
+
+    fn key_event(
+        self: Pin<&Self>,
+        _: &KeyEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> KeyEventResult {
+        KeyEventResult::EventIgnored
+    }
+
+    fn focus_event(
+        self: Pin<&Self>,
+        _: &FocusEvent,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+    ) -> FocusEventResult {
+        FocusEventResult::FocusIgnored
+    }
+
+    fn render(
+        self: Pin<&Self>,
+        backend: &mut ItemRendererRef,
+        self_rc: &ItemRc,
+        size: LogicalSize,
+    ) -> RenderingResult {
+        (*backend).draw_border_rectangle(self, self_rc, size, &self.cached_rendering_data);
+        RenderingResult::ContinueRenderingChildren
+    }
+}
+
+impl RenderBorderRectangle for BorderRectangle {
+    fn background(self: Pin<&Self>) -> Brush {
+        self.background()
+    }
+    fn border_width(self: Pin<&Self>) -> LogicalLength {
+        self.border_width()
+    }
+    fn border_radius(self: Pin<&Self>) -> LogicalBorderRadius {
+        LogicalBorderRadius::from_lengths(
+            self.border_top_left_radius(),
+            self.border_top_right_radius(),
+            self.border_bottom_right_radius(),
+            self.border_bottom_left_radius(),
+        )
+    }
+    fn border_color(self: Pin<&Self>) -> Brush {
+        self.border_color()
     }
 }
 
@@ -440,13 +528,9 @@ declare_item_vtable! {
 
 /// The implementation of the `TouchArea` element
 #[repr(C)]
-#[derive(FieldOffsets, Default, SlintElement)]
+#[derive(FieldOffsets, SlintElement, Default)]
 #[pin]
 pub struct TouchArea {
-    pub x: Property<LogicalLength>,
-    pub y: Property<LogicalLength>,
-    pub width: Property<LogicalLength>,
-    pub height: Property<LogicalLength>,
     pub enabled: Property<bool>,
     /// FIXME: We should annotate this as an "output" property.
     pub pressed: Property<bool>,
@@ -461,8 +545,10 @@ pub struct TouchArea {
     pub mouse_y: Property<LogicalLength>,
     pub mouse_cursor: Property<MouseCursor>,
     pub clicked: Callback<VoidArg>,
+    pub double_clicked: Callback<VoidArg>,
     pub moved: Callback<VoidArg>,
     pub pointer_event: Callback<PointerEventArg>,
+    pub scroll_event: Callback<PointerScrollEventArg, EventResult>,
     /// FIXME: remove this
     pub cached_rendering_data: CachedRenderingData,
     /// true when we are currently grabbing the mouse
@@ -470,21 +556,14 @@ pub struct TouchArea {
 }
 
 impl Item for TouchArea {
-    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
-
-    fn geometry(self: Pin<&Self>) -> LogicalRect {
-        LogicalRect::new(
-            LogicalPoint::from_lengths(self.x(), self.y()),
-            LogicalSize::from_lengths(self.width(), self.height()),
-        )
-    }
+    fn init(self: Pin<&Self>, _self_rc: &ItemRc) {}
 
     fn layout_info(
         self: Pin<&Self>,
         _orientation: Orientation,
         _window_adapter: &Rc<dyn WindowAdapter>,
     ) -> LayoutInfo {
-        LayoutInfo::default()
+        LayoutInfo { stretch: 1., ..LayoutInfo::default() }
     }
 
     fn input_event_filter_before_children(
@@ -503,7 +582,9 @@ impl Item for TouchArea {
         let hovering = !matches!(event, MouseEvent::Exit);
         Self::FIELD_OFFSETS.has_hover.apply_pin(self).set(hovering);
         if hovering {
-            window_adapter.set_mouse_cursor(self.mouse_cursor());
+            if let Some(x) = window_adapter.internal(crate::InternalToken) {
+                x.set_mouse_cursor(self.mouse_cursor());
+            }
         }
         InputEventFilterResult::ForwardAndInterceptGrab
     }
@@ -512,79 +593,106 @@ impl Item for TouchArea {
         self: Pin<&Self>,
         event: MouseEvent,
         window_adapter: &Rc<dyn WindowAdapter>,
-        _self_rc: &ItemRc,
+        self_rc: &ItemRc,
     ) -> InputEventResult {
         if matches!(event, MouseEvent::Exit) {
             Self::FIELD_OFFSETS.has_hover.apply_pin(self).set(false);
-            window_adapter.set_mouse_cursor(MouseCursor::Default);
+            if let Some(x) = window_adapter.internal(crate::InternalToken) {
+                x.set_mouse_cursor(MouseCursor::Default);
+            }
         }
         if !self.enabled() {
             return InputEventResult::EventIgnored;
         }
-        let result = if let MouseEvent::Released { position, button } = event {
-            if button == PointerEventButton::Left
-                && LogicalRect::new(
-                    LogicalPoint::default(),
-                    LogicalSize::from_lengths(self.width(), self.height()),
-                )
-                .contains(position)
-            {
-                Self::FIELD_OFFSETS.clicked.apply_pin(self).call(&());
-            }
-            InputEventResult::EventAccepted
-        } else {
-            InputEventResult::GrabMouse
-        };
 
         match event {
-            MouseEvent::Pressed { position, button } => {
+            MouseEvent::Pressed { position, button, .. } => {
                 self.grabbed.set(true);
                 if button == PointerEventButton::Left {
                     Self::FIELD_OFFSETS.pressed_x.apply_pin(self).set(position.x_length());
                     Self::FIELD_OFFSETS.pressed_y.apply_pin(self).set(position.y_length());
                     Self::FIELD_OFFSETS.pressed.apply_pin(self).set(true);
                 }
-                Self::FIELD_OFFSETS
-                    .pointer_event
-                    .apply_pin(self)
-                    .call(&(PointerEvent { button, kind: PointerEventKind::Down },));
+                Self::FIELD_OFFSETS.pointer_event.apply_pin(self).call(&(PointerEvent {
+                    button,
+                    kind: PointerEventKind::Down,
+                    modifiers: window_adapter.window().0.modifiers.get().into(),
+                },));
+
+                InputEventResult::GrabMouse
             }
             MouseEvent::Exit => {
                 Self::FIELD_OFFSETS.pressed.apply_pin(self).set(false);
                 if self.grabbed.replace(false) {
                     Self::FIELD_OFFSETS.pointer_event.apply_pin(self).call(&(PointerEvent {
-                        button: PointerEventButton::None,
+                        button: PointerEventButton::Other,
                         kind: PointerEventKind::Cancel,
+                        modifiers: window_adapter.window().0.modifiers.get().into(),
                     },));
                 }
+
+                InputEventResult::EventAccepted
             }
-            MouseEvent::Released { button, .. } => {
+
+            MouseEvent::Released { button, position, click_count } => {
+                let geometry = self_rc.geometry();
+                if button == PointerEventButton::Left
+                    && LogicalRect::new(LogicalPoint::default(), geometry.size).contains(position)
+                    && self.pressed()
+                {
+                    Self::FIELD_OFFSETS.clicked.apply_pin(self).call(&());
+                    if (click_count % 2) == 1 {
+                        Self::FIELD_OFFSETS.double_clicked.apply_pin(self).call(&())
+                    }
+                }
+
                 self.grabbed.set(false);
                 if button == PointerEventButton::Left {
                     Self::FIELD_OFFSETS.pressed.apply_pin(self).set(false);
                 }
-                Self::FIELD_OFFSETS
-                    .pointer_event
-                    .apply_pin(self)
-                    .call(&(PointerEvent { button, kind: PointerEventKind::Up },));
+                Self::FIELD_OFFSETS.pointer_event.apply_pin(self).call(&(PointerEvent {
+                    button,
+                    kind: PointerEventKind::Up,
+                    modifiers: window_adapter.window().0.modifiers.get().into(),
+                },));
+
+                InputEventResult::EventAccepted
             }
             MouseEvent::Moved { .. } => {
+                Self::FIELD_OFFSETS.pointer_event.apply_pin(self).call(&(PointerEvent {
+                    button: PointerEventButton::Other,
+                    kind: PointerEventKind::Move,
+                    modifiers: window_adapter.window().0.modifiers.get().into(),
+                },));
                 return if self.grabbed.get() {
                     Self::FIELD_OFFSETS.moved.apply_pin(self).call(&());
                     InputEventResult::GrabMouse
                 } else {
                     InputEventResult::EventAccepted
-                }
+                };
             }
-            MouseEvent::Wheel { .. } => {
-                return if self.grabbed.get() {
+            MouseEvent::Wheel { delta_x, delta_y, .. } => {
+                let modifiers = window_adapter.window().0.modifiers.get().into();
+                let r = Self::FIELD_OFFSETS
+                    .scroll_event
+                    .apply_pin(self)
+                    .call(&(PointerScrollEvent { delta_x, delta_y, modifiers },));
+                if self.grabbed.get() {
                     InputEventResult::GrabMouse
                 } else {
-                    InputEventResult::EventAccepted
+                    match r {
+                        EventResult::Reject => {
+                            // We are ignoring the event, so we will be removed from the item_stack,
+                            // therefore we must remove the has_hover flag as there might be a scroll under us.
+                            // It will be put back later.
+                            Self::FIELD_OFFSETS.has_hover.apply_pin(self).set(false);
+                            InputEventResult::EventIgnored
+                        }
+                        EventResult::Accept => InputEventResult::EventAccepted,
+                    }
                 }
             }
-        };
-        result
+        }
     }
 
     fn key_event(
@@ -609,6 +717,7 @@ impl Item for TouchArea {
         self: Pin<&Self>,
         _backend: &mut ItemRendererRef,
         _self_rc: &ItemRc,
+        _size: LogicalSize,
     ) -> RenderingResult {
         RenderingResult::ContinueRenderingChildren
     }
@@ -630,34 +739,24 @@ declare_item_vtable! {
 #[derive(FieldOffsets, Default, SlintElement)]
 #[pin]
 pub struct FocusScope {
-    pub x: Property<LogicalLength>,
-    pub y: Property<LogicalLength>,
-    pub width: Property<LogicalLength>,
-    pub height: Property<LogicalLength>,
     pub enabled: Property<bool>,
     pub has_focus: Property<bool>,
     pub key_pressed: Callback<KeyEventArg, EventResult>,
     pub key_released: Callback<KeyEventArg, EventResult>,
+    pub focus_changed_event: Callback<VoidArg>,
     /// FIXME: remove this
     pub cached_rendering_data: CachedRenderingData,
 }
 
 impl Item for FocusScope {
-    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
-
-    fn geometry(self: Pin<&Self>) -> LogicalRect {
-        LogicalRect::new(
-            LogicalPoint::from_lengths(self.x(), self.y()),
-            LogicalSize::from_lengths(self.width(), self.height()),
-        )
-    }
+    fn init(self: Pin<&Self>, _self_rc: &ItemRc) {}
 
     fn layout_info(
         self: Pin<&Self>,
         _orientation: Orientation,
         _window_adapter: &Rc<dyn WindowAdapter>,
     ) -> LayoutInfo {
-        LayoutInfo::default()
+        LayoutInfo { stretch: 1., ..LayoutInfo::default() }
     }
 
     fn input_event_filter_before_children(
@@ -676,9 +775,11 @@ impl Item for FocusScope {
         self_rc: &ItemRc,
     ) -> InputEventResult {
         if self.enabled() && matches!(event, MouseEvent::Pressed { .. }) && !self.has_focus() {
-            WindowInner::from_pub(window_adapter.window()).set_focus_item(self_rc);
+            WindowInner::from_pub(window_adapter.window()).set_focus_item(self_rc, true);
+            InputEventResult::EventAccepted
+        } else {
+            InputEventResult::EventIgnored
         }
-        InputEventResult::EventIgnored
     }
 
     fn key_event(
@@ -717,9 +818,11 @@ impl Item for FocusScope {
         match event {
             FocusEvent::FocusIn | FocusEvent::WindowReceivedFocus => {
                 self.has_focus.set(true);
+                Self::FIELD_OFFSETS.focus_changed_event.apply_pin(self).call(&());
             }
             FocusEvent::FocusOut | FocusEvent::WindowLostFocus => {
                 self.has_focus.set(false);
+                Self::FIELD_OFFSETS.focus_changed_event.apply_pin(self).call(&());
             }
         }
         FocusEventResult::FocusAccepted
@@ -729,6 +832,7 @@ impl Item for FocusScope {
         self: Pin<&Self>,
         _backend: &mut ItemRendererRef,
         _self_rc: &ItemRc,
+        _size: LogicalSize,
     ) -> RenderingResult {
         RenderingResult::ContinueRenderingChildren
     }
@@ -750,25 +854,17 @@ declare_item_vtable! {
 #[pin]
 /// The implementation of the `Clip` element
 pub struct Clip {
-    pub x: Property<LogicalLength>,
-    pub y: Property<LogicalLength>,
-    pub width: Property<LogicalLength>,
-    pub height: Property<LogicalLength>,
-    pub border_radius: Property<LogicalLength>,
+    pub border_top_left_radius: Property<LogicalLength>,
+    pub border_top_right_radius: Property<LogicalLength>,
+    pub border_bottom_left_radius: Property<LogicalLength>,
+    pub border_bottom_right_radius: Property<LogicalLength>,
     pub border_width: Property<LogicalLength>,
     pub cached_rendering_data: CachedRenderingData,
     pub clip: Property<bool>,
 }
 
 impl Item for Clip {
-    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
-
-    fn geometry(self: Pin<&Self>) -> LogicalRect {
-        LogicalRect::new(
-            LogicalPoint::from_lengths(self.x(), self.y()),
-            LogicalSize::from_lengths(self.width(), self.height()),
-        )
-    }
+    fn init(self: Pin<&Self>, _self_rc: &ItemRc) {}
 
     fn layout_info(
         self: Pin<&Self>,
@@ -782,14 +878,15 @@ impl Item for Clip {
         self: Pin<&Self>,
         event: MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
-        _self_rc: &ItemRc,
+        self_rc: &ItemRc,
     ) -> InputEventFilterResult {
         if let Some(pos) = event.position() {
+            let geometry = self_rc.geometry();
             if self.clip()
                 && (pos.x < 0 as Coord
                     || pos.y < 0 as Coord
-                    || pos.x_length() > self.width()
-                    || pos.y_length() > self.height())
+                    || pos.x_length() > geometry.width_length()
+                    || pos.y_length() > geometry.height_length())
             {
                 return InputEventFilterResult::Intercept;
             }
@@ -828,8 +925,20 @@ impl Item for Clip {
         self: Pin<&Self>,
         backend: &mut ItemRendererRef,
         self_rc: &ItemRc,
+        size: LogicalSize,
     ) -> RenderingResult {
-        (*backend).visit_clip(self, self_rc)
+        (*backend).visit_clip(self, self_rc, size)
+    }
+}
+
+impl Clip {
+    pub fn logical_border_radius(self: Pin<&Self>) -> LogicalBorderRadius {
+        LogicalBorderRadius::from_lengths(
+            self.border_top_left_radius(),
+            self.border_top_right_radius(),
+            self.border_bottom_right_radius(),
+            self.border_bottom_left_radius(),
+        )
     }
 }
 
@@ -848,23 +957,12 @@ declare_item_vtable! {
 /// The Opacity Item is not meant to be used directly by the .slint code, instead, the `opacity: xxx` or `visible: false` should be used
 pub struct Opacity {
     // FIXME: this element shouldn't need these geometry property
-    pub x: Property<LogicalLength>,
-    pub y: Property<LogicalLength>,
-    pub width: Property<LogicalLength>,
-    pub height: Property<LogicalLength>,
     pub opacity: Property<f32>,
     pub cached_rendering_data: CachedRenderingData,
 }
 
 impl Item for Opacity {
-    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
-
-    fn geometry(self: Pin<&Self>) -> LogicalRect {
-        LogicalRect::new(
-            LogicalPoint::from_lengths(self.x(), self.y()),
-            LogicalSize::from_lengths(self.width(), self.height()),
-        )
-    }
+    fn init(self: Pin<&Self>, _self_rc: &ItemRc) {}
 
     fn layout_info(
         self: Pin<&Self>,
@@ -914,8 +1012,9 @@ impl Item for Opacity {
         self: Pin<&Self>,
         backend: &mut ItemRendererRef,
         self_rc: &ItemRc,
+        size: LogicalSize,
     ) -> RenderingResult {
-        backend.visit_opacity(self, self_rc)
+        backend.visit_opacity(self, self_rc, size)
     }
 }
 
@@ -962,24 +1061,12 @@ declare_item_vtable! {
 #[pin]
 /// The Layer Item is not meant to be used directly by the .slint code, instead, the `layer: xxx` property should be used
 pub struct Layer {
-    // FIXME: this element shouldn't need these geometry property
-    pub x: Property<LogicalLength>,
-    pub y: Property<LogicalLength>,
-    pub width: Property<LogicalLength>,
-    pub height: Property<LogicalLength>,
     pub cache_rendering_hint: Property<bool>,
     pub cached_rendering_data: CachedRenderingData,
 }
 
 impl Item for Layer {
-    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
-
-    fn geometry(self: Pin<&Self>) -> LogicalRect {
-        LogicalRect::new(
-            LogicalPoint::from_lengths(self.x(), self.y()),
-            LogicalSize::from_lengths(self.width(), self.height()),
-        )
-    }
+    fn init(self: Pin<&Self>, _self_rc: &ItemRc) {}
 
     fn layout_info(
         self: Pin<&Self>,
@@ -1029,8 +1116,9 @@ impl Item for Layer {
         self: Pin<&Self>,
         backend: &mut ItemRendererRef,
         self_rc: &ItemRc,
+        size: LogicalSize,
     ) -> RenderingResult {
-        backend.visit_layer(self, self_rc)
+        backend.visit_layer(self, self_rc, size)
     }
 }
 
@@ -1050,25 +1138,14 @@ declare_item_vtable! {
 #[pin]
 /// The implementation of the `Rotate` element
 pub struct Rotate {
-    pub x: Property<LogicalLength>,
-    pub y: Property<LogicalLength>,
     pub rotation_angle: Property<f32>,
     pub rotation_origin_x: Property<LogicalLength>,
     pub rotation_origin_y: Property<LogicalLength>,
-    pub width: Property<LogicalLength>,
-    pub height: Property<LogicalLength>,
     pub cached_rendering_data: CachedRenderingData,
 }
 
 impl Item for Rotate {
-    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
-
-    fn geometry(self: Pin<&Self>) -> LogicalRect {
-        LogicalRect::new(
-            LogicalPoint::from_lengths(self.x(), self.y()),
-            LogicalSize::from_lengths(self.width(), self.height()),
-        )
-    }
+    fn init(self: Pin<&Self>, _self_rc: &ItemRc) {}
 
     fn layout_info(
         self: Pin<&Self>,
@@ -1118,6 +1195,7 @@ impl Item for Rotate {
         self: Pin<&Self>,
         backend: &mut ItemRendererRef,
         _self_rc: &ItemRc,
+        _size: LogicalSize,
     ) -> RenderingResult {
         let origin =
             LogicalVector::from_lengths(self.rotation_origin_x(), self.rotation_origin_y());
@@ -1176,6 +1254,8 @@ pub struct WindowItem {
     pub background: Property<Brush>,
     pub title: Property<SharedString>,
     pub no_frame: Property<bool>,
+    pub resize_border_width: Property<LogicalLength>,
+    pub always_on_top: Property<bool>,
     pub icon: Property<crate::graphics::Image>,
     pub default_font_family: Property<SharedString>,
     pub default_font_size: Property<LogicalLength>,
@@ -1184,14 +1264,7 @@ pub struct WindowItem {
 }
 
 impl Item for WindowItem {
-    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
-
-    fn geometry(self: Pin<&Self>) -> LogicalRect {
-        LogicalRect::new(
-            LogicalPoint::default(),
-            LogicalSize::from_lengths(self.width(), self.height()),
-        )
-    }
+    fn init(self: Pin<&Self>, _self_rc: &ItemRc) {}
 
     fn layout_info(
         self: Pin<&Self>,
@@ -1241,6 +1314,7 @@ impl Item for WindowItem {
         self: Pin<&Self>,
         _backend: &mut ItemRendererRef,
         _self_rc: &ItemRc,
+        _size: LogicalSize,
     ) -> RenderingResult {
         RenderingResult::ContinueRenderingChildren
     }
@@ -1289,11 +1363,6 @@ declare_item_vtable! {
 #[derive(FieldOffsets, Default, SlintElement)]
 #[pin]
 pub struct BoxShadow {
-    // Rectangle properties
-    pub x: Property<LogicalLength>,
-    pub y: Property<LogicalLength>,
-    pub width: Property<LogicalLength>,
-    pub height: Property<LogicalLength>,
     pub border_radius: Property<LogicalLength>,
     // Shadow specific properties
     pub offset_x: Property<LogicalLength>,
@@ -1304,14 +1373,7 @@ pub struct BoxShadow {
 }
 
 impl Item for BoxShadow {
-    fn init(self: Pin<&Self>, _window_adapter: &Rc<dyn WindowAdapter>) {}
-
-    fn geometry(self: Pin<&Self>) -> LogicalRect {
-        LogicalRect::new(
-            LogicalPoint::from_lengths(self.x(), self.y()),
-            LogicalSize::from_lengths(self.width(), self.height()),
-        )
-    }
+    fn init(self: Pin<&Self>, _self_rc: &ItemRc) {}
 
     fn layout_info(
         self: Pin<&Self>,
@@ -1361,8 +1423,9 @@ impl Item for BoxShadow {
         self: Pin<&Self>,
         backend: &mut ItemRendererRef,
         self_rc: &ItemRc,
+        size: LogicalSize,
     ) -> RenderingResult {
-        (*backend).draw_box_shadow(self, self_rc);
+        (*backend).draw_box_shadow(self, self_rc, size);
         RenderingResult::ContinueRenderingChildren
     }
 }
@@ -1377,7 +1440,15 @@ declare_item_vtable! {
 }
 
 declare_item_vtable! {
-    fn slint_get_TextVTable() -> TextVTable for Text
+    fn slint_get_ComponentContainerVTable() -> ComponentContainerVTable for ComponentContainer
+}
+
+declare_item_vtable! {
+    fn slint_get_ComplexTextVTable() -> ComplexTextVTable for ComplexText
+}
+
+declare_item_vtable! {
+    fn slint_get_SimpleTextVTable() -> SimpleTextVTable for SimpleText
 }
 
 declare_item_vtable! {
@@ -1401,7 +1472,7 @@ macro_rules! declare_enums {
     ($( $(#[$enum_doc:meta])* enum $Name:ident { $( $(#[$value_doc:meta])* $Value:ident,)* })*) => {
         $(
             #[derive(Copy, Clone, Debug, PartialEq, Eq, strum::EnumString, strum::Display, Hash)]
-            #[repr(C)]
+            #[repr(u32)]
             #[strum(serialize_all = "kebab-case")]
             $(#[$enum_doc])*
             pub enum $Name {
@@ -1420,10 +1491,45 @@ macro_rules! declare_enums {
 
 i_slint_common::for_each_enums!(declare_enums);
 
-/// Represents a Pointer event sent by the windowing system.
-#[derive(Debug, Clone, PartialEq, Default)]
-#[repr(C)]
-pub struct PointerEvent {
-    pub button: PointerEventButton,
-    pub kind: PointerEventKind,
+macro_rules! declare_builtin_structs {
+    ($(
+        $(#[$struct_attr:meta])*
+        struct $Name:ident {
+            @name = $inner_name:literal
+            export {
+                $( $(#[$pub_attr:meta])* $pub_field:ident : $pub_type:ty, )*
+            }
+            private {
+                $( $(#[$pri_attr:meta])* $pri_field:ident : $pri_type:ty, )*
+            }
+        }
+    )*) => {
+        $(
+            #[derive(Clone, Debug, Default, PartialEq)]
+            #[repr(C)]
+            $(#[$struct_attr])*
+            pub struct $Name {
+                $(
+                    $(#[$pub_attr])*
+                    pub $pub_field : $pub_type,
+                )*
+                $(
+                    $(#[$pri_attr])*
+                    pub $pri_field : $pri_type,
+                )*
+            }
+        )*
+    };
+}
+
+i_slint_common::for_each_builtin_structs!(declare_builtin_structs);
+
+#[cfg(feature = "ffi")]
+#[no_mangle]
+pub unsafe extern "C" fn slint_item_absolute_position(
+    self_component: &vtable::VRc<crate::item_tree::ItemTreeVTable>,
+    self_index: u32,
+) -> LogicalPoint {
+    let self_rc = ItemRc::new(self_component.clone(), self_index);
+    self_rc.map_to_window(Default::default())
 }

@@ -1,0 +1,20 @@
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+
+export component Bar {
+    in property <bool> external;
+    xx := PopupWindow {
+        close-on-click: true;
+        init => {
+            xx.close-on-click = true;
+    //      ^error{The property must be known at compile time and cannot be changed at runtime}
+        }
+    }
+    PopupWindow {
+        close-on-click: root.external;
+//                      ^error{The close-on-click property only supports constants at the moment}
+    }
+
+
+}

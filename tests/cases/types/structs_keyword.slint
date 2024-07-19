@@ -1,7 +1,7 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-// Right now, this test is only testing rust keyword, but it should be expaneded to JS and C++ keywords
+// Right now, this test is only testing rust keyword, but it should be expanded to JS and C++ keywords
 
 export struct mod := {
     loop: string,
@@ -14,7 +14,7 @@ match := Rectangle {
 
 /*
 ```rust
-let instance = r#match::new();
+let instance = r#match::new().unwrap();
 assert_eq!(instance.get_move(), r#mod{ r#loop: "mod".into() });
 ```
 */

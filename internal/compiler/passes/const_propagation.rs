@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! Try to simplify property bindings by propagating constant expressions
 
@@ -99,6 +99,16 @@ fn simplify_expression(expr: &mut Expression) -> bool {
             }
             can_inline
         }
+        Expression::StructFieldAccess { base, name } => {
+            let r = simplify_expression(base);
+            if let Expression::Struct { values, .. } = &mut **base {
+                if let Some(e) = values.remove(name) {
+                    *expr = e;
+                    return simplify_expression(expr);
+                }
+            }
+            r
+        }
         Expression::Cast { from, to } => {
             let can_inline = simplify_expression(from);
             let new = if from.ty() == *to {
@@ -108,6 +118,9 @@ fn simplify_expression(expr: &mut Expression) -> bool {
                     (Expression::NumberLiteral(x, Unit::None), Type::String) => {
                         Some(Expression::StringLiteral((*x).to_string()))
                     }
+                    (Expression::Struct { values, .. }, to @ Type::Struct { .. }) => {
+                        Some(Expression::Struct { ty: to.clone(), values: values.clone() })
+                    }
                     _ => None,
                 }
             };
@@ -116,9 +129,23 @@ fn simplify_expression(expr: &mut Expression) -> bool {
             }
             can_inline
         }
+        Expression::MinMax { op, lhs, rhs, ty: _ } => {
+            let can_inline = simplify_expression(lhs) && simplify_expression(rhs);
+            if let (Expression::NumberLiteral(lhs, u), Expression::NumberLiteral(rhs, _)) =
+                (&**lhs, &**rhs)
+            {
+                let v = match op {
+                    MinMaxOp::Min => lhs.min(*rhs),
+                    MinMaxOp::Max => lhs.max(*rhs),
+                };
+                *expr = Expression::NumberLiteral(v, *u);
+            }
+            can_inline
+        }
         Expression::CallbackReference { .. } => false,
         Expression::ElementReference { .. } => false,
         // FIXME
+        Expression::FunctionReference { .. } => false,
         Expression::LayoutCacheAccess { .. } => false,
         Expression::SolveLayout { .. } => false,
         Expression::ComputeLayoutInfo { .. } => false,
@@ -159,10 +186,58 @@ fn extract_constant_property_reference(nr: &NamedReference) -> Option<Expression
         }
 
         // There is no binding for this property, return the default value
-        return Some(Expression::default_value_for_type(&nr.ty()));
+        let ty = nr.ty();
+        debug_assert!(!matches!(ty, Type::Invalid));
+        return Some(Expression::default_value_for_type(&ty));
     };
     if !(simplify_expression(&mut expression)) {
         return None;
     }
     Some(expression)
+}
+
+#[test]
+fn test() {
+    let mut compiler_config =
+        crate::CompilerConfiguration::new(crate::generator::OutputFormat::Interpreter);
+    compiler_config.style = Some("fluent".into());
+    let mut test_diags = crate::diagnostics::BuildDiagnostics::default();
+    let doc_node = crate::parser::parse(
+        r#"
+/* ... */
+struct Hello { s: string, v: float }
+global G {
+    property <float> p : 3 * 2 + 15 ;
+    property <string> q: "foo " + 42;
+    out property <Hello> out: { s: q, v: p };
+}
+export component Foo {
+    out property<float> out: G.out.v;
+}
+"#
+        .into(),
+        Some(std::path::Path::new("HELLO")),
+        None,
+        &mut test_diags,
+    );
+    let (doc, diag, _) =
+        spin_on::spin_on(crate::compile_syntax_node(doc_node, test_diags, compiler_config));
+    assert!(!diag.has_errors());
+
+    let out_binding = doc
+        .inner_components
+        .last()
+        .unwrap()
+        .root_element
+        .borrow()
+        .bindings
+        .get("out")
+        .unwrap()
+        .borrow()
+        .expression
+        .clone();
+    match &out_binding {
+        Expression::NumberLiteral(n, _) => assert_eq!(*n, (3 * 2 + 15) as f64),
+        _ => panic!("not number {out_binding:?}"),
+    }
 }

@@ -1,9 +1,9 @@
-.. Copyright © SixtyFPS GmbH <info@slint-ui.com>
-.. SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+.. Copyright © SixtyFPS GmbH <info@slint.dev>
+.. SPDX-License-Identifier: MIT
 
 .. Slint C++ documentation master file
 
-Welcome to Slint C++'s documentation!
+Slint C++ documentation
 ========================================
 
 .. toctree::
@@ -14,8 +14,6 @@ Welcome to Slint C++'s documentation!
    cmake.md
 
    First Steps <getting_started.md>
-
-   markdown/recipes/recipes.md
 
 .. toctree::
    :maxdepth: 2
@@ -35,11 +33,9 @@ Welcome to Slint C++'s documentation!
 
    api/library_root
 
+   cmake_reference.md
+
    genindex
-
-   language.rst
-
-   markdown/debugging_techniques.md
 
 .. image:: https://github.com/slint-ui/slint/workflows/CI/badge.svg
    :target: https://github.com/slint-ui/slint/actions
@@ -49,7 +45,7 @@ Welcome to Slint C++'s documentation!
    :target: https://github.com/slint-ui/slint/discussions
    :alt: GitHub Discussions
 
-`Slint <https://slint-ui.com/>`_ is a toolkit to efficiently develop fluid graphical user interfaces for any display: embedded devices and desktop applications.
+`Slint <https://slint.dev/>`_ is a toolkit to efficiently develop fluid graphical user interfaces for any display: embedded devices and desktop applications.
 Slint C++ is the C++ API to interact with a Slint UI from C++.
 
 The .slint Markup Language
@@ -61,7 +57,7 @@ of elements and property bindings. Here's the obligatory "Hello World":
 
 .. code-block:: slint,ignore
 
-    HelloWorld := Window {
+    export component HelloWorld inherits Window {
         width: 400px;
         height: 400px;
 
@@ -73,7 +69,7 @@ of elements and property bindings. Here's the obligatory "Hello World":
         }
     }
 
-Check out the `language reference <markdown/langref.html>`_ for more details.
+Check out the `Slint Language Documentation <../slint>`_ for more details.
 
 Architecture
 ============
@@ -81,7 +77,7 @@ Architecture
 An application is composed of the business logic written in C++ and the `.slint` user interface design markup, which
 is compiled to native code.
 
-.. image:: https://slint-ui.com/resources/architecture.drawio.svg
+.. image:: https://slint.dev/resources/architecture.drawio.svg
   :alt: Architecture Overview
 
 Developing

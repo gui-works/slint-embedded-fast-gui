@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 /*!
 Make sure that the Repeated expression are just components without any children
@@ -25,27 +25,42 @@ fn create_repeater_components(component: &Rc<Component>) {
         let parent_element = Rc::downgrade(elem);
         let mut elem = elem.borrow_mut();
 
+        if matches!(&elem.base_type, ElementType::Component(c) if c.parent_element.upgrade().is_some())
+        {
+            debug_assert!(std::rc::Weak::ptr_eq(
+                &parent_element,
+                &elem.base_type.as_component().parent_element
+            ));
+            // Already processed (can happen if a component is both used and exported root)
+            return;
+        }
+
         let comp = Rc::new(Component {
             root_element: Rc::new(RefCell::new(Element {
                 id: elem.id.clone(),
                 base_type: std::mem::take(&mut elem.base_type),
                 bindings: std::mem::take(&mut elem.bindings),
+                change_callbacks: std::mem::take(&mut elem.change_callbacks),
                 property_analysis: std::mem::take(&mut elem.property_analysis),
                 children: std::mem::take(&mut elem.children),
                 property_declarations: std::mem::take(&mut elem.property_declarations),
                 named_references: Default::default(),
                 repeated: None,
-                node: elem.node.clone(),
+                is_component_placeholder: false,
+                debug: elem.debug.clone(),
                 enclosing_component: Default::default(),
                 states: std::mem::take(&mut elem.states),
                 transitions: std::mem::take(&mut elem.transitions),
                 child_of_layout: elem.child_of_layout || is_listview.is_some(),
                 layout_info_prop: elem.layout_info_prop.take(),
+                default_fill_parent: elem.default_fill_parent,
                 accessibility_props: std::mem::take(&mut elem.accessibility_props),
+                geometry_props: elem.geometry_props.clone(),
                 is_flickable_viewport: elem.is_flickable_viewport,
                 has_popup_child: elem.has_popup_child,
                 item_index: Default::default(), // Not determined yet
                 item_index_of_first_children: Default::default(),
+                is_legacy_syntax: elem.is_legacy_syntax,
                 inline_depth: 0,
             })),
             parent_element,

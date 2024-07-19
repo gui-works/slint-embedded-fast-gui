@@ -1,9 +1,18 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 import { LineEdit, Button, Slider, StandardListView, GridBox, HorizontalBox } from "std-widgets.slint";
 
-MainWindow := Window {
+export component MainWindow inherits Window {
+    in property <[StandardListViewItem]> names-list;
+    out property <int> current-item: list.current-item;
+    out property <string> name;
+    out property <string> surname;
+    out property <string> prefix;
+    callback prefixEdited();
+    callback createClicked();
+    callback updateClicked();
+    callback deleteClicked();
 
     GridBox {
         Text {
@@ -11,6 +20,7 @@ MainWindow := Window {
             vertical-alignment: center;
             horizontal-alignment: right;
         }
+
         LineEdit {
             text <=> root.prefix;
             edited => { root.prefixEdited() }
@@ -26,19 +36,21 @@ MainWindow := Window {
         Text {
             col: 2;
             row: 1;
-            text: "Name: "; 
+            text: "Name: ";
             vertical-alignment: center;
             horizontal-alignment: right;
         }
+
         LineEdit { text <=> root.name; }
 
         Text {
             col: 2;
             row: 2;
-            text: "Surname: "; 
+            text: "Surname: ";
             vertical-alignment: center;
             horizontal-alignment: right;
         }
+
         LineEdit { text <=> root.surname; }
 
         HorizontalBox {
@@ -46,33 +58,25 @@ MainWindow := Window {
             padding-bottom: 0;
             row: 4;
             alignment: start;
+
             Button {
-                text: "Create";
                 clicked => { root.createClicked() }
+
+                text: "Create";
             }
             Button {
-                text: "Update";
-                enabled: list.current-item != -1 && list.current-item < names-list.length;
                 clicked => { root.updateClicked() }
+
+                text: "Update";
+                enabled: list.current-item != -1 && list.current-item < root.names-list.length;
+
             }
             Button {
-                text: "Delete";
-                enabled: list.current-item != -1 && list.current-item < names-list.length;
                 clicked => { root.deleteClicked() }
+
+                text: "Delete";
+                enabled: list.current-item != -1 && list.current-item < root.names-list.length;
             }
         }
-
     }
-    property <[StandardListViewItem]> names-list;
-    property <int> current-item: list.current-item;
-
-    property <string> name;
-    property <string> surname;
-
-    property <string> prefix;
-
-    callback prefixEdited();
-    callback createClicked();
-    callback updateClicked();
-    callback deleteClicked();
 }

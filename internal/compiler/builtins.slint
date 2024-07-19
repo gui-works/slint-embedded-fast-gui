@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 // cSpell: ignore langtype typeregister
 
@@ -16,333 +16,329 @@
 
    Properties can have default binding which must be an expression without any reference to
    another properties. These binding will be then set by the compiler.
-   Or they can have a binding `native_output` which mean that the property can be modified
-   by the native Item. If they don't have that, it is assumed the native item don't write
-   to that property.
+   `output` property mean that the property can be modified by the native Item,
+   otherwise it is assumed the native item don't write to that property.
  */
 
-import { _ } from ""; // just to silence many errors in the LSP
-
-Empty := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
-    //-default_size_binding:expands_to_parent_geometry
+component Empty {
     //-is_internal
-
 }
 
-Rectangle := Empty {
-    property <brush> background;
-    property <brush> color <=> background;
+component Rectangle inherits Empty {
+    in property <brush> background;
+    in property <brush> color <=> background;
 }
 
-BorderRectangle := Rectangle {
-    property <length> border-width;
-    property <length> border-radius;
-    property <brush> border-color;
+component BasicBorderRectangle inherits Rectangle {
+    in property <length> border-width;
+    in property <length> border-radius;
+    in property <brush> border-color;
+}
+
+component BorderRectangle inherits BasicBorderRectangle {
+    in property <length> border-top-left-radius;
+    in property <length> border-top-right-radius;
+    in property <length> border-bottom-left-radius;
+    in property <length> border-bottom-right-radius;
     //-default_size_binding:expands_to_parent_geometry
 }
 
 export { BorderRectangle as Rectangle }
 
-ImageItem := Empty {
-    property <image> source;
-    property <ImageFit> image-fit;
-    property <ImageRendering> image-rendering;
+component ImageItem inherits Empty {
+    in property <length> width;
+    in property <length> height;
+    in property <image> source;
+    in property <ImageFit> image-fit;
+    in property <ImageRendering> image-rendering;
+    in property <brush> colorize;
 }
 
-export ClippedImage := ImageItem {
-    property <int> source-clip-x;
-    property <int> source-clip-y;
-    property <int> source-clip-width;
-    property <int> source-clip-height;
-    property <brush> colorize;
+export component ClippedImage inherits ImageItem {
+    in property <int> source-clip-x;
+    in property <int> source-clip-y;
+    in property <int> source-clip-width;
+    in property <int> source-clip-height;
     //-default_size_binding:implicit_size
+
+    in property <ImageHorizontalAlignment> horizontal-alignment;
+    in property <ImageVerticalAlignment> vertical-alignment;
+    in property <ImageTiling> horizontal-tiling;
+    in property <ImageTiling> vertical-tiling;
+    // TODO: sets both horizontal-tiling and vertical-tiling at the same time.
+    // in property <ImageTiling> tiling;
+
 }
 
 export { ClippedImage as Image }
 
-export Rotate := Empty {
-    property <angle> rotation-angle;
-    property <length> rotation-origin-x;
-    property <length> rotation-origin-y;
+export component ComponentContainer inherits Empty {
+    in property <component-factory> component-factory;
+    out property <bool> has-component;
+
+    in-out property <length> width;
+    in-out property <length> height;
+}
+
+export component Rotate inherits Empty {
+    in property <angle> rotation-angle;
+    in property <length> rotation-origin-x;
+    in property <length> rotation-origin-y;
     //-default_size_binding:expands_to_parent_geometry
     //-is_internal
 }
 
-export Text := Empty {
-    property <string> text;
-    property <string> font-family;
-    property <length> font-size;
-    property <int> font-weight;
-    property <brush> color;  // StyleMetrics.default-text-color  set in apply_default_properties_from_style
-    property <TextHorizontalAlignment> horizontal-alignment;
-    property <TextVerticalAlignment> vertical-alignment;
-    property <TextOverflow> overflow;
-    property <TextWrap> wrap;
-    property <length> letter-spacing;
+component SimpleText inherits Empty {
+    in property <length> width;
+    in property <length> height;
+    in property <string> text;
+    in property <length> font-size;
+    in property <int> font-weight;
+    in property <brush> color;  // StyleMetrics.default-text-color  set in apply_default_properties_from_style
+    in property <TextHorizontalAlignment> horizontal-alignment;
+    in property <TextVerticalAlignment> vertical-alignment;
     //-default_size_binding:implicit_size
 }
 
-
-export struct PointerEvent := {
-    //-name:slint::private_api::PointerEvent
-    button: PointerEventButton,
-    kind: PointerEventKind,
+component ComplexText inherits SimpleText {
+    in property <string> font-family;
+    in property <bool> font-italic;
+    in property <TextOverflow> overflow;
+    in property <TextWrap> wrap;
+    in property <length> letter-spacing;
+    in property <brush> stroke;
+    in property <length> stroke-width;
+    in property <TextStrokeStyle> stroke-style;
+    //-default_size_binding:implicit_size
 }
 
-export TouchArea := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
-    property <bool> enabled: true;
-    property <bool> pressed: native_output;
-    property <bool> has_hover: native_output;
-    property <length> mouse_x: native_output;
-    property <length> mouse_y: native_output;
-    property <length> pressed_x: native_output;
-    property <length> pressed_y: native_output;
-    property <MouseCursor> mouse-cursor;
+export { ComplexText as Text }
+
+export component TouchArea {
+    in property <bool> enabled: true;
+    out property <bool> pressed;
+    out property <bool> has_hover;
+    out property <length> mouse_x;
+    out property <length> mouse_y;
+    out property <length> pressed_x;
+    out property <length> pressed_y;
+    in property <MouseCursor> mouse-cursor;
     callback clicked;
+    callback double-clicked;
     callback moved;
     callback pointer-event(PointerEvent);
+    callback scroll-event(PointerScrollEvent) -> EventResult;
     //-default_size_binding:expands_to_parent_geometry
 }
 
-export struct KeyboardModifiers := {
-    //-name:slint::private_api::KeyboardModifiers
-    alt: bool,
-    control: bool,
-    shift: bool,
-    meta: bool,
-}
-
-export struct KeyEvent := {
-    //-name:slint::private_api::KeyEvent
-    text: string,
-    modifiers: KeyboardModifiers,
-}
-
-export FocusScope := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
-    property <bool> enabled: true;
-    property <bool> has-focus: native_output;
+export component FocusScope {
+    in property <bool> enabled: true;
+    out property <bool> has-focus;
     callback key_pressed(KeyEvent) -> EventResult;
     callback key_released(KeyEvent) -> EventResult;
+    callback focus_changed_event();
     //-default_size_binding:expands_to_parent_geometry
     //-accepts_focus
 }
 
-export Flickable := Empty {
-                // These properties are actually going to be forwarded to the viewport by the
-                // code generator
-    property <length> viewport-height;
-    property <length> viewport-width;
-    property <length> viewport-x: native_output;
-    property <length> viewport-y: native_output;
-    property <bool> interactive: true;
+export component Flickable inherits Empty {
+    in property <length> viewport-height;
+    in property <length> viewport-width;
+    in-out property <length> viewport-x;
+    in-out property <length> viewport-y;
+    in property <bool> interactive: true;
+    callback flicked();
     //-default_size_binding:expands_to_parent_geometry
 }
 
-WindowItem := _ {
-    property <length> width: native_output;
-    property <length> height: native_output;
-    property <brush> background; // StyleMetrics.window_background  set in apply_default_properties_from_style
-    property <brush> color <=> background;
-    property <string> title: "Slint Window";
-    property <bool> no-frame;
-    property <string> default-font-family;
-    property <length> default-font-size;
-    property <int> default-font-weight;
-    property <image> icon;
+component WindowItem {
+    in-out property <length> width;
+    in-out property <length> height;
+    in property <brush> background; // StyleMetrics.window_background  set in apply_default_properties_from_style
+    in property <brush> color <=> background;
+    in property <string> title: "Slint Window";
+    in property <bool> no-frame;
+    in property <length> resize-border-width;
+    in property <bool> always-on-top;
+    in property <string> default-font-family;
+    in-out property <length> default-font-size; // <=> StyleMetrics.default-font-size  set in apply_default_properties_from_style
+    in property <int> default-font-weight;
+    in property <image> icon;
 }
 
-export Window := WindowItem {}
+export component Window inherits WindowItem {}
 
-export BoxShadow := Empty {
-    property <length> border_radius;
-    property <length> offset_x;
-    property <length> offset_y;
-    property <color> color;
-    property <length> blur;
+export component BoxShadow inherits Empty {
+    in property <length> border_radius;
+    in property <length> offset_x;
+    in property <length> offset_y;
+    in property <color> color;
+    in property <length> blur;
     //-default_size_binding:expands_to_parent_geometry
     //-is_internal
 }
 
-export struct Point := {
-    //-name:slint::private_api::Point
-    x: length,
-    y: length,
-}
-
-export TextInput := _ {
-    property <string> text: native_output;
-    property <string> font-family;
-    property <length> font-size;
-    property <int> font-weight;
-    property <brush> color; // StyleMetrics.default-text-color  set in apply_default_properties_from_style
-    property <color> selection-foreground-color: #000;
-    property <color> selection-background-color: #808080;
-    property <TextHorizontalAlignment> horizontal-alignment;
-    property <TextVerticalAlignment> vertical-alignment;
-    property <TextWrap> wrap;
-    property <length> letter-spacing;
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
-    property <length> text-cursor-width; // StyleMetrics.text-cursor-width  set in apply_default_properties_from_style
-    property <InputType> input-type;
+export component TextInput {
+    in-out property <string> text;
+    in property <string> font-family;
+    in property <length> font-size;
+    in property <bool> font-italic;
+    in property <int> font-weight;
+    in property <brush> color; // StyleMetrics.default-text-color  set in apply_default_properties_from_style
+    in property <color> selection-foreground-color: #000;
+    in property <color> selection-background-color: #808080;
+    in property <TextHorizontalAlignment> horizontal-alignment;
+    in property <TextVerticalAlignment> vertical-alignment;
+    in property <TextWrap> wrap;
+    in property <length> letter-spacing;
+    in property <length> width;
+    in property <length> height;
+    in property <length> text-cursor-width; // StyleMetrics.text-cursor-width  set in apply_default_properties_from_style
+    in property <InputType> input-type;
     // Internal, undocumented property, only exposed for tests.
-    property <int> cursor-position_byte-offset: native_output;
+    out property <int> cursor-position_byte-offset;
     // Internal, undocumented property, only exposed for tests.
-    property <int> anchor-position-byte-offset: native_output;
-    property <bool> has-focus: native_output;
+    out property <int> anchor-position-byte-offset;
+    out property <bool> has-focus;
     callback accepted;
     callback edited;
     callback cursor_position_changed(Point);
-    property <bool> enabled: true;
-    property <bool> single-line: true;
-    property <bool> read-only: false;
-    property <string> preedit-text: native_output;
+    in property <bool> enabled: true;
+    in property <bool> single-line: true;
+    in property <bool> read-only: false;
+    // Internal, undocumented property, only exposed for IME.
+    out property <string> preedit-text;
     //-default_size_binding:expands_to_parent_geometry
     //-accepts_focus
+    function set-selection-offsets(start: int, end: int) {}
+    function select-all() {}
+    function clear-selection() {}
+    function cut() {}
+    function copy() {}
+    function paste() {}
 }
 
-export Clip := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
-    property <length> border-radius;
-    property <length> border-width;
-    property <bool> clip;
+export component Clip {
+    in property <length> border-top-left-radius;
+    in property <length> border-top-right-radius;
+    in property <length> border-bottom-left-radius;
+    in property <length> border-bottom-right-radius;
+    in property <length> border-width;
+    in property <bool> clip;
     //-default_size_binding:expands_to_parent_geometry
     //-is_internal
 }
 
-export Opacity := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
-    property <float> opacity: 1;
+export component Opacity {
+    in property <float> opacity: 1;
     //-default_size_binding:expands_to_parent_geometry
     //-is_internal
 }
 
-export Layer := Empty {
-    property <bool> cache-rendering-hint;
+export component Layer inherits Empty {
+    in property <bool> cache-rendering-hint;
     //-default_size_binding:expands_to_parent_geometry
     //-is_internal
 }
 
-Row := _ {
+component Row {
     //-is_non_item_type
 }
 
 // Note: layouts are not NativeClass, but this is lowered in lower_layout
-export GridLayout := _ {
-    property <length> spacing;
+export component GridLayout {
+    in property <length> spacing-horizontal;
+    in property <length> spacing-vertical;
+    in property <length> spacing;
 
     // Additional accepted child
     Row { }
 }
 
-export VerticalLayout := _ {
-    property <length> spacing;
-    property <LayoutAlignment> alignment;
+export component VerticalLayout {
+    in property <length> spacing;
+    in property <LayoutAlignment> alignment;
 }
 
-export HorizontalLayout := _ {
-    property <length> spacing;
-    property <LayoutAlignment> alignment;
+export component HorizontalLayout {
+    in property <length> spacing;
+    in property <LayoutAlignment> alignment;
 }
 
-MoveTo := _ {
-    property <float> x;
-    property <float> y;
+component MoveTo {
+    in property <float> x;
+    in property <float> y;
 
     //-rust_type_constructor:slint::re_exports::PathElement::MoveTo(PathMoveTo{{}})
     //-cpp_type:slint::private_api::PathMoveTo
     //-is_non_item_type
 }
 
-LineTo := _ {
-    property <float> x;
-    property <float> y;
+component LineTo {
+    in property <float> x;
+    in property <float> y;
 
     //-rust_type_constructor:slint::re_exports::PathElement::LineTo(PathLineTo{{}})
     //-cpp_type:slint::private_api::PathLineTo
     //-is_non_item_type
 }
 
-ArcTo := _ {
-    property <float> x;
-    property <float> y;
-    property <float> radius-x;
-    property <float> radius-y;
-    property <float> x-rotation;
-    property <bool> large_arc;
-    property <bool> sweep;
+component ArcTo {
+    in property <float> x;
+    in property <float> y;
+    in property <float> radius-x;
+    in property <float> radius-y;
+    in property <float> x-rotation;
+    in property <bool> large_arc;
+    in property <bool> sweep;
 
     //-rust_type_constructor:slint::re_exports::PathElement::ArcTo(PathArcTo{{}})
     //-cpp_type:slint::private_api::PathArcTo
     //-is_non_item_type
 }
 
-CubicTo := _ {
-    property <float> control-1-x;
-    property <float> control-1-y;
-    property <float> control-2-x;
-    property <float> control-2-y;
-    property <float> x;
-    property <float> y;
+component CubicTo {
+    in property <float> control-1-x;
+    in property <float> control-1-y;
+    in property <float> control-2-x;
+    in property <float> control-2-y;
+    in property <float> x;
+    in property <float> y;
 
     //-rust_type_constructor:slint::re_exports::PathElement::CubicTo(PathCubicTo{{}})
     //-cpp_type:slint::private_api::PathCubicTo
     //-is_non_item_type
 }
 
-QuadraticTo := _ {
-    property <float> control-x;
-    property <float> control-y;
-    property <float> x;
-    property <float> y;
+component QuadraticTo {
+    in property <float> control-x;
+    in property <float> control-y;
+    in property <float> x;
+    in property <float> y;
 
     //-rust_type_constructor:slint::re_exports::PathElement::QuadraticTo(PathQuadraticTo{{}})
     //-cpp_type:slint::private_api::PathQuadraticTo
     //-is_non_item_type
 }
 
-Close := _ {
+component Close {
     //-rust_type_constructor:slint::re_exports::PathElement::Close
     //-cpp_type:slint::private_api::PathClose
     //-is_non_item_type
     //-is_non_item_type
 }
 
-export Path := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
-    property <brush> fill;
-    property <FillRule> fill-rule;
-    property <brush> stroke;
-    property <length> stroke-width;
-    property <string> commands;
-    property <float> viewbox-x;
-    property <float> viewbox-y;
-    property <float> viewbox-width;
-    property <float> viewbox-height;
-    property <bool> clip;
+export component Path {
+    in property <brush> fill;
+    in property <FillRule> fill-rule;
+    in property <brush> stroke;
+    in property <length> stroke-width;
+    in property <string> commands;
+    in property <float> viewbox-x;
+    in property <float> viewbox-y;
+    in property <float> viewbox-width;
+    in property <float> viewbox-height;
+    in property <bool> clip;
 
     //-disallow_global_types_as_child_elements
     MoveTo {}
@@ -355,35 +351,13 @@ export Path := _ {
     //-default_size_binding:expands_to_parent_geometry
 }
 
-export PathLayout := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
-    property <string> commands;
-    property <float> offset;
-
-    MoveTo {}
-    LineTo {}
-    ArcTo {}
-    CubicTo {}
-    QuadraticTo {}
-    Close {}
-}
-
-Tab := _ {
-    property <string> title;
+component Tab {
+    in property <string> title;
 }
 
 // Note: not a native class, handled in the lower_tabs pass
-export TabWidget := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
-
-    property <int> current-index;
-    property <int> current-focused;
+export component TabWidget {
+    in-out property <int> current-index;
 
     //-disallow_global_types_as_child_elements
     Tab {}
@@ -392,241 +366,232 @@ export TabWidget := _ {
 }
 
 // Note: not a native class, handled in the lower_popups pass
-export PopupWindow := _ {
+export component PopupWindow {
     //property <length> x;
     //property <length> y;
-    property <length> width;
-    property <length> height;
+    in property <length> width;
+    in property <length> height;
     /*property <length> anchor_x;
-    property <length> anchor_y;
-    property <length> anchor_height;
-    property <length> anchor_width;*/
+    in property <length> anchor_y;
+    in property <length> anchor_height;
+    in property <length> anchor_width;*/
+    in property <bool> close-on-click: true;  // constexpr hardcoded in typeregister.rs
     //show() is hardcoded in typeregister.rs
 }
 
-export Dialog := WindowItem {}
+export component Dialog inherits WindowItem {}
 
-PropertyAnimation := _ {
-    property <duration> delay;
-    property <duration> duration;
-    property <easing> easing;
-    property <float> iteration-count: 1.0;
+component PropertyAnimation {
+    in property <duration> delay;
+    in property <duration> duration;
+    in property <easing> easing;
+    in property <float> iteration-count: 1.0;
     //-is_non_item_type
 }
 
-export struct StandardListViewItem := {
-    //-name:slint::private_api::StandardListViewItem
-    text: string
+export global TextInputInterface {
+    in property <bool> text-input-focused;
 }
 
-export struct StateInfo := {
-    //-name:slint::private_api::StateInfo
-    current_state: int,
-    previous_state: int,
-    //change_time: duration,
-    //-is_internal
-}
-
-export NativeButton := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
-    property <string> text;
-    property <image> icon;
-    property <bool> pressed: native_output;
-    property <bool> checkable;
-    property <bool> checked: native_output;
-    property <bool> has-focus: native_output;
+export component NativeButton {
+    in property <string> text;
+    in property <image> icon;
+    out property <bool> pressed;
+    in property <bool> checkable;
+    in-out property <bool> checked;
+    out property <bool> has-focus;
+    in property <bool> primary;
+    in property <bool> colorize-icon;
     callback clicked;
-    property <bool> enabled: true;
-    property <StandardButtonKind> standard-button-kind;
-    property <bool> is-standard-button;
+    in property <bool> enabled: true;
+    in property <StandardButtonKind> standard-button-kind;
+    in property <bool> is-standard-button;
     //-is_internal
+    //-accepts_focus
 }
 
-export NativeCheckBox := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
-    property <bool> enabled: true;
-    property <string> text;
-    property <bool> checked: native_output;
-    property <bool> has-focus: native_output;
+export component NativeCheckBox {
+    in property <bool> enabled: true;
+    in property <string> text;
+    in-out property <bool> checked;
+    out property <bool> has-focus;
     callback toggled;
     //-is_internal
+    //-accepts_focus
 }
 
-export NativeSpinBox := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
-    property <bool> enabled: true;
-    property <bool> has-focus: native_output;
-    property <int> value: native_output;
-    property <int> minimum;
-    property <int> maximum: 100;
+export component NativeSpinBox {
+    in property <bool> enabled: true;
+    out property <bool> has-focus;
+    in-out property <int> value;
+    in property <int> minimum;
+    in property <int> maximum: 100;
+    in property <int> step-size: 1;
+    callback edited(int /* value */);
     //-is_internal
+    //-accepts_focus
 }
 
-export NativeSlider := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
-    property <bool> enabled: true;
-    property <float> value: native_output;
-    property <float> minimum;
-    property <float> maximum: 100;
+export component NativeSlider {
+    in property <bool> enabled: true;
+    out property <bool> has-focus;
+    in-out property <float> value;
+    in property <float> minimum;
+    in property <float> maximum: 100;
+    in property <Orientation> orientation: Orientation.horizontal;
     callback changed(float);
+    callback released(float);
+    //-is_internal
+    //-accepts_focus
+}
+
+export component NativeProgressIndicator {
+    in property <bool> indeterminate;
+    in property <float> progress;
     //-is_internal
 }
 
-export NativeGroupBox := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
-    property <bool> enabled: true;
-    property <string> title;
-    property <length> native-padding-left: native_output;
-    property <length> native-padding-right: native_output;
-    property <length> native-padding-top: native_output;
-    property <length> native-padding-bottom: native_output;
+export component NativeGroupBox {
+    in property <bool> enabled: true;
+    in property <string> title;
+    out property <length> native-padding-left;
+    out property <length> native-padding-right;
+    out property <length> native-padding-top;
+    out property <length> native-padding-bottom;
     //-default_size_binding:expands_to_parent_geometry
     //-is_internal
 }
 
-export NativeLineEdit := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
-    property <length> native-padding-left: native_output;
-    property <length> native-padding-right: native_output;
-    property <length> native-padding-top: native_output;
-    property <length> native-padding-bottom: native_output;
-    property <bool> has-focus;
-    property <bool> enabled: true;
+export component NativeLineEdit {
+    out property <length> native-padding-left;
+    out property <length> native-padding-right;
+    out property <length> native-padding-top;
+    out property <length> native-padding-bottom;
+    in property <bool> has-focus;
+    in property <bool> enabled: true;
     //-is_internal
 }
 
-export NativeScrollView := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
-    property <length> horizontal-max;
-    property <length> horizontal-page-size;
-    property <length> horizontal-value;
-    property <length> vertical-max;
-    property <length> vertical-page-size;
-    property <length> vertical-value: native_output;
-    property <length> native-padding-left: native_output;
-    property <length> native-padding-right: native_output;
-    property <length> native-padding-top: native_output;
-    property <length> native-padding-bottom: native_output;
-    property <bool> has_focus: native_output;
-    property <bool> enabled: true;
+export component NativeScrollView {
+    in property <length> horizontal-max;
+    in property <length> horizontal-page-size;
+    in property <length> horizontal-value;
+    in property <length> vertical-max;
+    in property <length> vertical-page-size;
+    in-out property <length> vertical-value;
+    out property <length> native-padding-left;
+    out property <length> native-padding-right;
+    out property <length> native-padding-top;
+    out property <length> native-padding-bottom;
+    in property <bool> has_focus;
+    in property <bool> enabled: true;
     //-default_size_binding:expands_to_parent_geometry
     //-is_internal
 }
 
-export NativeStandardListViewItem := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
-    property <int> index;
-    property <StandardListViewItem> item;
-    property <bool> is_selected: native_output;
-    property <bool> has_hover;
+export component NativeStandardListViewItem {
+    in property <int> index;
+    in property <StandardListViewItem> item;
+    in-out property <bool> is_selected;
+    in property <bool> has_hover;
+    in property <bool> has_focus;
+    in property <bool> pressed;
+    in property <bool> combobox;
+    in property <length> pressed-x;
+    in property <length> pressed-y;
     //-is_internal
 }
 
-export NativeComboBox := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
-    property <string> current_value;
-    property <bool> is_open: native_output;
-    property <bool> enabled: true;
-    callback open_popup;
+export component NativeTableHeaderSection {
+    in property <int> index;
+    in property <TableColumn> item;
+    in property <bool> has_hover;
     //-is_internal
 }
 
-export NativeComboBoxPopup := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
+export component NativeComboBox {
+    in-out property <string> current_value;
+    in property <bool> enabled: true;
+    in property <bool> has-focus;
     //-is_internal
 }
 
-export NativeTabWidget := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
+export component NativeComboBoxPopup {
+    //-is_internal
+}
 
-    property <length> content-x: native_output;
-    property <length> content-y: native_output;
-    property <length> content-height: native_output;
-    property <length> content-width: native_output;
-    property <length> tabbar-x: native_output;
-    property <length> tabbar-y: native_output;
-    property <length> tabbar-height: native_output;
-    property <length> tabbar-width: native_output;
-    property <length> tabbar-preferred-height;
-    property <length> tabbar-preferred-width;
-    property <length> content-min-height;
-    property <length> content-min-width;
+export component NativeTabWidget {
+    in property <length> width;
+    in property <length> height;
 
-    property <int> current-index;
-    property <int> current-focused;
+    out property <length> content-x;
+    out property <length> content-y;
+    out property <length> content-height;
+    out property <length> content-width;
+    out property <length> tabbar-x;
+    out property <length> tabbar-y;
+    out property <length> tabbar-height;
+    out property <length> tabbar-width;
+    in property <length> tabbar-preferred-height;
+    in property <length> tabbar-preferred-width;
+    in property <length> content-min-height;
+    in property <length> content-min-width;
+
+    in property <int> current-index;
+    in property <int> current-focused;
     //-default_size_binding:expands_to_parent_geometry
     //-is_internal
 }
 
-export NativeTab := _ {
-    property <length> x;
-    property <length> y;
-    property <length> width;
-    property <length> height;
-
-    property<string> title;
-    property<image> icon;
-    property<bool> enabled : true;
-    property<bool> pressed : native_output;
-    property<int> current: native_output; // supposed to be a binding to the tab
-    property<int> tab-index;
-    property<int> current-focused;
-    property<int> num-tabs;
+export component NativeTab {
+    in property<string> title;
+    in property<image> icon;
+    in property<bool> enabled : true;
+    in-out property<int> current; // supposed to be a binding to the tab
+    in property<int> tab-index;
+    in property<int> current-focused;
+    in property<int> num-tabs;
     //-is_internal
 }
 
-export global NativeStyleMetrics := {
-    property <length> layout-spacing : native_output;
-    property <length> layout-padding : native_output;
-    property <length> text-cursor-width : native_output;
-    property <color> window-background : native_output;
-    property <color> default-text-color : native_output;
-    property <color> textedit-background : native_output;
-    property <color> textedit-text-color : native_output;
-    property <color> textedit-background-disabled : native_output;
-    property <color> textedit-text-color-disabled : native_output;
+export global NativeStyleMetrics {
+    out property <length> layout-spacing;
+    out property <length> layout-padding;
+    out property <length> text-cursor-width;
+    out property <color> window-background;
+    out property <color> default-text-color;
+    out property <length> default-font-size;
+    out property <color> textedit-background;
+    out property <color> textedit-text-color;
+    out property <color> textedit-background-disabled;
+    out property <color> textedit-text-color-disabled;
 
-    property <bool> dark-color-scheme : native_output;
+    out property <bool> dark-color-scheme;
 
     // specific to the Native one
-    property <color> placeholder-color : native_output;
-    property <color> placeholder-color-disabled : native_output;
+    out property <color> placeholder-color;
+    out property <color> placeholder-color-disabled;
 
     // Tab Bar metrics:
-    property <LayoutAlignment> tab-bar-alignment : native_output;
+    out property <LayoutAlignment> tab-bar-alignment;
+
+    //-is_non_item_type
+    //-is_internal
+}
+
+export global NativePalette {
+    out property <brush> background;
+    out property <brush> foreground;
+    out property <brush> alternate-background;
+    out property <brush> alternate-foreground;
+    out property <brush> control-background;
+    out property <brush> control-foreground;
+    out property <brush> accent-background;
+    out property <brush> accent-foreground;
+    out property <brush> selection-background;
+    out property <brush> selection-foreground;
+    out property <brush> border;
+    in-out property <ColorScheme> color-scheme;
 
     //-is_non_item_type
     //-is_internal

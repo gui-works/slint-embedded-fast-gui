@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 Test := Rectangle {
     property<angle> angle: 0.25turn;
@@ -20,7 +20,7 @@ assert_eq(t.get_test(), false);
 
 
 ```rust
-let t = Test::new();
+let t = Test::new().unwrap();
 assert_eq!(t.get_angle(), 90.);
 assert_eq!(t.get_test(), true);
 

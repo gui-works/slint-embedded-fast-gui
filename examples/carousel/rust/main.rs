@@ -1,8 +1,8 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 #![cfg_attr(feature = "mcu-board-support", no_std)]
-#![cfg_attr(all(feature = "mcu-board-support", not(simulator)), no_main)]
+#![cfg_attr(all(feature = "mcu-board-support", not(feature = "simulator")), no_main)]
 
 #[cfg(feature = "mcu-board-support")]
 extern crate alloc;
@@ -20,14 +20,14 @@ pub fn main() {
     #[cfg(all(debug_assertions, target_arch = "wasm32"))]
     console_error_panic_hook::set_once();
 
-    MainWindow::new().run()
+    MainWindow::new().unwrap().run().unwrap();
 }
 
-#[cfg(feature = "mcu-board-support")]
+#[cfg(any(feature = "mcu-board-support", feature = "simulator"))]
 #[mcu_board_support::entry]
 fn main() -> ! {
     mcu_board_support::init();
-    MainWindow::new().run();
+    MainWindow::new().unwrap().run().unwrap();
 
     panic!("The MCU demo should not quit")
 }

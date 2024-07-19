@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 SubSubCompo := Rectangle { }
 SubCompo := SubSubCompo {}
@@ -16,7 +16,7 @@ slint_testing::send_mouse_click(&instance, 5., 5.);
 ```
 
 ```rust
-let instance = TestCase::new();
+let instance = TestCase::new().unwrap();
 slint_testing::send_mouse_click(&instance, 5., 5.);
 ```
 

@@ -1,23 +1,24 @@
-# Copyright © SixtyFPS GmbH <info@slint-ui.com>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 [package]
 name = "doctests"
-version = "0.3.2"
-authors = ["Slint Developers <info@slint-ui.com>"]
-edition = "2021"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+version.workspace = true
 publish = false
-license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
 
 [[bin]]
 path = "main.rs"
 name = "doctests"
 
-[dev-dependencies]
-i-slint-compiler = { path = "../../internal/compiler", features = ["display-diagnostics"] }
-slint-interpreter = { path = "../../internal/interpreter" }
-slint = { path = "../../api/rs/slint" }
+[build-dependencies]
+walkdir = "2"
 
-lazy_static = "1.4.0"
-spin_on = "0.1"
-rand = "0.8"
+[dev-dependencies]
+slint-interpreter = { workspace = true, features = ["default", "display-diagnostics"] }
+spin_on = { workspace = true }

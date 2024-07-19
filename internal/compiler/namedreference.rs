@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 /*!
 This module contains the [`NamedReference`] and its helper
@@ -11,7 +11,7 @@ use std::hash::Hash;
 use std::rc::{Rc, Weak};
 
 use crate::langtype::{ElementType, Type};
-use crate::object_tree::{Element, ElementRc, PropertyAnalysis};
+use crate::object_tree::{Element, ElementRc, PropertyAnalysis, PropertyVisibility};
 
 /// Reference to a property or callback of a given name within an element.
 #[derive(Clone)]
@@ -41,6 +41,9 @@ impl NamedReference {
     pub fn new(element: &ElementRc, name: &str) -> Self {
         Self(NamedReferenceInner::from_name(element, name))
     }
+    pub(crate) fn snapshot(&self, snapshotter: &mut crate::typeloader::Snapshotter) -> Self {
+        NamedReference(Rc::new(self.0.snapshot(snapshotter)))
+    }
     pub fn name(&self) -> &str {
         &self.0.name
     }
@@ -66,7 +69,7 @@ impl NamedReference {
         let mut elem = self.element();
         let e = elem.borrow();
         if let Some(decl) = e.property_declarations.get(self.name()) {
-            if decl.expose_in_public_api {
+            if decl.expose_in_public_api && decl.visibility != PropertyVisibility::Input {
                 // could be set by the public API
                 return false;
             }
@@ -83,13 +86,14 @@ impl NamedReference {
                 return false;
             }
 
-            if check_binding {
-                if let Some(b) = e.bindings.get(self.name()) {
-                    if !b.borrow().analysis.as_ref().map_or(false, |a| a.is_const) {
-                        return false;
-                    }
-                    check_binding = false;
+            if let Some(b) = e.bindings.get(self.name()) {
+                if check_binding && !b.borrow().analysis.as_ref().map_or(false, |a| a.is_const) {
+                    return false;
                 }
+                if !b.borrow().two_way_bindings.iter().all(|n| n.is_constant()) {
+                    return false;
+                }
+                check_binding = false;
             }
             if let Some(decl) = e.property_declarations.get(self.name()) {
                 if let Some(alias) = &decl.is_alias {
@@ -105,10 +109,10 @@ impl NamedReference {
                     continue;
                 }
                 ElementType::Builtin(b) => {
-                    return b.properties.get(self.name()).map_or(true, |pi| !pi.is_native_output)
+                    return b.properties.get(self.name()).map_or(true, |pi| !pi.is_native_output())
                 }
                 ElementType::Native(n) => {
-                    return n.properties.get(self.name()).map_or(true, |pi| !pi.is_native_output)
+                    return n.properties.get(self.name()).map_or(true, |pi| !pi.is_native_output())
                 }
                 crate::langtype::ElementType::Error | crate::langtype::ElementType::Global => {
                     return true
@@ -176,6 +180,16 @@ impl NamedReferenceInner {
         result.check_invariant();
         result
     }
+
+    pub(crate) fn snapshot(&self, snapshotter: &mut crate::typeloader::Snapshotter) -> Self {
+        let element = if let Some(el) = self.element.upgrade() {
+            Rc::downgrade(&snapshotter.use_element(&el))
+        } else {
+            std::rc::Weak::default()
+        };
+
+        Self { element, name: self.name.clone() }
+    }
 }
 
 /// Must be put inside the Element and owns all the NamedReferenceInner
@@ -191,6 +205,19 @@ impl NamedReferenceContainer {
         } else {
             false
         }
+    }
+
+    pub(crate) fn snapshot(
+        &self,
+        snapshotter: &mut crate::typeloader::Snapshotter,
+    ) -> NamedReferenceContainer {
+        let inner = self
+            .0
+            .borrow()
+            .iter()
+            .map(|(k, v)| (k.clone(), Rc::new(v.snapshot(snapshotter))))
+            .collect();
+        NamedReferenceContainer(RefCell::new(inner))
     }
 }
 

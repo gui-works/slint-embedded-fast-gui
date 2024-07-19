@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 
 use slint::{Model, Timer, VecModel};
 use std::rc::Rc;
@@ -9,7 +9,7 @@ use std::time::Duration;
 use wasm_bindgen::prelude::*;
 
 slint::slint! {
-    import { MainWindow } from "memory.slint";
+    export { MainWindow } from "memory.slint";
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen(start))]
@@ -19,7 +19,7 @@ pub fn main() {
     #[cfg(all(debug_assertions, target_arch = "wasm32"))]
     console_error_panic_hook::set_once();
 
-    let main_window = MainWindow::new();
+    let main_window = MainWindow::new().unwrap();
 
     let mut tiles: Vec<TileData> = main_window.get_memory_tiles().iter().collect();
     tiles.extend(tiles.clone());
@@ -62,5 +62,5 @@ pub fn main() {
         }
     });
 
-    main_window.run();
+    main_window.run().unwrap();
 }

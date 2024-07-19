@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 //! This wasm library can be loaded from JS to load and display the content of .slint files
 #![cfg(target_arch = "wasm32")]
@@ -34,14 +34,20 @@ impl CompilationResult {
 }
 
 #[wasm_bindgen(typescript_custom_section)]
-const IMPORT_CALLBACK_FUNCTION_SECTION: &'static str = r#"
+const CALLBACK_FUNCTION_SECTION: &'static str = r#"
 type ImportCallbackFunction = (url: string) => Promise<string>;
+type CurrentElementInformationCallbackFunction = (url: string, start_line: number, start_column: number, end_line: number, end_column: number) => void;
 "#;
 
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(typescript_type = "ImportCallbackFunction")]
     pub type ImportCallbackFunction;
+
+    #[wasm_bindgen(typescript_type = "CurrentElementInformationCallbackFunction")]
+    pub type CurrentElementInformationCallbackFunction;
+    #[wasm_bindgen(typescript_type = "Promise<WrappedInstance>")]
+    pub type InstancePromise;
 }
 
 /// Compile the content of a string.
@@ -67,6 +73,7 @@ pub async fn compile_from_string_with_style(
     #[cfg(feature = "console_error_panic_hook")]
     console_error_panic_hook::set_once();
 
+    #[allow(deprecated)]
     let mut compiler = slint_interpreter::ComponentCompiler::default();
     if !style.is_empty() {
         compiler.set_style(style)
@@ -148,28 +155,67 @@ impl WrappedCompiledComp {
     /// where the result is gonna be rendered
     #[wasm_bindgen]
     pub fn run(&self, canvas_id: String) {
-        let component = self.0.create_with_canvas_id(&canvas_id);
-        component.run();
+        let component = self.0.create_with_canvas_id(&canvas_id).unwrap();
+        component.show().unwrap();
+        slint_interpreter::spawn_event_loop().unwrap();
     }
-    /// Creates this compiled component in a canvas.
+    /// Creates this compiled component in a canvas, wrapped in a promise.
     /// The HTML must contains a <canvas> element with the given `canvas_id`
     /// where the result is gonna be rendered.
-    /// You need to call `show()` on the returned instance for rendering and
-    /// `slint.run_event_loop()` loop to make it interactive.
+    /// You need to call `show()` on the returned instance for rendering.
+    ///
+    /// Note that the promise will only be resolved after calling `slint.run_event_loop()`.
     #[wasm_bindgen]
-    pub fn create(&self, canvas_id: String) -> Result<WrappedInstance, JsValue> {
-        Ok(WrappedInstance(self.0.create_with_canvas_id(&canvas_id)))
+    pub fn create(&self, canvas_id: String) -> Result<InstancePromise, JsValue> {
+        Ok(JsValue::from(js_sys::Promise::new(&mut |resolve, reject| {
+            let comp = send_wrapper::SendWrapper::new(self.0.clone());
+            let canvas_id = canvas_id.clone();
+            let resolve = send_wrapper::SendWrapper::new(resolve);
+            if let Err(e) = slint_interpreter::invoke_from_event_loop(move || {
+                let instance =
+                    WrappedInstance(comp.take().create_with_canvas_id(&canvas_id).unwrap());
+                resolve.take().call1(&JsValue::UNDEFINED, &JsValue::from(instance)).unwrap_throw();
+            }) {
+                reject
+                    .call1(
+                        &JsValue::UNDEFINED,
+                        &JsValue::from(
+                            format!("internal error: Failed to queue closure for event loop invocation: {e}"),
+                        ),
+                    )
+                    .unwrap_throw();
+            }
+        })).unchecked_into::<InstancePromise>())
     }
-    /// Creates this compiled component in the canvas of the provided instance.
+    /// Creates this compiled component in the canvas of the provided instance, wrapped in a promise.
     /// For this to work, the provided instance needs to be visible (show() must've been
     /// called) and the event loop must be running (`slint.run_event_loop()`). After this
     /// call the provided instance is not rendered anymore and can be discarded.
+    ///
+    /// Note that the promise will only be resolved after calling `slint.run_event_loop()`.
     #[wasm_bindgen]
     pub fn create_with_existing_window(
         &self,
         instance: WrappedInstance,
-    ) -> Result<WrappedInstance, JsValue> {
-        Ok(WrappedInstance(self.0.create_with_existing_window(instance.0.window())))
+    ) -> Result<InstancePromise, JsValue> {
+        Ok(JsValue::from(js_sys::Promise::new(&mut |resolve, reject| {
+            let params = send_wrapper::SendWrapper::new((self.0.clone(), instance.0.clone_strong(), resolve));
+            if let Err(e) = slint_interpreter::invoke_from_event_loop(move || {
+                let (comp, instance, resolve) = params.take();
+                let instance =
+                    WrappedInstance(comp.create_with_existing_window(instance.window()).unwrap());
+                resolve.call1(&JsValue::UNDEFINED, &JsValue::from(instance)).unwrap_throw();
+            }) {
+                reject
+                    .call1(
+                        &JsValue::UNDEFINED,
+                        &JsValue::from(
+                            format!("internal error: Failed to queue closure for event loop invocation: {e}"),
+                        ),
+                    )
+                    .unwrap_throw();
+            }
+        })).unchecked_into::<InstancePromise>())
     }
 }
 
@@ -185,14 +231,78 @@ impl Clone for WrappedInstance {
 #[wasm_bindgen]
 impl WrappedInstance {
     /// Marks this instance for rendering and input handling.
+    ///
+    /// Note that the promise will only be resolved after calling `slint.run_event_loop()`.
     #[wasm_bindgen]
-    pub fn show(&self) {
-        self.0.show();
+    pub fn show(&self) -> Result<js_sys::Promise, JsValue> {
+        self.invoke_from_event_loop_wrapped_in_promise(|instance| instance.show())
     }
     /// Hides this instance and prevents further updates of the canvas element.
+    ///
+    /// Note that the promise will only be resolved after calling `slint.run_event_loop()`.
     #[wasm_bindgen]
-    pub fn hide(&self) {
-        self.0.hide();
+    pub fn hide(&self) -> Result<js_sys::Promise, JsValue> {
+        self.invoke_from_event_loop_wrapped_in_promise(|instance| instance.hide())
+    }
+
+    fn invoke_from_event_loop_wrapped_in_promise(
+        &self,
+        callback: impl FnOnce(
+                &slint_interpreter::ComponentInstance,
+            ) -> Result<(), slint_interpreter::PlatformError>
+            + 'static,
+    ) -> Result<js_sys::Promise, JsValue> {
+        let callback = std::cell::RefCell::new(Some(callback));
+        Ok(js_sys::Promise::new(&mut |resolve, reject| {
+            let inst_weak = self.0.as_weak();
+
+            if let Err(e) = slint_interpreter::invoke_from_event_loop({
+                let params = send_wrapper::SendWrapper::new((
+                    resolve,
+                    reject.clone(),
+                    callback.take().unwrap(),
+                ));
+                move || {
+                    let (resolve, reject, callback) = params.take();
+                    match inst_weak.upgrade() {
+                        Some(instance) => match callback(&instance) {
+                            Ok(()) => {
+                                resolve.call0(&JsValue::UNDEFINED).unwrap_throw();
+                            }
+                            Err(e) => {
+                                reject
+                                    .call1(
+                                        &JsValue::UNDEFINED,
+                                        &JsValue::from(format!(
+                                            "Invocation on ComponentInstance from within event loop failed: {e}"
+                                        )),
+                                    )
+                                    .unwrap_throw();
+                            }
+                        },
+                        None => {
+                            reject
+                            .call1(
+                                &JsValue::UNDEFINED,
+                                &JsValue::from(format!(
+                                    "Invocation on ComponentInstance failed because instance was deleted too soon"
+                                )),
+                            )
+                            .unwrap_throw();
+                        }
+                    }
+                }
+            }) {
+                reject
+                .call1(
+                    &JsValue::UNDEFINED,
+                    &JsValue::from(
+                        format!("internal error: Failed to queue closure for event loop invocation: {e}"),
+                    ),
+                )
+                .unwrap_throw();
+            }
+        }))
     }
 }
 
@@ -201,6 +311,6 @@ impl WrappedInstance {
 /// to ignore.
 #[wasm_bindgen]
 pub fn run_event_loop() -> Result<(), JsValue> {
-    slint_interpreter::run_event_loop();
+    slint_interpreter::spawn_event_loop().map_err(|e| -> JsValue { format!("{e}").into() })?;
     Ok(())
 }

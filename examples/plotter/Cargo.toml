@@ -1,13 +1,13 @@
-# Copyright © SixtyFPS GmbH <info@slint-ui.com>
-# SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+# Copyright © SixtyFPS GmbH <info@slint.dev>
+# SPDX-License-Identifier: MIT
 
 [package]
 name = "plotter"
-version = "0.3.2"
-authors = ["Slint Developers <info@slint-ui.com>"]
+version = "1.7.0"
+authors = ["Slint Developers <info@slint.dev>"]
 edition = "2021"
 publish = false
-license = "GPL-3.0-only OR LicenseRef-Slint-commercial"
+license = "MIT"
 
 [[bin]]
 path = "main.rs"
@@ -15,7 +15,7 @@ name = "plotter"
 
 [dependencies]
 slint = { path = "../../api/rs/slint" }
-plotters = { version = "0.3.4", default-features = false, features = ["bitmap_backend", "surface_series"] }
+plotters = { version = "0.3.5", default-features = false, features = ["bitmap_backend", "surface_series", "fontconfig-dlopen", "ttf"] }
 
 [build-dependencies]
 slint-build = { path = "../../api/rs/build" }

@@ -1,5 +1,5 @@
-// Copyright © SixtyFPS GmbH <info@slint-ui.com>
-// SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-commercial
+// Copyright © SixtyFPS GmbH <info@slint.dev>
+// SPDX-License-Identifier: MIT
 use slint::{Model, ModelRc, SharedString};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -7,7 +7,7 @@ use std::fmt::Debug;
 use std::hash::Hash;
 use std::rc::{Rc, Weak};
 
-slint::slint!(import { MainWindow } from "cells.slint";);
+slint::slint!(export { MainWindow } from "cells.slint";);
 
 const ROW_COUNT: usize = 100;
 const COL_COUNT: usize = 26;
@@ -186,6 +186,7 @@ impl CellsModel {
                 self.update_cell(r, c, None);
             }
         } else if new_form {
+            drop(r);
             r_model.notify.row_changed(col);
         }
 
@@ -238,8 +239,8 @@ impl Model for CellsModel {
 }
 
 pub fn main() {
-    let main_window = MainWindow::new();
+    let main_window = MainWindow::new().unwrap();
     let cells_model = CellsModel::new();
     main_window.set_cells(ModelRc::from(cells_model));
-    main_window.run();
+    main_window.run().unwrap();
 }
