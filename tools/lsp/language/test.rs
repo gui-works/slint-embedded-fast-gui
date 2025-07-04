@@ -7,9 +7,14 @@ use lsp_types::{Diagnostic, Url};
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::rc::Rc;
 
 use crate::common;
+use crate::language::convert_diagnostics;
 use crate::language::reload_document_impl;
+
+use super::Context;
 
 /// Create an empty `DocumentCache`
 pub fn empty_document_cache() -> common::DocumentCache {
@@ -40,8 +45,10 @@ pub fn loaded_document_cache_with_file_name(
         format!("/foo/{file_name}")
     };
     let url = Url::from_file_path(dummy_absolute_path).unwrap();
-    let diag =
+    let (extra_files, diag) =
         spin_on::spin_on(reload_document_impl(None, content, url.clone(), Some(42), &mut dc));
+
+    let diag = convert_diagnostics(&extra_files, diag);
     (dc, url, diag)
 }
 
@@ -104,52 +111,55 @@ component MainWindow inherits Window {
             "#.to_string())
 }
 
+pub fn load(
+    ctx: Option<&Rc<Context>>,
+    document_cache: &mut common::DocumentCache,
+    path: &Path,
+    content: &str,
+) -> (Url, HashMap<Url, Vec<lsp_types::Diagnostic>>) {
+    let url = Url::from_file_path(path).unwrap();
+
+    let (main_file, diag) = spin_on::spin_on(reload_document_impl(
+        ctx,
+        content.into(),
+        url.clone(),
+        Some(1),
+        document_cache,
+    ));
+
+    (url, convert_diagnostics(&main_file, diag))
+}
+
 #[test]
 fn accurate_diagnostics_in_dependencies() {
     // Test for issue 5797
     let mut dc = empty_document_cache();
 
-    let bar_ctn = r#" export component Bar { property <int> hi; } "#;
-    let bar_url =
-        Url::from_file_path(std::env::current_dir().unwrap().join("xxx/bar.slint")).unwrap();
-    let diag = spin_on::spin_on(reload_document_impl(
+    let (bar_url, diag) = load(
         None,
-        bar_ctn.into(),
-        bar_url.clone(),
-        Some(1),
         &mut dc,
-    ));
+        &std::env::current_dir().unwrap().join("xxx/bar.slint"),
+        r#" export component Bar { property <int> hi; } "#,
+    );
     assert_eq!(diag, HashMap::from_iter([(bar_url.clone(), vec![])]));
 
-    let reexport_ctn = r#"import { Bar } from "bar.slint"; export component Foo inherits Bar { in property <string> reexport; }"#;
-    let reexport_url =
-        Url::from_file_path(std::env::current_dir().unwrap().join("xxx/reexport.slint")).unwrap();
-    let diag = spin_on::spin_on(reload_document_impl(
+    let (reexport_url, diag) = load(
         None,
-        reexport_ctn.into(),
-        reexport_url.clone(),
-        Some(1),
         &mut dc,
-    ));
-    assert_eq!(
-        diag,
-        HashMap::from_iter([(reexport_url.clone(), vec![]), (bar_url.clone(), vec![])])
+        &std::env::current_dir().unwrap().join("xxx/reexport.slint"),
+        r#"import { Bar } from "bar.slint"; export component Foo inherits Bar { in property <string> reexport; }"#,
+    );
+    assert_eq!(diag, HashMap::from_iter([(reexport_url.clone(), vec![])]));
+
+    let (foo_url, diag) = load(
+        None,
+        &mut dc,
+        &std::env::current_dir().unwrap().join("xxx/foo.slint"),
+        r#"import { Foo } from "reexport.slint"; export component MainWindow inherits Window { Foo { hello: 45; } }"#,
     );
 
-    let foo_ctn = r#"import { Foo } from "reexport.slint"; export component MainWindow inherits Window { Foo { hello: 45; } }"#;
-    let foo_url =
-        Url::from_file_path(std::env::current_dir().unwrap().join("xxx/foo.slint")).unwrap();
-    let diag = spin_on::spin_on(reload_document_impl(
-        None,
-        foo_ctn.into(),
-        foo_url.clone(),
-        Some(1),
-        &mut dc,
-    ));
-    //assert_eq!(diag.len(), 3);
-    assert_eq!(diag[&reexport_url], vec![]);
-    //assert_eq!(diag[&bar_url], vec![]);
     assert!(diag[&foo_url][0].message.contains("hello"));
+    assert_eq!(diag.len(), 1);
 
     let ctx = Some(std::rc::Rc::new(crate::language::Context {
         document_cache: empty_document_cache().into(),
@@ -161,14 +171,12 @@ fn accurate_diagnostics_in_dependencies() {
         open_urls: RefCell::new(HashSet::from_iter([foo_url.clone(), bar_url.clone()])),
     }));
 
-    let bar_ctn = r#" export component Bar { in property <int> hello; } "#;
-    let diag = spin_on::spin_on(reload_document_impl(
+    let (bar_url, diag) = load(
         ctx.as_ref(),
-        bar_ctn.into(),
-        bar_url.clone(),
-        Some(1),
         &mut dc,
-    ));
+        &std::env::current_dir().unwrap().join("xxx/bar.slint"),
+        r#" export component Bar { in property <int> hello; } "#,
+    );
     assert_eq!(diag.len(), 3);
     assert_eq!(
         diag,
@@ -184,25 +192,81 @@ fn accurate_diagnostics_in_dependencies() {
         &lsp_types::TextDocumentIdentifier { uri: foo_url.clone() },
     )
     .expect("foo.slint should still be loaded");
-    assert!(matches!(sym, lsp_types::DocumentSymbolResponse::Nested(result) if result.len() >= 1));
+    assert!(matches!(sym, lsp_types::DocumentSymbolResponse::Nested(result) if !result.is_empty()));
 
-    let foo_ctn = r#"import { Foo } from "reexport.slint"; export component MainWindow inherits Window { Foo { hi: 45; } }"#;
-    let diag = spin_on::spin_on(reload_document_impl(
+    let (foo_url, diag) = load(
         ctx.as_ref(),
-        foo_ctn.into(),
-        foo_url.clone(),
-        Some(1),
         &mut dc,
-    ));
+        &std::env::current_dir().unwrap().join("xxx/foo.slint"),
+        r#"import { Foo } from "reexport.slint"; export component MainWindow inherits Window { Foo { hi: 45; } }"#,
+    );
     assert!(diag[&foo_url][0].message.contains("hi"));
 
-    let foo_ctn = r#"import { Foo } from "reexport.slint"; export component MainWindow inherits Window { Foo { hello: 12; } }"#;
-    let diag = spin_on::spin_on(reload_document_impl(
+    let (foo_url, diag) = load(
         ctx.as_ref(),
-        foo_ctn.into(),
-        foo_url.clone(),
-        Some(1),
         &mut dc,
-    ));
+        &std::env::current_dir().unwrap().join("xxx/foo.slint"),
+        r#"import { Foo } from "reexport.slint"; export component MainWindow inherits Window { Foo { hello: 12; } }"#,
+    );
     assert_eq!(diag[&foo_url], vec![]);
+}
+
+#[test]
+fn accurate_diagnostics_in_dependencies_with_parse_errors() {
+    // Test for issue 8064
+    let ctx = std::rc::Rc::new(crate::language::Context {
+        document_cache: empty_document_cache().into(),
+        preview_config: Default::default(),
+        server_notifier: crate::ServerNotifier::dummy(),
+        init_param: Default::default(),
+        #[cfg(any(feature = "preview-external", feature = "preview-engine"))]
+        to_show: Default::default(),
+        open_urls: Default::default(),
+    });
+
+    let (bar_url, diag) = load(
+        Some(&ctx),
+        &mut ctx.document_cache.borrow_mut(),
+        &std::env::current_dir().unwrap().join("xxx/bar.slint"),
+        r#" export component Bar { in property <int> hello; } "#,
+    );
+    assert_eq!(diag, HashMap::from_iter([(bar_url.clone(), vec![])]));
+
+    ctx.open_urls.borrow_mut().insert(bar_url.clone());
+
+    let (reexport_url, diag) = load(
+        Some(&ctx),
+        &mut ctx.document_cache.borrow_mut(),
+        &std::env::current_dir().unwrap().join("xxx/reexport.slint"),
+        r#"import { Bar } from "bar.slint"; export component Foo inherits Bar { in property <string> reexport; if true error }"#,
+    );
+    assert!(diag[&reexport_url].iter().any(|d| d.message.contains("Syntax error:")));
+    assert_eq!(diag.len(), 1);
+
+    ctx.open_urls.borrow_mut().insert(reexport_url.clone());
+
+    let (foo_url, diag) = load(
+        Some(&ctx),
+        &mut ctx.document_cache.borrow_mut(),
+        &std::env::current_dir().unwrap().join("xxx/foo.slint"),
+        r#"import { Foo } from "reexport.slint"; export component MainWindow inherits Window { Foo { hello: 45; world: 12; } }"#,
+    );
+    assert!(diag[&foo_url][0].message.contains("world"));
+    assert_eq!(diag[&foo_url].len(), 1);
+    // Don't clear further error (so the client still has the parse error in reexport_url)
+    assert_eq!(diag.len(), 1);
+
+    ctx.open_urls.borrow_mut().insert(foo_url.clone());
+
+    let (bar_url, diag) = load(
+        Some(&ctx),
+        &mut ctx.document_cache.borrow_mut(),
+        &std::env::current_dir().unwrap().join("xxx/bar.slint"),
+        r#" export component Bar { private property <int> hello; in property <int> world; } "#,
+    );
+
+    // bar still don't have error
+    assert_eq!(diag[&bar_url], vec![]);
+    // But reexport_url still have the same syntax error as before
+    assert!(diag[&reexport_url].iter().any(|d| d.message.contains("Syntax error:")));
 }

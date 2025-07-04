@@ -14,7 +14,11 @@ path = [
   "**/slint-logo-**.pdf",
   "**/slint-logo-**.png",
   "**/slint-logo-**.svg",
+  "docs/astro/public/apple-touch-icon.png",
   "docs/astro/public/favicon.svg",
+  "docs/astro/public/favicon-16x16.png",
+  "docs/astro/public/favicon-32x32.png",
+  "docs/astro/public/favicon.ico",
   "docs/astro/src/content/docs/reference/elements/slint-logo.png",
 ]
 precedence = "aggregate"
@@ -26,11 +30,13 @@ path = [
   "**/.eslintrc.yml",
   "**/.gitignore",
   "**/.npmignore",
+  "**/.vscodeignore",
   ".dockerignore",
   ".gitattributes",
   ".gitignore",
   ".mailmap",
   ".vscode/**",
+  "editors/vscode/tests/grammar/*.slint",
   "Cargo.lock",
   "REUSE.toml",
   "biome.json",
@@ -47,7 +53,7 @@ SPDX-License-Identifier = "GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR 
 
 [[annotations]]
 path = [
-  ".github/issue_template.md",
+  ".github/ISSUE_TEMPLATE/4-blank.md",
   ".github/pull_request_template.md",
 
   "api/cpp/docs/**/**.css",
@@ -85,6 +91,7 @@ path = [
   "docs/astro/src/assets/**.svg",
   "docs/astro/src/assets/**.webp",
   "docs/astro/src/assets/getting-started/**.webp",
+  "docs/astro/src/assets/guide/tooling/**.webp",
   "docs/astro/src/content/docs/reference/elements/mini-banner.png",
   "docs/astro/src/misc/**.json",
   "docs/astro/src/misc/**.jsonc",
@@ -125,17 +132,16 @@ path = [
   "tools/slintpad/**.html",
   "tools/slintpad/**.json",
   "tools/slintpad/styles/**.css",
+  "tools/figma-inspector/**.json",
+  "tools/figma-inspector/**.html",
+  "tools/figma-inspector/**.css",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "Copyright © SixtyFPS GmbH <info@slint.dev>"
 SPDX-License-Identifier = "GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0"
 
 [[annotations]]
-path = [
-  "demos/weather-demo/ui/assets/icons/**.svg",
-  "examples/memory/icons/**.png",
-  "examples/memory/icons/**.svg",
-]
+path = ["demos/weather-demo/ui/assets/icons/**.svg", "examples/memory/icons/**.png", "examples/memory/icons/**.svg"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "Fontawesome project <https://fontawesome.com/license/free>"
 SPDX-License-Identifier = "CC-BY-4.0"
@@ -147,10 +153,7 @@ SPDX-FileCopyrightText = "CoreyGinnivan <https://github.com/CoreyGinnivan/system
 SPDX-License-Identifier = "Unlicense"
 
 [[annotations]]
-path = [
-  "examples/iot-dashboard/images/**.svg",
-  "examples/iot-dashboard/images/**.png",
-]
+path = ["examples/iot-dashboard/images/**.svg", "examples/iot-dashboard/images/**.png"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "Uwe Rathmann <https://github.com/uwerat/qskinny/tree/master/examples/iotdashboard/images>"
 SPDX-License-Identifier = "LicenseRef-qskinny"
@@ -163,6 +166,11 @@ path = [
   "tools/lsp/ui/assets/layout-sidebar**.svg",
   "tools/lsp/ui/assets/search.svg",
   "tools/lsp/ui/assets/sync.svg",
+  "tools/lsp/ui/assets/black-square.png",
+  "tools/lsp/ui/assets/close.svg",
+  "tools/lsp/ui/assets/plus.svg",
+  "tools/lsp/ui/assets/info.svg",
+  "tools/lsp/ui/assets/clear.svg",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "Codicon Icons <https://github.com/microsoft/vscode-codicons/>"
@@ -187,6 +195,7 @@ path = [
   "internal/compiler/widgets/cupertino/_**.svg",
   "internal/compiler/widgets/qt/_**.svg",
   "examples/todo-mvc/assets/**.svg",
+  "demos/usecases/ui/assets/**.svg",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "Material Icons <https://github.com/material-icons/material-icons/blob/master/LICENSE>"
@@ -224,20 +233,7 @@ SPDX-FileCopyrightText = "Weather Icons <http://erikflowers.github.io/weather-ic
 SPDX-License-Identifier = "OFL-1.1"
 
 [[annotations]]
-path = [
-  "demos/weather-demo/android-res/**/ic_launcher.png",
-  "demos/weather-demo/ui/assets/felgo-logo.svg",
-]
+path = ["demos/weather-demo/android-res/**/ic_launcher.png", "demos/weather-demo/ui/assets/felgo-logo.svg"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "Copyright © Felgo GmbH <contact@felgo.com>"
 SPDX-License-Identifier = "CC-BY-ND-4.0"
-
-[[annotations]]
-path = [
-  "examples/bazel_build/.bazelignore",
-  "examples/bazel_build/.bazelversion",
-  "examples/bazel_build/MODULE.bazel.lock",
-]
-precedence = "aggregate"
-SPDX-FileCopyrightText = "Copyright © 2024 OTIV B.V."
-SPDX-License-Identifier = "MIT"

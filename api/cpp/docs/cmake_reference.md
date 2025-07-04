@@ -44,6 +44,9 @@ Set the `SLINT_EMBED_RESOURCES` target property on your CMake target to one of t
 
 * `embed-files`: The raw files are embedded in the application binary.
 * `embed-for-software-renderer`: The files will be loaded by the Slint compiler, optimized for use with the software renderer and embedded in the application binary.
+* `embed-for-software-renderer-with-sdf`: Same as `embed-for-software-renderer`, but use [Signed Distance Fields (SDF)](https://en.wikipedia.org/wiki/Signed_distance_function) to render fonts.
+  This produces smaller binaries, but may result in slightly inferior visual output and slower rendering.
+  (Requires the `SLINT_FEATURE_SDF_FONTS` feature to be enabled.)
 * `as-absolute-path`: The paths of files are made absolute and will be used at run-time to load the resources from the file system. This is the default.
 
 This target property is initialised from the global `DEFAULT_SLINT_EMBED_RESOURCES` cache variable. Set it to configure the default for all CMake targets.
@@ -67,7 +70,7 @@ set_property(TARGET my_application PROPERTY SLINT_SCALE_FACTOR 2.0)
 A scale factor specified this way will also be used to pre-scale images and glyphs when used in combination
 with [Resource Embedding](#resource-embedding).
 
-## Bundle translations
+## Bundle Translations
 
 Translations can either be done using `gettext` at runtime, or by bundling all the translated strings
 directly into the binary, by embedding them in the generated C++ code.
@@ -79,3 +82,9 @@ In the following example, the translation files will be bundled from `lang/<lang
 ```cmake
 set_property(TARGET my_application PROPERTY SLINT_BUNDLE_TRANSLATIONS "${CMAKE_CURRENT_SOURCE_DIR}/lang")
 ```
+
+## Translation Domain
+
+By default, the domain used for translations is the name of the CMake target the `.slint` files are targeted with.
+Use the `SLINT_TRANSLATION_DOMAIN` target property to override this and use the specified value as domain, instead.
+This is useful in build environments where the target name is given and not suitable, such as esp-idf.

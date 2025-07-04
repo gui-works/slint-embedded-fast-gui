@@ -41,16 +41,16 @@ export class PreviewWidget extends Widget {
         this.addClass("content");
         this.addClass("preview");
         this.title.label = "Preview";
-        this.title.caption = `Slint Viewer`;
+        this.title.caption = "Slint Viewer";
         this.title.closable = true;
 
-        lsp.previewer(resource_url_mapper, style).then((p) => {
+        void lsp.previewer(resource_url_mapper, style).then((p) => {
             this.#previewer = p;
 
             // Give the UI some time to wire up the canvas so it can be found
             // when searching the document.
             this.#previewer.show_ui().then(() => {
-                console.info("UI should be up!");
+                console.info("SlintPad: started");
                 const canvas = document.getElementById(
                     canvas_id,
                 ) as HTMLElement;
@@ -63,9 +63,8 @@ export class PreviewWidget extends Widget {
     public current_style(): string {
         if (this.#previewer) {
             return this.#previewer.current_style();
-        } else {
-            return "";
         }
+        return "";
     }
 
     protected onResize(msg: Widget.ResizeMessage): void {

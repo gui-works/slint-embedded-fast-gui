@@ -23,9 +23,7 @@ use crate::lengths::{
 #[cfg(feature = "rtti")]
 use crate::rtti::*;
 use crate::window::WindowAdapter;
-use crate::Callback;
-use crate::Property;
-#[cfg(not(feature = "std"))]
+use crate::{Callback, Coord, Property};
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use const_field_offset::FieldOffsets;
@@ -36,7 +34,6 @@ use core::time::Duration;
 use euclid::num::Ceil;
 use euclid::num::Zero;
 use i_slint_core_macros::*;
-#[cfg(not(feature = "std"))]
 #[allow(unused)]
 use num_traits::Float;
 
@@ -61,19 +58,54 @@ pub struct Flickable {
 }
 
 impl Item for Flickable {
-    fn init(self: Pin<&Self>, _self_rc: &ItemRc) {}
+    fn init(self: Pin<&Self>, self_rc: &ItemRc) {
+        self.data.in_bound_change_handler.init_delayed(
+            self_rc.downgrade(),
+            // Binding that returns if the Flickable is out of bounds:
+            |self_weak| {
+                let Some(flick_rc) = self_weak.upgrade() else { return false };
+                let Some(flick) = flick_rc.downcast::<Flickable>() else { return false };
+                let flick = flick.as_pin_ref();
+                let geo = flick_rc.geometry();
+                let zero = LogicalLength::zero();
+                let vpx = flick.viewport_x();
+                if vpx > zero || vpx < (geo.width_length() - flick.viewport_width()).min(zero) {
+                    return true;
+                }
+                let vpy = flick.viewport_y();
+                if vpy > zero || vpy < (geo.height_length() - flick.viewport_height()).min(zero) {
+                    return true;
+                }
+                false
+            },
+            // Change event handler that puts the Flickable in bounds if it's not already
+            |self_weak, out_of_bound| {
+                let Some(flick_rc) = self_weak.upgrade() else { return };
+                let Some(flick) = flick_rc.downcast::<Flickable>() else { return };
+                let flick = flick.as_pin_ref();
+                if *out_of_bound {
+                    let vpx = flick.viewport_x();
+                    let vpy = flick.viewport_y();
+                    let p = ensure_in_bound(flick, LogicalPoint::from_lengths(vpx, vpy), &flick_rc);
+                    (Flickable::FIELD_OFFSETS.viewport_x).apply_pin(flick).set(p.x_length());
+                    (Flickable::FIELD_OFFSETS.viewport_y).apply_pin(flick).set(p.y_length());
+                }
+            },
+        );
+    }
 
     fn layout_info(
         self: Pin<&Self>,
         _orientation: Orientation,
         _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
     ) -> LayoutInfo {
         LayoutInfo { stretch: 1., ..LayoutInfo::default() }
     }
 
     fn input_event_filter_before_children(
         self: Pin<&Self>,
-        event: MouseEvent,
+        event: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         self_rc: &ItemRc,
     ) -> InputEventFilterResult {
@@ -84,7 +116,9 @@ impl Item for Flickable {
                 || pos.x_length() > geometry.width_length()
                 || pos.y_length() > geometry.height_length()
             {
-                return InputEventFilterResult::Intercept;
+                if !self.data.inner.borrow().pressed_time.is_some() {
+                    return InputEventFilterResult::Intercept;
+                }
             }
         }
         if !self.interactive() && !matches!(event, MouseEvent::Wheel { .. }) {
@@ -95,7 +129,7 @@ impl Item for Flickable {
 
     fn input_event(
         self: Pin<&Self>,
-        event: MouseEvent,
+        event: &MouseEvent,
         window_adapter: &Rc<dyn WindowAdapter>,
         self_rc: &ItemRc,
     ) -> InputEventResult {
@@ -148,6 +182,19 @@ impl Item for Flickable {
         );
         RenderingResult::ContinueRenderingChildren
     }
+
+    fn bounding_rect(
+        self: core::pin::Pin<&Self>,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+        geometry: LogicalRect,
+    ) -> LogicalRect {
+        geometry
+    }
+
+    fn clips_children(self: core::pin::Pin<&Self>) -> bool {
+        true
+    }
 }
 
 impl ItemConsts for Flickable {
@@ -199,19 +246,21 @@ struct FlickableDataInner {
 #[derive(Default, Debug)]
 pub struct FlickableData {
     inner: RefCell<FlickableDataInner>,
+    /// Tracker that tracks the property to make sure that the flickable is in bounds
+    in_bound_change_handler: crate::properties::ChangeTracker,
 }
 
 impl FlickableData {
     fn handle_mouse_filter(
         &self,
         flick: Pin<&Flickable>,
-        event: MouseEvent,
+        event: &MouseEvent,
         flick_rc: &ItemRc,
     ) -> InputEventFilterResult {
         let mut inner = self.inner.borrow_mut();
         match event {
             MouseEvent::Pressed { position, button: PointerEventButton::Left, .. } => {
-                inner.pressed_pos = position;
+                inner.pressed_pos = *position;
                 inner.pressed_time = Some(crate::animations::current_tick());
                 inner.pressed_viewport_pos = LogicalPoint::from_lengths(
                     (Flickable::FIELD_OFFSETS.viewport_x).apply_pin(flick).get(),
@@ -234,13 +283,13 @@ impl FlickableData {
             }
             MouseEvent::Moved { position } => {
                 let do_intercept = inner.capture_events
-                    || inner.pressed_time.map_or(false, |pressed_time| {
+                    || inner.pressed_time.is_some_and(|pressed_time| {
                         if crate::animations::current_tick() - pressed_time > DURATION_THRESHOLD {
                             return false;
                         }
                         // Check if the mouse was moved more than the DISTANCE_THRESHOLD in a
                         // direction in which the flickable can flick
-                        let diff = position - inner.pressed_pos;
+                        let diff = *position - inner.pressed_pos;
                         let geo = flick_rc.geometry();
                         let w = geo.width_length();
                         let h = geo.height_length();
@@ -265,13 +314,16 @@ impl FlickableData {
             MouseEvent::Pressed { .. } | MouseEvent::Released { .. } => {
                 InputEventFilterResult::ForwardAndIgnore
             }
+            MouseEvent::DragMove(..) | MouseEvent::Drop(..) => {
+                InputEventFilterResult::ForwardAndIgnore
+            }
         }
     }
 
     fn handle_mouse(
         &self,
         flick: Pin<&Flickable>,
-        event: MouseEvent,
+        event: &MouseEvent,
         window_adapter: &Rc<dyn WindowAdapter>,
         flick_rc: &ItemRc,
     ) -> InputEventResult {
@@ -292,7 +344,7 @@ impl FlickableData {
             }
             MouseEvent::Moved { position } => {
                 if inner.pressed_time.is_some() {
-                    let new_pos = inner.pressed_viewport_pos + (position - inner.pressed_pos);
+                    let new_pos = inner.pressed_viewport_pos + (*position - inner.pressed_pos);
                     let x = (Flickable::FIELD_OFFSETS.viewport_x).apply_pin(flick);
                     let y = (Flickable::FIELD_OFFSETS.viewport_y).apply_pin(flick);
                     let should_capture = || {
@@ -334,18 +386,28 @@ impl FlickableData {
                 }
             }
             MouseEvent::Wheel { delta_x, delta_y, .. } => {
-                let old_pos = LogicalPoint::from_lengths(
-                    (Flickable::FIELD_OFFSETS.viewport_x).apply_pin(flick).get(),
-                    (Flickable::FIELD_OFFSETS.viewport_y).apply_pin(flick).get(),
-                );
                 let delta = if window_adapter.window().0.modifiers.get().shift()
                     && !cfg!(target_os = "macos")
                 {
                     // Shift invert coordinate for the purpose of scrolling. But not on macOs because there the OS already take care of the change
-                    LogicalVector::new(delta_y, delta_x)
+                    LogicalVector::new(*delta_y, *delta_x)
                 } else {
-                    LogicalVector::new(delta_x, delta_y)
+                    LogicalVector::new(*delta_x, *delta_y)
                 };
+
+                let geo = flick_rc.geometry();
+
+                if (delta.x == 0 as Coord && flick.viewport_height() <= geo.height_length())
+                    || (delta.y == 0 as Coord && flick.viewport_width() <= geo.width_length())
+                {
+                    // Scroll in a orthogonal direction than what is allowed by the flickable
+                    return InputEventResult::EventIgnored;
+                }
+
+                let old_pos = LogicalPoint::from_lengths(
+                    (Flickable::FIELD_OFFSETS.viewport_x).apply_pin(flick).get(),
+                    (Flickable::FIELD_OFFSETS.viewport_y).apply_pin(flick).get(),
+                );
                 let new_pos = ensure_in_bound(flick, old_pos + delta, flick_rc);
 
                 let viewport_x = (Flickable::FIELD_OFFSETS.viewport_x).apply_pin(flick);
@@ -358,13 +420,14 @@ impl FlickableData {
                 }
                 InputEventResult::EventAccepted
             }
+            MouseEvent::DragMove(..) | MouseEvent::Drop(..) => InputEventResult::EventIgnored,
         }
     }
 
     fn mouse_released(
         inner: &mut FlickableDataInner,
         flick: Pin<&Flickable>,
-        event: MouseEvent,
+        event: &MouseEvent,
         flick_rc: &ItemRc,
     ) {
         if let (Some(pressed_time), Some(pos)) = (inner.pressed_time, event.position()) {
@@ -425,7 +488,7 @@ fn ensure_in_bound(flick: Pin<&Flickable>, p: LogicalPoint, flick_rc: &ItemRc) -
 /// This must be called using a non-null pointer pointing to a chunk of memory big enough to
 /// hold a FlickableDataBox
 #[cfg(feature = "ffi")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn slint_flickable_data_init(data: *mut FlickableDataBox) {
     core::ptr::write(data, FlickableDataBox::default());
 }
@@ -433,7 +496,7 @@ pub unsafe extern "C" fn slint_flickable_data_init(data: *mut FlickableDataBox) 
 /// # Safety
 /// This must be called using a non-null pointer pointing to an initialized FlickableDataBox
 #[cfg(feature = "ffi")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn slint_flickable_data_free(data: *mut FlickableDataBox) {
     core::ptr::drop_in_place(data);
 }

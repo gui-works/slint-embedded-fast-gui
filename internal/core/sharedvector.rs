@@ -46,7 +46,7 @@ unsafe fn drop_inner<T>(mut inner: NonNull<SharedVectorInner<T>>) {
 /// Allocate the memory for the SharedVector with the given capacity. Return the inner with size and refcount set to 1
 fn alloc_with_capacity<T>(capacity: usize) -> NonNull<SharedVectorInner<T>> {
     let ptr = unsafe { ::alloc::alloc::alloc(compute_inner_layout::<T>(capacity)) };
-    assert!(!ptr.is_null(), "allocation of {:?} bytes failed", capacity);
+    assert!(!ptr.is_null(), "allocation of {capacity:?} bytes failed");
     unsafe {
         core::ptr::write(
             ptr as *mut SharedVectorHeader,
@@ -79,8 +79,10 @@ pub struct SharedVector<T> {
     inner: NonNull<SharedVectorInner<T>>,
 }
 
-// Safety: We use atomic reference counting, and if T is Send, we can send the vector to another thread
-unsafe impl<T: Send> Send for SharedVector<T> {}
+// Safety: We use atomic reference counting, and if T is Send and Sync, we can send the vector to another thread
+unsafe impl<T: Send + Sync> Send for SharedVector<T> {}
+// Safety: We use atomic reference counting, and if T is Send and Sync, we can access the vector from multiple threads
+unsafe impl<T: Send + Sync> Sync for SharedVector<T> {}
 
 impl<T> Drop for SharedVector<T> {
     fn drop(&mut self) {
@@ -533,7 +535,7 @@ fn simple_test() {
     assert_ne!(x, y);
     let z: [i32; 3] = [1, 2, 3];
     assert_eq!(z, x.as_slice());
-    let vec: Vec<i32> = vec![1, 2, 3];
+    let vec: std::vec::Vec<i32> = std::vec![1, 2, 3];
     assert_eq!(x, vec);
     let def: SharedVector<i32> = Default::default();
     assert_eq!(def, SharedVector::<i32>::default());
@@ -559,12 +561,13 @@ fn invalid_capacity_test() {
 
 #[test]
 fn collect_from_iter_with_no_size_hint() {
+    use std::string::{String, ToString};
     struct NoSizeHintIter<'a> {
         data: &'a [&'a str],
         i: usize,
     }
 
-    impl<'a> Iterator for NoSizeHintIter<'a> {
+    impl Iterator for NoSizeHintIter<'_> {
         type Item = String;
 
         fn next(&mut self) -> Option<Self::Item> {
@@ -602,7 +605,7 @@ fn test_capacity_grows_only_when_needed() {
 
 #[test]
 fn test_vector_clear() {
-    let mut vec: SharedVector<String> = Default::default();
+    let mut vec: SharedVector<std::string::String> = Default::default();
     vec.clear();
     vec.push("Hello".into());
     vec.push("World".into());
@@ -643,19 +646,19 @@ fn pop_test() {
 pub(crate) mod ffi {
     use super::*;
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     /// This function is used for the low-level C++ interface to allocate the backing vector of a SharedVector.
     pub unsafe extern "C" fn slint_shared_vector_allocate(size: usize, align: usize) -> *mut u8 {
         alloc::alloc::alloc(alloc::alloc::Layout::from_size_align(size, align).unwrap())
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     /// This function is used for the low-level C++ interface to deallocate the backing vector of a SharedVector
     pub unsafe extern "C" fn slint_shared_vector_free(ptr: *mut u8, size: usize, align: usize) {
         alloc::alloc::dealloc(ptr, alloc::alloc::Layout::from_size_align(size, align).unwrap())
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     /// This function is used for the low-level C++ interface to initialize the empty SharedVector.
     pub unsafe extern "C" fn slint_shared_vector_empty() -> *const u8 {
         &SHARED_NULL as *const _ as *const u8

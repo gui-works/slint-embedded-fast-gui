@@ -19,13 +19,19 @@ path = "main.rs"
 
 [features]
 software-renderer = ["i-slint-compiler/software-renderer"]
+jemalloc = ["dep:tikv-jemallocator"]
+sdf-fonts = ["i-slint-compiler/sdf-fonts"]
 
-default = ["software-renderer"]
+# Keep defaults in sync with defaults applied in api/cpp/CMakeLists.txt for slint-compiler
+default = ["software-renderer", "jemalloc"]
 
 [dependencies]
-i-slint-compiler = { workspace = true, features = ["default", "display-diagnostics", "bundle-translations", "cpp", "rust"]}
+i-slint-compiler = { workspace = true, features = ["default", "display-diagnostics", "bundle-translations", "cpp", "rust"] }
 
 clap = { workspace = true }
 proc-macro2 = "1.0.11"
 spin_on = { workspace = true }
 itertools = { workspace = true }
+
+[target.'cfg(not(any(target_os = "windows", all(target_arch = "aarch64", target_os = "linux"))))'.dependencies]
+tikv-jemallocator = { workspace = true, optional = true }

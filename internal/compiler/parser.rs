@@ -13,7 +13,7 @@ This module has different sub modules with the actual parser functions
 */
 
 use crate::diagnostics::{BuildDiagnostics, SourceFile, Spanned};
-use smol_str::{SmolStr, StrExt};
+use smol_str::SmolStr;
 use std::fmt::Display;
 
 mod document;
@@ -349,7 +349,7 @@ declare_syntax! {
         ArgumentDeclaration -> [DeclaredIdentifier, Type],
         /// `-> type`  (but without the ->)
         ReturnType -> [Type],
-        CallbackConnection -> [ *DeclaredIdentifier,  CodeBlock ],
+        CallbackConnection -> [ *DeclaredIdentifier, ?CodeBlock, ?Expression ],
         /// Declaration of a property.
         PropertyDeclaration-> [ ?Type , DeclaredIdentifier, ?BindingExpression, ?TwoWayBinding ],
         /// QualifiedName are the properties name
@@ -367,7 +367,8 @@ declare_syntax! {
         /// the right-hand-side of a binding
         // Fixme: the test should be a or
         BindingExpression-> [ ?CodeBlock, ?Expression ],
-        CodeBlock-> [ *Expression, *ReturnStatement ],
+        CodeBlock-> [ *Expression, *LetStatement, *ReturnStatement ],
+        LetStatement -> [ DeclaredIdentifier, ?Type, Expression ],
         ReturnStatement -> [ ?Expression ],
         // FIXME: the test should test that as alternative rather than several of them (but it can also be a literal)
         Expression-> [ ?Expression, ?FunctionCallExpression, ?IndexExpression, ?SelfAssignment,
@@ -414,7 +415,7 @@ declare_syntax! {
         StatePropertyChange -> [ QualifiedName, BindingExpression ],
         /// `transitions: [...]`
         Transitions -> [*Transition],
-        /// There is an identifier "in" or "out", the DeclaredIdentifier is the state name
+        /// There is an identifier "in", "out", "in-out", the DeclaredIdentifier is the state name
         Transition -> [?DeclaredIdentifier, *PropertyAnimation],
         /// Export a set of declared components by name
         ExportsList -> [ *ExportSpecifier, ?Component, *StructDeclaration, ?ExportModule, *EnumDeclaration ],
@@ -501,7 +502,7 @@ mod parser_trait {
         /// (do not re-implement this function, re-implement
         /// start_node_impl and finish_node_impl)
         #[must_use = "The node will be finished when it is dropped"]
-        fn start_node(&mut self, kind: SyntaxKind) -> Node<Self> {
+        fn start_node(&mut self, kind: SyntaxKind) -> Node<'_, Self> {
             self.start_node_impl(kind, None, NodeToken(()));
             Node(self)
         }
@@ -512,7 +513,7 @@ mod parser_trait {
             &mut self,
             checkpoint: impl Into<Option<Self::Checkpoint>>,
             kind: SyntaxKind,
-        ) -> Node<Self> {
+        ) -> Node<'_, Self> {
             self.start_node_impl(kind, checkpoint.into(), NodeToken(()));
             Node(self)
         }
@@ -541,7 +542,7 @@ mod parser_trait {
         /// Returns true if the token was consumed.
         fn expect(&mut self, kind: SyntaxKind) -> bool {
             if !self.test(kind) {
-                self.error(format!("Syntax error: expected {}", kind));
+                self.error(format!("Syntax error: expected {kind}"));
                 return false;
             }
             true
@@ -591,12 +592,12 @@ mod parser_trait {
     /// and finishes the node on Drop
     #[derive(derive_more::DerefMut)]
     pub struct Node<'a, P: Parser>(&'a mut P);
-    impl<'a, P: Parser> Drop for Node<'a, P> {
+    impl<P: Parser> Drop for Node<'_, P> {
         fn drop(&mut self) {
             self.0.finish_node_impl(NodeToken(()));
         }
     }
-    impl<'a, P: Parser> core::ops::Deref for Node<'a, P> {
+    impl<P: Parser> core::ops::Deref for Node<'_, P> {
         type Target = P;
         fn deref(&self) -> &Self::Target {
             self.0
@@ -826,6 +827,12 @@ impl SyntaxNode {
             .find(|n| n.kind() == kind)
             .and_then(|x| x.as_token().map(|x| x.text().into()))
     }
+    pub fn descendants(&self) -> impl Iterator<Item = SyntaxNode> {
+        let source_file = self.source_file.clone();
+        self.node
+            .descendants()
+            .map(move |node| SyntaxNode { node, source_file: source_file.clone() })
+    }
     pub fn kind(&self) -> SyntaxKind {
         self.node.kind()
     }
@@ -1007,7 +1014,29 @@ pub fn identifier_text(node: &SyntaxNode) -> Option<SmolStr> {
 }
 
 pub fn normalize_identifier(ident: &str) -> SmolStr {
-    ident.replace_smolstr("_", "-")
+    let mut builder = smol_str::SmolStrBuilder::default();
+    for (pos, c) in ident.chars().enumerate() {
+        match (pos, c) {
+            (0, '-') | (0, '_') => builder.push('_'),
+            (_, '_') => builder.push('-'),
+            (_, c) => builder.push(c),
+        }
+    }
+    builder.finish()
+}
+
+#[test]
+fn test_normalize_identifier() {
+    assert_eq!(normalize_identifier("true"), SmolStr::new("true"));
+    assert_eq!(normalize_identifier("foo_bar"), SmolStr::new("foo-bar"));
+    assert_eq!(normalize_identifier("-foo_bar"), SmolStr::new("_foo-bar"));
+    assert_eq!(normalize_identifier("-foo-bar"), SmolStr::new("_foo-bar"));
+    assert_eq!(normalize_identifier("foo_bar_"), SmolStr::new("foo-bar-"));
+    assert_eq!(normalize_identifier("foo_bar-"), SmolStr::new("foo-bar-"));
+    assert_eq!(normalize_identifier("_foo_bar_"), SmolStr::new("_foo-bar-"));
+    assert_eq!(normalize_identifier("__1"), SmolStr::new("_-1"));
+    assert_eq!(normalize_identifier("--1"), SmolStr::new("_-1"));
+    assert_eq!(normalize_identifier("--1--"), SmolStr::new("_-1--"));
 }
 
 // Actual parser

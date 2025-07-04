@@ -21,8 +21,9 @@ TestCase := Rectangle {
 
     property <length> img_width: img.width;
     property <length> img_height: img.height;
+    in-out property <float> test_no_overflow: (21 - img.source.width) / 2; // (21 - 320)/2 = -149.5
     property <bool> test: img2.source-clip-height * 1px == img2.height && img2.source-clip-width * 1px == img2.width &&
-         img2.width/1px == img2.source.width - 20 && img3.source.width == 0 && img3.source.height == 0;
+         img2.width/1px == img2.source.width - 20 && img3.source.width == 0 && img3.source.height == 0 && test_no_overflow == -149.5;
 }
 
 /*
@@ -33,15 +34,26 @@ const TestCase &instance = *handle;
 assert_eq(instance.get_img_width(), 320.);
 assert_eq(instance.get_img_height(), 480.);
 assert(instance.get_test());
+
+auto img_search = slint::testing::ElementHandle::find_by_element_id(handle, "TestCase::img");
+assert_eq(img_search.size(), 1);
+auto img = img_search[0];
+assert(*img.accessible_role() == slint::testing::AccessibleRole::Image);
 ```
 
 
 ```rust
+use i_slint_backend_testing::AccessibleRole;
+
 let instance = TestCase::new().unwrap();
 
 assert_eq!(instance.get_img_width(), 320.);
 assert_eq!(instance.get_img_height(), 480.);
 assert!(instance.get_test());
+
+let mut img_search = slint_testing::ElementHandle::find_by_element_id(&instance, "TestCase::img");
+let img = img_search.next().unwrap();
+assert_eq!(img.accessible_role(), Some(AccessibleRole::Image));
 ```
 
 ```js

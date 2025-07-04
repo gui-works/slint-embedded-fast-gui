@@ -5,6 +5,7 @@
 This module contains path related types and functions for the run-time library.
 */
 
+use crate::debug_log;
 use crate::items::PathEvent;
 #[cfg(feature = "rtti")]
 use crate::rtti::*;
@@ -142,7 +143,7 @@ struct ToLyonPathEventIterator<'a> {
     last: Option<&'a lyon_path::math::Point>,
 }
 
-impl<'a> Iterator for ToLyonPathEventIterator<'a> {
+impl Iterator for ToLyonPathEventIterator<'_> {
     type Item = lyon_path::Event<lyon_path::math::Point, lyon_path::math::Point>;
     fn next(&mut self) -> Option<Self::Item> {
         use lyon_path::Event;
@@ -178,7 +179,7 @@ impl<'a> Iterator for ToLyonPathEventIterator<'a> {
     }
 }
 
-impl<'a> ExactSizeIterator for ToLyonPathEventIterator<'a> {}
+impl ExactSizeIterator for ToLyonPathEventIterator<'_> {}
 
 struct TransformedLyonPathIterator<EventIt> {
     it: EventIt,
@@ -304,7 +305,7 @@ impl PathData {
                     ) {
                         Ok(()) => LyonPathIteratorVariant::FromPath(builder.build()),
                         Err(e) => {
-                            eprintln!("Error while parsing path commands '{commands}': {e:?}");
+                            debug_log!("Error while parsing path commands '{commands}': {e:?}");
                             LyonPathIteratorVariant::FromPath(Default::default())
                         }
                     }
@@ -396,7 +397,7 @@ pub(crate) mod ffi {
     #[allow(non_camel_case_types)]
     type c_void = ();
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     /// This function is used for the low-level C++ interface to allocate the backing vector for a shared path element array.
     pub unsafe extern "C" fn slint_new_path_elements(
         out: *mut c_void,
@@ -407,7 +408,7 @@ pub(crate) mod ffi {
         core::ptr::write(out as *mut crate::SharedVector<PathElement>, arr);
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     /// This function is used for the low-level C++ interface to allocate the backing vector for a shared path event array.
     pub unsafe extern "C" fn slint_new_path_events(
         out_events: *mut c_void,

@@ -3,45 +3,61 @@
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 import { AboutSlint, Button } from "std-widgets.slint";
+
 export component TestCase inherits Window {
+    width: 300px;
+    height: 300px;
+
+    in-out property <string> result;
+
     MenuBar {
-        entries: [
-            { title: "File" },
-            { title: "Edit" },
-        ];
-        sub-menu(entry) => {
-            if entry.title == "File" {
-                return [
-                    { title: "New" },
-                    { title: "Open" },
-                    { title: "Save" },
-                    { title: "Open Recent", has-sub-menu: true },
-                ];
-            } else if entry.title == "Edit" {
-                return [
-                    { title: "Copy" },
-                    { title: "Paste" },
-                    { title: "Xxx", has-sub-menu: true },
-                ];
-            } else if entry.title == "Open Recent" {
-                return [
-                    { title: "Recent 1" },
-                    { title: "Recent 2" },
-                    { title: "Recent 3" },
-                    { title: "Recent 4" },
-                ];
-            } else if entry.title == "Xxx" {
-                return [
-                    { title: "Aaa" },
-                    { title: "Xxx", has-sub-menu: true },
-                    { title: "Yyy" },
-                ];
-            } else {
-                return [];
+        Menu {
+            title: "File";
+            MenuSeparator {} // should be hidden
+            MenuItem {
+                title: "New";
+                activated => { result += self.title; debug("New"); }
+            }
+            MenuItem {
+                title: "Open";
+                activated => { debug("Open"); }
+            }
+            Menu {
+                function open-recent(entry: string) {
+                    result += entry;
+                    debug(entry);
+                }
+                title: "Open Recent";
+                MenuItem {
+                    title: "Recent 1";
+                    activated => { open-recent("Recent 1"); }
+                }
+                MenuItem {
+                    title: "Recent 2";
+                    activated => { open-recent("Recent 2"); }
+                }
+                MenuItem {
+                    title: "Recent 3";
+                    activated => { open-recent("Recent 3"); }
+                }
+            }
+            MenuSeparator {}
+            MenuSeparator {}
+            MenuItem {
+                title: "Save";
+                activated => { debug("Save"); }
             }
         }
-        activated(entry) => {
-            debug("Activated", entry);
+        Menu {
+            title: "Edit";
+            MenuItem {
+                title: "Copy";
+                activated => { debug("Copy"); }
+            }
+            MenuItem {
+                title: "Paste";
+                activated => { debug("Paste"); }
+            }
         }
     }
     vl := VerticalLayout {
@@ -56,13 +72,52 @@ export component TestCase inherits Window {
 
 /*
 ```rust
+use slint::{SharedString, platform::{Key}};
 let instance = TestCase::new().unwrap();
 assert!(instance.get_test());
+// click on the file menu
+slint_testing::send_mouse_click(&instance, 10., 16.);
+// navigate using the keys to the "Open Recent" menu item
+slint_testing::send_keyboard_string_sequence(&instance, &SharedString::from(Key::DownArrow));
+slint_testing::send_keyboard_string_sequence(&instance, &SharedString::from(Key::DownArrow));
+slint_testing::send_keyboard_string_sequence(&instance, &SharedString::from(Key::DownArrow));
+slint_testing::send_keyboard_string_sequence(&instance, &SharedString::from(Key::RightArrow));
+slint_testing::send_keyboard_string_sequence(&instance, &SharedString::from(Key::UpArrow));
+assert_eq!(instance.get_result(), "");
+slint_testing::send_keyboard_string_sequence(&instance, &SharedString::from("\n"));
+assert_eq!(instance.get_result(), "Recent 3");
+
+instance.set_result("".into());
+//click on the file menu
+slint_testing::send_mouse_click(&instance, 10., 16.);
+assert_eq!(instance.get_result(), "");
+// click on the first entry (new)  (this value seems to work with all styles)
+slint_testing::send_mouse_click(&instance, 30., 49.);
+assert_eq!(instance.get_result(), "New");
 ```
 
 ```cpp
 auto handle = TestCase::create();
 const TestCase &instance = *handle;
 assert(instance.get_test());
+// click on the file menu
+slint_testing::send_mouse_click(&instance, 10., 16.);
+// navigate using the keys to the "Open Recent" menu item
+slint_testing::send_keyboard_string_sequence(&instance, slint::platform::key_codes::DownArrow);
+slint_testing::send_keyboard_string_sequence(&instance, slint::platform::key_codes::DownArrow);
+slint_testing::send_keyboard_string_sequence(&instance, slint::platform::key_codes::DownArrow);
+slint_testing::send_keyboard_string_sequence(&instance, slint::platform::key_codes::RightArrow);
+slint_testing::send_keyboard_string_sequence(&instance, slint::platform::key_codes::UpArrow);
+assert_eq(instance.get_result(), "");
+slint_testing::send_keyboard_string_sequence(&instance, "\n");
+assert_eq(instance.get_result(), "Recent 3");
+
+instance.set_result("");
+//click on the file menu
+slint_testing::send_mouse_click(&instance, 10., 16.);
+assert_eq(instance.get_result(), "");
+// click on the first entry (new)  (this value seems to work with all styles)
+slint_testing::send_mouse_click(&instance, 30., 49.);
+assert_eq(instance.get_result(), "New");
 ```
 */

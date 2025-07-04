@@ -12,7 +12,7 @@ The syntax tests are located in [internal/compiler/tests/syntax/](../internal/co
 
 In summary, each .slint files have comments with `^error` like so:
 
-```ingore
+```ignore
 foo bar
 //  ^error{parse error}
 ```
@@ -24,8 +24,15 @@ Ideally, each error message must be tested like so.
 The syntax test can be run alone with
 
 ```sh
-cargo test --test syntax_tests
+cargo test -p i-slint-compiler --features display-diagnostics --test syntax_tests
 ```
+
+In order to update the failing tests, set the `SLINT_SYNTAX_TEST_UPDATE` environment variable to `1`.
+```sh
+SLINT_SYNTAX_TEST_UPDATE=1 cargo test -p i-slint-compiler --test syntax_tests
+```
+This will change the comments to add the error of the expected messages
+
 
 ## Driver tests
 
@@ -61,7 +68,7 @@ export component Foo inherits Rectangle {
 
 The rust driver will compile each snippet of code and put it in a `slint!` macro in its own module
 In addition, if there are ```` ```rust ```` blocks in a comment, they are extracted into a `#[test]`
-function in the same module. This is usefull to test the rust api.
+function in the same module. This is useful to test the rust api.
 This is all compiled in a while program, so the `SLINT_TEST_FILTER` environment variable can be
 set while building to only build the test that matches the filter.
 Example: to test all the layout test:
@@ -71,7 +78,7 @@ SLINT_TEST_FILTER=layout cargo test -p test-driver-rust
 ```
 
 Instead of putting everything in a slint! macro, it's possible to tell the driver to do the
-compilation in the build.rs, with the builod-time feature:
+compilation in the build.rs, with the build-time feature:
 
 ```
 SLINT_TEST_FILTER=layout cargo test -p test-driver-rust --features build-time

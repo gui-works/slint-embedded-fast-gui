@@ -18,12 +18,7 @@ use i_slint_core::platform::PlatformError;
 
 use crate::fullscreenwindowadapter::FullscreenWindowAdapter;
 
-#[cfg(not(any(
-    target_family = "windows",
-    target_os = "macos",
-    target_os = "ios",
-    target_arch = "wasm32"
-)))]
+#[cfg(not(any(target_family = "windows", target_vendor = "apple", target_arch = "wasm32")))]
 mod input;
 
 #[derive(Clone)]
@@ -162,10 +157,10 @@ impl i_slint_core::platform::Platform for Backend {
                 .seat
                 .borrow_mut()
                 .open_device(&device)
-                .map_err(|e| format!("Error opening device: {e}"))?;
+                .map_err(|e| format!("Error opening device {}: {e}", device.display()))?;
 
             // For polling for drm::control::Event::PageFlip we need a blocking FD. Would be better to do this non-blocking
-            let fd = device.as_fd().as_raw_fd();
+            let fd = device.as_fd();
             let flags = nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_GETFL)
                 .map_err(|e| format!("Error getting file descriptor flags: {e}"))?;
             let mut flags = nix::fcntl::OFlag::from_bits_retain(flags);
@@ -174,7 +169,7 @@ impl i_slint_core::platform::Platform for Backend {
                 .map_err(|e| format!("Error making device fd non-blocking: {e}"))?;
 
             // Safety: We take ownership of the now shared FD, ... although we should be using libseat's close_device....
-            Ok(Rc::new(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) }))
+            Ok(Rc::new(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd.as_raw_fd()) }))
         };
 
         #[cfg(not(feature = "libseat"))]
@@ -185,7 +180,7 @@ impl i_slint_core::platform::Platform for Backend {
                 .write(true)
                 .open(device)
                 .map(|file| file.into())
-                .map_err(|e| format!("Error opening device: {e}"))?;
+                .map_err(|e| format!("Error opening device {}: {e}", device.display()))?;
 
             Ok(Rc::new(device))
         };
@@ -261,7 +256,6 @@ impl i_slint_core::platform::Platform for Backend {
             }
 
             if let Some(adapter) = self.window.borrow().as_ref() {
-                adapter.register_event_loop(event_loop.handle())?;
                 adapter.clone().render_if_needed(mouse_position_property.as_ref())?;
             };
 

@@ -26,7 +26,7 @@ In our written communication we aim to be:
    - Avoid: "Please install XYZ ..."
    - Use: "Install XYZ"
    - Rational: The user is reading this to get instructions, there's no need to beat around the bush.
-   
+
  3. Write actionable:
    - Avoid: "Element XYZ makes it possible to set the background color."
    - Use: "Use element XYZ to set the background color."
@@ -37,7 +37,17 @@ In our written communication we aim to be:
    - Use: "Try out XYZ."
    - Rationale: Use exclamation points sparingly, save them for when they really count. We already have the attention of the reader.
 
-  5. Use Title Case for headings.
+ 5. Use Title Case for headings.
+
+ 6. Use active voice for things *we* did, for example in blog posts.
+   - Avoid: "The foo widget got revamped."
+   - Use: "We revamped the foo widget."
+   - Rationale: We're not joining the audience on the observer's bench, we're announcing the result of our work.
+
+ 7. User-Centric Messaging: Write from the user's perspective. Emphasize the value or outcome a user gains rather than focusing on product changes.
+   - Avoid: "Slint adds feature X."
+   - Use: "Achieve Y using the new X feature in Slint."
+   - Rationale: Users care about how a feature helps them solve a problem or reach a goal—not just that it exists.
 
 ## Docs
 

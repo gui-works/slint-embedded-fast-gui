@@ -37,18 +37,18 @@ fn create_linuxkms_backend() -> Result<Box<dyn Platform + 'static>, PlatformErro
 
 cfg_if::cfg_if! {
     if #[cfg(target_os = "android")] {
-        const DEFAULT_BACKEND_NAME: &'static str = "";
+        const DEFAULT_BACKEND_NAME: &str = "";
     } else if #[cfg(all(feature = "i-slint-backend-qt", not(no_qt)))] {
         use i_slint_backend_qt as default_backend;
-        const DEFAULT_BACKEND_NAME: &'static str = "qt";
+        const DEFAULT_BACKEND_NAME: &str = "qt";
     } else if #[cfg(feature = "i-slint-backend-winit")] {
         use i_slint_backend_winit as default_backend;
-        const DEFAULT_BACKEND_NAME: &'static str = "winit";
+        const DEFAULT_BACKEND_NAME: &str = "winit";
     } else if #[cfg(all(feature = "i-slint-backend-linuxkms", target_os = "linux"))] {
         use i_slint_backend_linuxkms as default_backend;
-        const DEFAULT_BACKEND_NAME: &'static str = "linuxkms";
+        const DEFAULT_BACKEND_NAME: &str = "linuxkms";
     } else {
-        const DEFAULT_BACKEND_NAME: &'static str = "";
+        const DEFAULT_BACKEND_NAME: &str = "";
     }
 }
 
@@ -78,7 +78,7 @@ cfg_if::cfg_if! {
                     Ok(platform) => return Ok(platform),
                     Err(err) => {
                         backend_errors.push(if !backend_name.is_empty() {
-                            format!("Error from {} backend: {}", backend_name, err).into()
+                            format!("Error from {backend_name} backend: {err}").into()
                         } else {
                             "No backends configured.".into()
                         });
@@ -92,17 +92,8 @@ cfg_if::cfg_if! {
         pub fn create_backend() -> Result<Box<dyn Platform + 'static>, PlatformError>  {
 
             let backend_config = std::env::var("SLINT_BACKEND").unwrap_or_default();
-
             let backend_config = backend_config.to_lowercase();
-            let (event_loop, _renderer) = backend_config.split_once('-').unwrap_or(match backend_config.as_str() {
-                "qt" => ("qt", ""),
-                "gl" | "winit" => ("winit", ""),
-                "femtovg" => ("winit", "femtovg"),
-                "skia" => ("winit", "skia"),
-                "sw" | "software" => ("winit", "software"),
-                "linuxkms" => ("linuxkms", ""),
-                x => (x, ""),
-            });
+            let (event_loop, _renderer) = parse_backend_env_var(backend_config.as_str());
 
             match event_loop {
                 #[cfg(all(feature = "i-slint-backend-qt", not(no_qt)))]
@@ -115,7 +106,7 @@ cfg_if::cfg_if! {
             }
 
             if !backend_config.is_empty() {
-                eprintln!("Could not load rendering backend {}, fallback to default", backend_config)
+                eprintln!("Could not load rendering backend {backend_config}, fallback to default")
             }
             create_default_backend()
         }
@@ -131,6 +122,18 @@ cfg_if::cfg_if! {
         pub type NativeGlobals = ();
         pub const HAS_NATIVE_STYLE: bool = false;
     }
+}
+
+pub fn parse_backend_env_var(backend_config: &str) -> (&str, &str) {
+    backend_config.split_once('-').unwrap_or(match backend_config {
+        "qt" => ("qt", ""),
+        "gl" | "winit" => ("winit", ""),
+        "femtovg" => ("winit", "femtovg"),
+        "skia" => ("winit", "skia"),
+        "sw" | "software" => ("winit", "software"),
+        "linuxkms" => ("linuxkms", ""),
+        x => (x, ""),
+    })
 }
 
 /// Run the callback with the platform abstraction.

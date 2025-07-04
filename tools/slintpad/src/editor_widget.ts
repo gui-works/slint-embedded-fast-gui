@@ -242,9 +242,8 @@ export class KnownUrlMapper implements UrlMapper {
                 monaco.Uri.parse(mapped_url) ??
                 monaco.Uri.parse("file:///broken_url")
             );
-        } else {
-            return uri;
         }
+        return uri;
     }
 }
 
@@ -314,6 +313,10 @@ class EditorPaneWidget extends Widget {
             model: model_ref.object.textEditorModel,
         });
 
+        this.#editor.onDidFocusEditorText((_) => {
+            EDITOR_WIDGET!.switch_to_pane(this);
+        });
+
         this.setFlag(Widget.Flag.DisallowLayout);
         this.addClass("content");
         this.addClass("editor");
@@ -321,7 +324,7 @@ class EditorPaneWidget extends Widget {
             model_ref.object.textEditorModel?.uri,
         );
         this.title.closable = false;
-        this.title.caption = `Slint Code Editor`;
+        this.title.caption = "Slint Code Editor";
     }
 
     get editor(): monaco.editor.IStandaloneCodeEditor {
@@ -358,6 +361,7 @@ export class EditorWidget extends Widget {
     #layout: BoxLayout;
     #tab_map: Map<string, EditorPaneWidget> = new Map();
     #tab_panel: TabPanel | null = null;
+    #open_files: monaco.IDisposable[] = [];
 
     #client: MonacoLanguageClient | null = null;
 
@@ -373,7 +377,7 @@ export class EditorWidget extends Widget {
 
         this.title.label = "Editor";
         this.title.closable = false;
-        this.title.caption = `Slint code editor`;
+        this.title.caption = "Slint code editor";
 
         this.#layout = new BoxLayout({ spacing: 0 });
         super.layout = this.#layout;
@@ -389,49 +393,13 @@ export class EditorWidget extends Widget {
         this.clear_editors();
 
         this.open_default_content();
-
-        monaco.editor.registerEditorOpener({
-            openCodeEditor: (_source, uri, position) => {
-                const pane = this.#tab_map.get(uri.toString());
-                if (pane) {
-                    this.#tab_panel!.currentWidget = pane;
-
-                    pane.editor.focus();
-
-                    if (position instanceof monaco.Position) {
-                        pane.editor.setSelection(
-                            {
-                                startLineNumber: position.lineNumber,
-                                startColumn: position.column,
-                                endLineNumber: position.lineNumber,
-                                endColumn: position.column,
-                            },
-                            "lsp:gotoDefinition",
-                        );
-                        pane.editor.revealPositionNearTop(
-                            position,
-                            monaco.editor.ScrollType.Immediate,
-                        );
-                    } else if (position instanceof monaco.Range) {
-                        pane.editor.setSelection(
-                            position,
-                            "lsp:gotoDefinition",
-                        );
-                        pane.editor.revealRangeNearTop(
-                            position,
-                            monaco.editor.ScrollType.Immediate,
-                        );
-                    }
-
-                    return true;
-                } else {
-                    return false;
-                }
-            },
-        });
     }
 
-    private async open_default_content() {
+    switch_to_pane(pane: EditorPaneWidget) {
+        this.#tab_panel!.currentWidget = pane;
+    }
+
+    private open_default_content() {
         const params = new URLSearchParams(window.location.search);
         const code = params.get("snippet");
         const load_url = params.get("load_url");
@@ -445,10 +413,11 @@ export class EditorWidget extends Widget {
                     code,
                 ),
             );
-        } else if (load_url) {
-            return this.project_from_url(load_url);
+        }
+        if (load_url) {
+            void this.project_from_url(load_url);
         } else {
-            return this.set_demo(load_demo ?? "");
+            void this.set_demo(load_demo ?? "");
         }
     }
 
@@ -464,6 +433,11 @@ export class EditorWidget extends Widget {
 
         this.#tab_map.clear();
         this.#extra_file_urls = {};
+
+        for (const d of this.#open_files) {
+            d.dispose();
+        }
+        this.#open_files = [];
     }
 
     private open_hello_world(): monaco.Uri {
@@ -476,9 +450,12 @@ export class EditorWidget extends Widget {
     }
 
     private open_file_with_content(uri: monaco.Uri, content: string) {
-        FILESYSTEM_PROVIDER.registerFile(
-            new RegisteredMemoryFile(uri, content),
+        this.#open_files.push(
+            FILESYSTEM_PROVIDER.registerFile(
+                new RegisteredMemoryFile(uri, content),
+            ),
         );
+
         monaco.editor
             .createModelReference(uri)
             .then((model_ref) => this.open_model_ref(model_ref));
@@ -509,7 +486,7 @@ export class EditorWidget extends Widget {
         return Promise.resolve(pane.editor);
     }
 
-    public async map_url(url_: string): Promise<string | undefined> {
+    public map_url(url_: string): Promise<string | undefined> {
         const js_url = new URL(url_);
 
         const absolute_uri = monaco.Uri.parse(js_url.toString());
@@ -522,7 +499,7 @@ export class EditorWidget extends Widget {
             this.#extra_file_urls[file] = mapped_string;
         }
 
-        return mapped_string;
+        return Promise.resolve(mapped_string);
     }
 
     private get current_editor_pane(): EditorPaneWidget {
@@ -555,9 +532,8 @@ export class EditorWidget extends Widget {
         }
 
         this.clear_editors();
-        return Promise.resolve(
-            (await this.open_tab_from_url(monaco.Uri.parse(uri)))[0],
-        );
+
+        return (await this.open_tab_from_url(monaco.Uri.parse(uri)))[0];
     }
 
     private async open_tab_from_url(
@@ -581,10 +557,17 @@ export class EditorWidget extends Widget {
         return [
             ["", "Hello World!"],
             ["examples/gallery/gallery.slint", "Gallery"],
+            ["demos/home-automation/ui/demo-debug.slint", "Home Automation"],
+            ["demos/usecases/ui/app.slint", "Use Cases Demo"],
             ["demos/printerdemo/ui/printerdemo.slint", "Printer Demo"],
             ["demos/energy-monitor/ui/desktop_window.slint", "Energy Monitor"],
             ["examples/todo/ui/todo.slint", "Todo Demo"],
             ["examples/iot-dashboard/main.slint", "IOT Dashboard"],
+            ["examples/fancy-switches/demo.slint", "Fancy Switches"],
+            ["examples/dial/dial.slint", "Fanncy Dial"],
+            ["examples/orbit-animation/demo.slint", "Fancy Animations"],
+            ["examples/repeater/demo.slint", "Fancy Repeater"],
+            ["examples/sprite-sheet/demo.slint", "Spritesheet Demo"],
         ];
     }
 
@@ -605,7 +588,7 @@ export class EditorWidget extends Widget {
         return true;
     }
 
-    public async set_demo(location: string): Promise<monaco.Uri | null> {
+    public set_demo(location: string): Promise<monaco.Uri | null> {
         if (location) {
             const default_tag = "XXXX_DEFAULT_TAG_XXXX";
             let tag = default_tag.startsWith("XXXX_DEFAULT_TAG_")
@@ -624,9 +607,8 @@ export class EditorWidget extends Widget {
             return this.project_from_url(
                 `https://raw.githubusercontent.com/slint-ui/slint/${tag}/${location}`,
             );
-        } else {
-            return Promise.resolve(this.open_hello_world());
         }
+        return Promise.resolve(this.open_hello_world());
     }
 
     public get open_document_urls(): string[] {

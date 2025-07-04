@@ -11,7 +11,6 @@ mod semantic_tokens;
 mod signature_help;
 #[cfg(test)]
 pub mod test;
-pub mod token_info;
 
 use crate::common;
 use crate::util;
@@ -32,9 +31,9 @@ use lsp_types::{
     ClientCapabilities, CodeActionOrCommand, CodeActionProviderCapability, CodeLens,
     CodeLensOptions, Color, ColorInformation, ColorPresentation, Command, CompletionOptions,
     DocumentSymbol, DocumentSymbolResponse, InitializeParams, InitializeResult, OneOf, Position,
-    PrepareRenameResponse, PublishDiagnosticsParams, RenameOptions, SemanticTokensFullOptions,
-    SemanticTokensLegend, SemanticTokensOptions, ServerCapabilities, ServerInfo,
-    TextDocumentSyncCapability, TextEdit, Url, WorkDoneProgressOptions,
+    PrepareRenameResponse, RenameOptions, SemanticTokensFullOptions, SemanticTokensLegend,
+    SemanticTokensOptions, ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextEdit,
+    Url, WorkDoneProgressOptions,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -97,9 +96,11 @@ pub fn request_state(ctx: &std::rc::Rc<Context>) {
             contents: node.text().to_string(),
         })
     }
+
     ctx.server_notifier.send_message_to_preview(common::LspToPreviewMessage::SetConfiguration {
         config: ctx.preview_config.borrow().clone(),
     });
+
     if let Some(c) = ctx.to_show.borrow().clone() {
         ctx.server_notifier.send_message_to_preview(common::LspToPreviewMessage::ShowPreview(c))
     }
@@ -422,7 +423,7 @@ pub fn register_request_handlers(rh: &mut RequestHandler) {
             let gp = p.parent();
 
             if p.kind() == SyntaxKind::DeclaredIdentifier
-                && gp.as_ref().map_or(false, |n| n.kind() == SyntaxKind::Component)
+                && gp.as_ref().is_some_and(|n| n.kind() == SyntaxKind::Component)
             {
                 let element = gp.as_ref().unwrap().child_node(SyntaxKind::Element).unwrap();
 
@@ -438,7 +439,7 @@ pub fn register_request_handlers(rh: &mut RequestHandler) {
             }
 
             if p.kind() == SyntaxKind::QualifiedName
-                && gp.as_ref().map_or(false, |n| n.kind() == SyntaxKind::Element)
+                && gp.as_ref().is_some_and(|n| n.kind() == SyntaxKind::Element)
             {
                 let range = util::node_to_lsp_range(&p);
 
@@ -447,7 +448,7 @@ pub fn register_request_handlers(rh: &mut RequestHandler) {
                     .unwrap()
                     .parent()
                     .as_ref()
-                    .map_or(false, |n| n.kind() != SyntaxKind::Component)
+                    .is_some_and(|n| n.kind() != SyntaxKind::Component)
                 {
                     ctx.server_notifier.send_message_to_preview(
                         common::LspToPreviewMessage::HighlightFromEditor {
@@ -497,45 +498,33 @@ pub fn register_request_handlers(rh: &mut RequestHandler) {
                     .collect();
                 return Ok(Some(common::create_workspace_edit(uri, version, edits)));
             }
-            match p.kind() {
-                SyntaxKind::DeclaredIdentifier => {
-                    common::rename_component::rename_component_from_definition(
-                        &document_cache,
-                        &p.into(),
-                        &params.new_name,
-                    )
+            if let Some(declaration_node) =
+                common::rename_component::find_declaration_node(&document_cache, &tk)
+            {
+                return declaration_node
+                    .rename(&document_cache, &params.new_name)
                     .map(Some)
                     .map_err(|e| LspError {
                         code: LspErrorCode::RequestFailed,
                         message: e.to_string(),
-                    })
-                }
-                _ => Err(LspError {
-                    code: LspErrorCode::RequestFailed,
-                    message: "This symbol cannot be renamed.".into(),
-                }),
+                    });
             }
-        } else {
-            Err(LspError {
-                code: LspErrorCode::RequestFailed,
-                message: "This symbol cannot be renamed.".into(),
-            })
         }
+
+        Err(LspError {
+            code: LspErrorCode::RequestFailed,
+            message: "This symbol cannot be renamed.".into(),
+        })
     });
     rh.register::<PrepareRenameRequest, _>(|params, ctx| async move {
         let mut document_cache = ctx.document_cache.borrow_mut();
         let uri = params.text_document.uri;
-        if let Some((tk, _off)) = token_descr(&mut document_cache, &uri, &params.position) {
+        if let Some((tk, _)) = token_descr(&mut document_cache, &uri, &params.position) {
             if find_element_id_for_highlight(&tk, &tk.parent()).is_some() {
                 return Ok(Some(PrepareRenameResponse::Range(util::token_to_lsp_range(&tk))));
             }
-            let p = tk.parent();
-            if matches!(p.kind(), SyntaxKind::DeclaredIdentifier) {
-                if let Some(gp) = p.parent() {
-                    if gp.kind() == SyntaxKind::Component {
-                        return Ok(Some(PrepareRenameResponse::Range(util::node_to_lsp_range(&p))));
-                    }
-                }
+            if common::rename_component::find_declaration_node(&document_cache, &tk).is_some() {
+                return Ok(Some(PrepareRenameResponse::Range(util::token_to_lsp_range(&tk))));
             }
         }
         Ok(None)
@@ -555,11 +544,11 @@ fn extract_param<T: serde::de::DeserializeOwned>(
 ) -> Result<T, LspError> {
     let p = params.get(index).ok_or_else(|| LspError {
         code: LspErrorCode::InvalidParameter,
-        message: format!("{} parameter is missing", name),
+        message: format!("{name} parameter is missing"),
     })?;
     serde_json::from_value(p.clone()).map_err(|e| LspError {
         code: LspErrorCode::InvalidParameter,
-        message: format!("{} parameter is invalid: {}", name, e),
+        message: format!("{name} parameter is invalid: {e}"),
     })
 }
 
@@ -628,7 +617,7 @@ pub async fn populate_command(
         )
         .map_err(|_| LspError {
             code: LspErrorCode::InvalidParameter,
-            message: "First paramater is not a OptionalVersionedTextDocumentIdentifier".into(),
+            message: "First parameter is not a OptionalVersionedTextDocumentIdentifier".into(),
         })?;
     let new_text = serde_json::from_value::<String>(
         params
@@ -660,7 +649,7 @@ pub async fn populate_command(
             } else {
                 return Err(LspError {
                     code: LspErrorCode::InvalidParameter,
-                    message: format!("Document with uri {uri} not found in cache").into(),
+                    message: format!("Document with uri {uri} not found in cache"),
                 });
             }
         }
@@ -678,7 +667,7 @@ pub async fn populate_command(
             });
         };
 
-        let Some(range) = populate_command_range(&node) else {
+        let Some(range) = populate_command_range(node) else {
             return Err(LspError {
                 code: LspErrorCode::InvalidParameter,
                 message: "No slint code range in document".into(),
@@ -720,7 +709,7 @@ pub(crate) async fn reload_document_impl(
     url: lsp_types::Url,
     version: Option<i32>,
     document_cache: &mut common::DocumentCache,
-) -> HashMap<Url, Vec<lsp_types::Diagnostic>> {
+) -> (HashSet<PathBuf>, BuildDiagnostics) {
     enum FileAction {
         ProcessContent(String),
         IgnoreFile,
@@ -781,24 +770,10 @@ pub(crate) async fn reload_document_impl(
         }
     }
 
-    // Always provide diagnostics for all files. Empty diagnostics clear any previous ones.
-    let mut lsp_diags: HashMap<Url, Vec<lsp_types::Diagnostic>> =
-        core::iter::once(Url::from_file_path(&path).unwrap())
-            .chain(dependencies.iter().cloned())
-            .chain(diag.all_loaded_files.iter().filter_map(|p| Url::from_file_path(&p).ok()))
-            .map(|uri| (uri, Default::default()))
-            .collect();
+    let extra_files =
+        dependencies.iter().filter_map(common::uri_to_file).chain(core::iter::once(path)).collect();
 
-    for d in diag.into_iter() {
-        #[cfg(not(target_arch = "wasm32"))]
-        if d.source_file().unwrap().is_relative() {
-            continue;
-        }
-        let uri = Url::from_file_path(d.source_file().unwrap()).unwrap();
-        lsp_diags.entry(uri).or_default().push(util::to_lsp_diag(&d));
-    }
-
-    lsp_diags
+    (extra_files, diag)
 }
 
 pub async fn open_document(
@@ -825,18 +800,56 @@ pub async fn reload_document(
     version: Option<i32>,
     document_cache: &mut common::DocumentCache,
 ) -> common::Result<()> {
-    let lsp_diags =
+    let (extra_files, diag) =
         reload_document_impl(Some(ctx), content, url.clone(), version, document_cache).await;
 
-    for (uri, diagnostics) in lsp_diags {
-        let version = document_cache.document_version(&uri);
-
-        ctx.server_notifier.send_notification::<lsp_types::notification::PublishDiagnostics>(
-            PublishDiagnosticsParams { uri, diagnostics, version },
-        )?;
-    }
+    send_diagnostics(&ctx.server_notifier, document_cache, &extra_files, diag);
 
     Ok(())
+}
+
+pub fn convert_diagnostics(
+    extra_files: &HashSet<PathBuf>,
+    diag: BuildDiagnostics,
+) -> HashMap<Url, Vec<lsp_types::Diagnostic>> {
+    // Always provide diagnostics for all files. Empty diagnostics clear any previous ones.
+    let mut lsp_diags: HashMap<Url, Vec<lsp_types::Diagnostic>> = extra_files
+        .iter()
+        .chain(diag.all_loaded_files.iter())
+        .filter_map(|p| Url::from_file_path(p).ok())
+        .map(|uri| (uri, Default::default()))
+        .collect();
+
+    for d in diag.into_iter() {
+        #[cfg(not(target_arch = "wasm32"))]
+        if d.source_file().unwrap().is_relative() {
+            continue;
+        }
+        let uri = Url::from_file_path(d.source_file().unwrap()).unwrap();
+        lsp_diags.entry(uri).or_default().push(util::to_lsp_diag(&d));
+    }
+
+    lsp_diags
+}
+
+fn send_diagnostics(
+    _server_notifier: &crate::ServerNotifier,
+    document_cache: &common::DocumentCache,
+    extra_files: &HashSet<PathBuf>,
+    diag: BuildDiagnostics,
+) {
+    let lsp_diags = convert_diagnostics(extra_files, diag);
+    for (uri, _diagnostics) in lsp_diags {
+        let _version = document_cache.document_version(&uri);
+
+        #[cfg(feature = "preview-engine")]
+        let _ = common::lsp_to_editor::notify_lsp_diagnostics(
+            _server_notifier,
+            uri,
+            _version,
+            _diagnostics,
+        );
+    }
 }
 
 pub async fn invalidate_document(ctx: &Rc<Context>, url: lsp_types::Url) -> common::Result<()> {
@@ -1016,9 +1029,7 @@ fn get_code_actions(
                 .text()
                 .to_string()
                 .lines()
-                .map(
-                    |line| if line.is_empty() { line.to_string() } else { format!("    {}", line) },
-                )
+                .map(|line| if line.is_empty() { line.to_string() } else { format!("    {line}") })
                 .collect::<Vec<String>>();
             let edits = vec![TextEdit::new(
                 lsp_types::Range::new(r.start, r.end),
@@ -1059,7 +1070,7 @@ fn get_code_actions(
                     NodeOrToken::Node(_) => is_sub_element(n.kind()),
                     NodeOrToken::Token(t) => {
                         t.kind() == SyntaxKind::Whitespace
-                            && t.next_sibling_or_token().map_or(false, |n| is_sub_element(n.kind()))
+                            && t.next_sibling_or_token().is_some_and(|n| is_sub_element(n.kind()))
                     }
                 })
                 .collect::<Vec<_>>();
@@ -1325,12 +1336,12 @@ fn get_code_lenses(
             .children_with_tokens()
             .any(|nt| nt.kind() != SyntaxKind::Whitespace && nt.kind() != SyntaxKind::Eof);
         if !has_non_ws_token {
-            if let Some(range) = populate_command_range(&node) {
+            if let Some(range) = populate_command_range(node) {
                 result.push(CodeLens {
-                    range: range.clone(),
+                    range,
                     command: Some(create_populate_command(
                         text_document.uri.clone(),
-                        version.clone(),
+                        version,
                         "Start with Hello World!".to_string(),
                         r#"import { AboutSlint, VerticalBox } from "std-widgets.slint";
 
@@ -1499,8 +1510,22 @@ pub async fn load_configuration(ctx: &Context) -> common::Result<()> {
         library_paths: cc.library_paths.clone(),
     };
     *ctx.preview_config.borrow_mut() = config.clone();
+    let mut diag = BuildDiagnostics::default();
+    let all_urls = document_cache.all_urls().collect::<Vec<_>>();
+    for url in &all_urls {
+        document_cache.reload_cached_file(url, &mut diag).await;
+    }
+
     ctx.server_notifier
         .send_message_to_preview(common::LspToPreviewMessage::SetConfiguration { config });
+
+    send_diagnostics(
+        &ctx.server_notifier,
+        document_cache,
+        &all_urls.iter().filter_map(common::uri_to_file).collect(),
+        diag,
+    );
+
     Ok(())
 }
 
@@ -1529,7 +1554,7 @@ pub mod tests {
         let (_, url, diag) =
             loaded_document_cache(r#"export component Main inherits Rectangle { }"#.into());
 
-        assert!(diag.len() == 1); // Only one URL is known
+        assert_eq!(diag.len(), 1); // Only one URL is known
         let diagnostics = diag.get(&url).expect("URL not found in result");
         assert!(diagnostics.is_empty());
     }

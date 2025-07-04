@@ -6,8 +6,11 @@
 [![REUSE status](https://api.reuse.software/badge/github.com/slint-ui/slint)](https://api.reuse.software/info/github.com/slint-ui/slint)
 [![Discussions](https://img.shields.io/github/discussions/slint-ui/slint)](https://github.com/slint-ui/slint/discussions)
 
-Slint is a declarative GUI toolkit to build native user interfaces for embedded,
-desktop, and mobile applications written in Rust, C++, JavaScript, or Python. 
+**Slint** is an open-source declarative GUI toolkit for building native user interfaces for embedded systems, desktops, and mobile platforms.
+
+Write your UI once in `.slint`, a simple markup language. Connect it to business logic written in Rust, C++, JavaScript, or Python.
+
+## Why Slint?
 
 The name *Slint* is derived from our design goals:
 
@@ -28,36 +31,15 @@ The name *Slint* is derived from our design goals:
     flexibility that only a native application can offer: Access full operating
     system APIs, utilize all CPU and GPU cores, connect to any peripheral.
 
-Visit [#MadeWithSlint](https://madewithslint.com) to view some of the projects
-using Slint. We invite you to use Slint and be part of its community.
+Beyond the design goals, here’s what makes Slint stand out:
 
-## Current Status
+- **Independent UI Design**: Use a declarative language similar to separate your UI from business logic. Designers can work in parallel with developers.
+- **Tooling**: Iterate quickly with our Live Preview & editor integrations. Integrate from Figma with the [Slint To Figma plugin](https://www.figma.com/community/plugin/1474418299182276871/figma-to-slint).
+- **Stable APIs**: Slint follows a stable 1.x API. We evolve carefully without breaking your code.
 
-Slint is in active development. The state of support for each platform is as
-follows:
+See what others have built: [#MadeWithSlint](https://madewithslint.com)
 
-- **Embedded**: *Ready*. Slint is being used by customers in production on embedded
-    devices running embedded Linux and Windows. The Slint run-time requires less than
-    300KiB of RAM and can run on different processor architectures such as ARM Cortex M,
-    ESP32, STM32 from the MCU category to ARM Cortex A, Intel x86 from the MPU category.
-- **Desktop**: *In Progress*. While Slint is a good fit on Windows, Linux and Mac,
-    we are working on improving the platform support in subsequent releases.
-- **Web**: *In Progress*. Slint apps can be compiled to WebAssembly and can run
-    in a web browser. As there are many other web frameworks, the web platform
-    is not one of our primary target platforms. The web support is currently
-    limited to demo purposes.
-- **Mobile**
-  - Android: *In Progress*. Track the progress of work here https://github.com/slint-ui/slint/issues/46.
-  - iOS: *Todo*. Support for iOS will commence after the initial support for Android is completed.
-
-### Accessibility
-
-Slint supports keyboard based navigation of many widgets, and user interfaces
-are scalable. The basic infrastructure for assistive technology like screen
-readers is in place. We're aware that more work is needed to get best-of-class
-support for users with special needs.
-
-## Demos
+## Examples
 
 ### Embedded
 
@@ -121,6 +103,7 @@ Refer to the README of each language directory in the `api` folder:
 - [C++](api/cpp) ([Documentation][#15] | [Getting Started Template][#17])
 - [Rust](api/rs/slint) [![Crates.io][#18]][#19] ([Documentation][#20] | [Tutorial Video][#22] | [Getting Started Template][#23])
 - [JavaScript/NodeJS (Beta)](api/node) [![npm][#24]][#25] ([Documentation][#26] | [Getting Started Template][#28])
+- [Python (Beta)](api/python/slint) [![pypi][#31]][#32] ([Documentation][#33] | [Getting Started Template][#34])
 
 ## Architecture
 
@@ -135,11 +118,7 @@ native code.
 The `.slint` files are compiled ahead of time. The expressions in the `.slint`
 are pure functions that the compiler can optimize. For example, the compiler
 could choose to "inline" properties and remove those that are constant or
-unchanged. In the future we hope to improve rendering time on low end devices by
-pre-processing images and text. The compiler could determine that a `Text` or an
-`Image` element is always on top of another `Image` in the same location.
-Consequently both elements could be rendered ahead of time into a single
-element, thus cutting down on rendering time.
+unchanged.
 
 The compiler uses the typical compiler phases of lexing, parsing, optimization,
 and finally code generation. It provides different back-ends for code generation
@@ -175,9 +154,7 @@ We have a few tools to help with the development of .slint files:
   working on it (when using the LSP preview is not possible).
 - [**SlintPad**](https://slintpad.com/), an online editor to try out .slint syntax
   without installing anything ([sources](./tools/slintpad)).
-- An [**updater**](./tools/updater) to convert the .slint files from
-  previous versions to newer versions.
-- An experimental [**Figma importer**](./tools/figma_import).
+- A [**Figma to Slint**](https://www.figma.com/community/plugin/1474418299182276871/figma-to-slint) plugin.
 
 Please check our [Editors README](./editors/README.md) for tips on how to
 configure your favorite editor to work well with Slint.
@@ -195,10 +172,7 @@ See the [Slint licensing options on the website](https://slint.dev/pricing.html)
 ## Contributions
 
 We welcome your contributions: in the form of code, bug reports or feedback.
-
-- If you see an [RFC tag](https://github.com/slint-ui/slint/labels/rfc) on an
-  issue, feel free to chime in.
-- For contribution guidelines see [CONTRIBUTING.md](CONTRIBUTING.md).
+For contribution guidelines see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Frequently Asked Questions
 
@@ -211,7 +185,7 @@ development and user interface components. Our aim is to make developing user
 interfaces fun for everyone: from Python, JavaScript, C++, or Rust developers all the
 way to UI/UX designers. We believe that software grows organically and keeping
 it open source is the best way to sustain that growth. Our team members are
-located remotely in Germany.
+located remotely in Germany, Finland, and US.
 
 ### Stay up to date
 
@@ -220,7 +194,7 @@ located remotely in Germany.
 - Follow [@slint-ui](https://www.linkedin.com/company/slint-ui/) on LinkedIn.
 - Follow [@slint.dev](https://bsky.app/profile/slint.dev) on Bluesky
 - Subscribe to our [YouTube channel](https://www.youtube.com/@Slint-UI)
- 
+
 ### Contact us
 
 Feel free to join [Github discussions](https://github.com/slint-ui/slint/discussions)
@@ -259,4 +233,7 @@ You can of course also contact us privately via email to [info@slint.dev](mailto
 [#28]: https://github.com/slint-ui/slint-nodejs-template
 [#29]: ./demos/weather-demo/docs/img/desktop-preview.png "Weather Demo"
 [#30]: https://slint.dev/demos/weather-demo/
-
+[#31]: https://img.shields.io/pypi/v/slint
+[#32]: https://pypi.org/project/slint/
+[#33]: http://snapshots.slint.dev/master/docs/python/
+[#34]: https://github.com/slint-ui/slint-python-template

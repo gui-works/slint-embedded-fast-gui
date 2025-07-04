@@ -18,9 +18,9 @@ You can run the demo on a desktop or embedded Linux environment with the followi
 cargo run -p energy-monitor
 ```
 
-### Microcontrolers (MCU)
+### Microcontrollers (MCU)
 
-Refer to the [MCU backend Readme](../mcu-board-support) for instructions on how to run the demo on smaller devices like the Raspberry Pi Pico.
+Refer to the [MCU backend Readme](../../examples/mcu-board-support) for instructions on how to run the demo on smaller devices like the Raspberry Pi Pico.
 
 To run the MCU-like code on desktop, use the `--features=simulator`
 
@@ -45,3 +45,21 @@ cd demos/energy-monitor/
 wasm-pack build --release --target web --no-default-features --features slint/default,chrono
 python3 -m http.server
 ```
+
+### Building and running on iOS
+
+This demo can be cross-compiled to iOS to run on iPhones, iPads, and the respective simulators.
+
+#### Prerequisites
+
+ - A computer running macOS.
+ - An up-to-date installation of [Xcode](https://developer.apple.com/xcode/).
+ - [Xcodegen](https://github.com/yonaskolb/XcodeGen?tab=readme-ov-file#installing)
+ - [Rust](https://rustup.rs). Add the target and simulator toolchains using `rustup target add aarch64-apple-ios` and `rustup target add aarch64-apple-ios-sim`
+
+#### Building
+
+1. Run `xcodegen -s ios-project.yml` to generate an XCode project file (`.xcodeproj`).
+2. Open XCode and open the generated `.xcodeproj` in it.
+3. Run, deploy, and debug the demo from within Xcode.
+

@@ -10,7 +10,7 @@ use crate::accessibility::{
 };
 use crate::items::{AccessibleRole, ItemRef, ItemVTable};
 use crate::layout::{LayoutInfo, Orientation};
-use crate::lengths::{LogicalPoint, LogicalRect};
+use crate::lengths::{ItemTransform, LogicalPoint, LogicalRect};
 use crate::slice::Slice;
 use crate::window::WindowAdapterRc;
 use crate::SharedString;
@@ -41,6 +41,7 @@ impl From<IndexRange> for core::ops::Range<usize> {
 }
 
 /// A ItemTree is representing an unit that is allocated together
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 #[vtable]
 #[repr(C)]
 pub struct ItemTreeVTable {
@@ -48,7 +49,7 @@ pub struct ItemTreeVTable {
     /// Note that the root item is at index 0, so passing 0 would visit the item under root (the children of root).
     /// If you want to visit the root item, you need to pass -1 as an index.
     pub visit_children_item: extern "C" fn(
-        core::pin::Pin<VRef<ItemTreeVTable>>,
+        ::core::pin::Pin<VRef<ItemTreeVTable>>,
         index: isize,
         order: TraversalOrder,
         visitor: VRefMut<ItemVisitorVTable>,
@@ -56,17 +57,17 @@ pub struct ItemTreeVTable {
 
     /// Return a reference to an item using the given index
     pub get_item_ref: extern "C" fn(
-        core::pin::Pin<VRef<ItemTreeVTable>>,
+        ::core::pin::Pin<VRef<ItemTreeVTable>>,
         index: u32,
-    ) -> core::pin::Pin<VRef<ItemVTable>>,
+    ) -> ::core::pin::Pin<VRef<ItemVTable>>,
 
     /// Return the range of indices below the dynamic `ItemTreeNode` at `index`
     pub get_subtree_range:
-        extern "C" fn(core::pin::Pin<VRef<ItemTreeVTable>>, index: u32) -> IndexRange,
+        extern "C" fn(::core::pin::Pin<VRef<ItemTreeVTable>>, index: u32) -> IndexRange,
 
     /// Return the `ItemTreeRc` at `subindex` below the dynamic `ItemTreeNode` at `index`
     pub get_subtree: extern "C" fn(
-        core::pin::Pin<VRef<ItemTreeVTable>>,
+        ::core::pin::Pin<VRef<ItemTreeVTable>>,
         index: u32,
         subindex: usize,
         result: &mut vtable::VWeak<ItemTreeVTable, Dyn>,
@@ -75,7 +76,7 @@ pub struct ItemTreeVTable {
     /// Return the item tree that is defined by this `ItemTree`.
     /// The return value is an item weak because it can be null if there is no parent.
     /// And the return value is passed by &mut because ItemWeak has a destructor
-    pub get_item_tree: extern "C" fn(core::pin::Pin<VRef<ItemTreeVTable>>) -> Slice<ItemTreeNode>,
+    pub get_item_tree: extern "C" fn(::core::pin::Pin<VRef<ItemTreeVTable>>) -> Slice<ItemTreeNode>,
 
     /// Return the node this ItemTree is a part of in the parent ItemTree.
     ///
@@ -83,35 +84,36 @@ pub struct ItemTreeVTable {
     /// And the return value is passed by &mut because ItemWeak has a destructor
     /// Note that the returned value will typically point to a repeater node, which is
     /// strictly speaking not an Item at all!
-    pub parent_node: extern "C" fn(core::pin::Pin<VRef<ItemTreeVTable>>, result: &mut ItemWeak),
+    pub parent_node: extern "C" fn(::core::pin::Pin<VRef<ItemTreeVTable>>, result: &mut ItemWeak),
 
     /// This embeds this ItemTree into the item tree of another ItemTree
     ///
     /// Returns `true` if this ItemTree was embedded into the `parent`
     /// at `parent_item_tree_index`.
     pub embed_component: extern "C" fn(
-        core::pin::Pin<VRef<ItemTreeVTable>>,
+        ::core::pin::Pin<VRef<ItemTreeVTable>>,
         parent: &VWeak<ItemTreeVTable>,
         parent_item_tree_index: u32,
     ) -> bool,
 
     /// Return the index of the current subtree or usize::MAX if this is not a subtree
-    pub subtree_index: extern "C" fn(core::pin::Pin<VRef<ItemTreeVTable>>) -> usize,
+    pub subtree_index: extern "C" fn(::core::pin::Pin<VRef<ItemTreeVTable>>) -> usize,
 
     /// Returns the layout info for the root of the ItemTree
-    pub layout_info: extern "C" fn(core::pin::Pin<VRef<ItemTreeVTable>>, Orientation) -> LayoutInfo,
+    pub layout_info:
+        extern "C" fn(::core::pin::Pin<VRef<ItemTreeVTable>>, Orientation) -> LayoutInfo,
 
     /// Returns the item's geometry (relative to its parent item)
     pub item_geometry:
-        extern "C" fn(core::pin::Pin<VRef<ItemTreeVTable>>, item_index: u32) -> LogicalRect,
+        extern "C" fn(::core::pin::Pin<VRef<ItemTreeVTable>>, item_index: u32) -> LogicalRect,
 
     /// Returns the accessible role for a given item
     pub accessible_role:
-        extern "C" fn(core::pin::Pin<VRef<ItemTreeVTable>>, item_index: u32) -> AccessibleRole,
+        extern "C" fn(::core::pin::Pin<VRef<ItemTreeVTable>>, item_index: u32) -> AccessibleRole,
 
     /// Returns the accessible property via the `result`. Returns true if such a property exists.
     pub accessible_string_property: extern "C" fn(
-        core::pin::Pin<VRef<ItemTreeVTable>>,
+        ::core::pin::Pin<VRef<ItemTreeVTable>>,
         item_index: u32,
         what: AccessibleStringProperty,
         result: &mut SharedString,
@@ -119,36 +121,36 @@ pub struct ItemTreeVTable {
 
     /// Executes an accessibility action.
     pub accessibility_action: extern "C" fn(
-        core::pin::Pin<VRef<ItemTreeVTable>>,
+        ::core::pin::Pin<VRef<ItemTreeVTable>>,
         item_index: u32,
         action: &AccessibilityAction,
     ),
 
     /// Returns the supported accessibility actions.
     pub supported_accessibility_actions: extern "C" fn(
-        core::pin::Pin<VRef<ItemTreeVTable>>,
+        ::core::pin::Pin<VRef<ItemTreeVTable>>,
         item_index: u32,
     ) -> SupportedAccessibilityAction,
 
     /// Add the `ElementName::id` entries of the given item
     pub item_element_infos: extern "C" fn(
-        core::pin::Pin<VRef<ItemTreeVTable>>,
+        ::core::pin::Pin<VRef<ItemTreeVTable>>,
         item_index: u32,
         result: &mut SharedString,
     ) -> bool,
 
     /// Returns a Window, creating a fresh one if `do_create` is true.
     pub window_adapter: extern "C" fn(
-        core::pin::Pin<VRef<ItemTreeVTable>>,
+        ::core::pin::Pin<VRef<ItemTreeVTable>>,
         do_create: bool,
         result: &mut Option<WindowAdapterRc>,
     ),
 
     /// in-place destructor (for VRc)
-    pub drop_in_place: unsafe fn(VRefMut<ItemTreeVTable>) -> vtable::Layout,
+    pub drop_in_place: unsafe extern "C" fn(VRefMut<ItemTreeVTable>) -> vtable::Layout,
 
     /// dealloc function (for VRc)
-    pub dealloc: unsafe fn(&ItemTreeVTable, ptr: *mut u8, layout: vtable::Layout),
+    pub dealloc: unsafe extern "C" fn(&ItemTreeVTable, ptr: *mut u8, layout: vtable::Layout),
 }
 
 #[cfg(test)]
@@ -250,6 +252,11 @@ fn step_into_node(
     }
 }
 
+pub enum ParentItemTraversalMode {
+    FindAllParents,
+    StopAtPopups,
+}
+
 /// A ItemRc is holding a reference to a ItemTree containing the item, and the index of this item
 #[repr(C)]
 #[derive(Clone, Debug)]
@@ -301,7 +308,7 @@ impl ItemRc {
     /// Return the parent Item in the item tree.
     ///
     /// If the item is a the root on its Window or PopupWindow, then the parent is None.
-    pub fn parent_item(&self) -> Option<ItemRc> {
+    pub fn parent_item(&self, find_mode: ParentItemTraversalMode) -> Option<ItemRc> {
         let comp_ref_pin = vtable::VRc::borrow_pin(&self.item_tree);
         let item_tree = crate::item_tree::ItemTreeNodeArray::new(&comp_ref_pin);
 
@@ -322,7 +329,10 @@ impl ItemRc {
         } else {
             // the Item was most likely a PopupWindow and we don't want to return the item for the purpose of this call
             // (eg, focus/geometry/...)
-            None
+            match find_mode {
+                ParentItemTraversalMode::FindAllParents => Some(parent),
+                ParentItemTraversalMode::StopAtPopups => None,
+            }
         }
     }
 
@@ -330,27 +340,33 @@ impl ItemRc {
     /// false for `Clip` elements with the `clip` property evaluating to true.
     pub fn is_visible(&self) -> bool {
         let (clip, geometry) = self.absolute_clip_rect_and_geometry();
-        let intersection = geometry.intersection(&clip).unwrap_or_default();
-        !intersection.is_empty() || (geometry.is_empty() && clip.contains(geometry.center()))
+        let clip = clip.to_box2d();
+        let geometry = geometry.to_box2d();
+        !clip.is_empty()
+            && clip.max.x >= geometry.min.x
+            && clip.max.y >= geometry.min.y
+            && clip.min.x <= geometry.max.x
+            && clip.min.y <= geometry.max.y
     }
 
     /// Returns the clip rect that applies to this item (in window coordinates) as well as the
     /// item's (unclipped) geometry (also in window coordinates).
     fn absolute_clip_rect_and_geometry(&self) -> (LogicalRect, LogicalRect) {
-        let (mut clip, parent_geometry) = self.parent_item().map_or_else(
-            || {
-                (
-                    LogicalRect::from_size((crate::Coord::MAX, crate::Coord::MAX).into()),
-                    Default::default(),
-                )
-            },
-            |parent| parent.absolute_clip_rect_and_geometry(),
-        );
+        let (mut clip, parent_geometry) =
+            self.parent_item(ParentItemTraversalMode::StopAtPopups).map_or_else(
+                || {
+                    (
+                        LogicalRect::from_size((crate::Coord::MAX, crate::Coord::MAX).into()),
+                        Default::default(),
+                    )
+                },
+                |parent| parent.absolute_clip_rect_and_geometry(),
+            );
 
         let geometry = self.geometry().translate(parent_geometry.origin.to_vector());
 
         let item = self.borrow();
-        if crate::item_rendering::is_clipping_item(item) {
+        if item.as_ref().clips_children() {
             clip = geometry.intersection(&clip).unwrap_or_default();
         }
 
@@ -433,12 +449,20 @@ impl ItemRc {
         comp_ref_pin.as_ref().item_geometry(self.index)
     }
 
+    pub fn bounding_rect(
+        &self,
+        geometry: &LogicalRect,
+        window_adapter: &WindowAdapterRc,
+    ) -> LogicalRect {
+        self.borrow().as_ref().bounding_rect(window_adapter, self, *geometry)
+    }
+
     /// Returns an absolute position of `p` in the parent item coordinate system
     /// (does not add this item's x and y)
     pub fn map_to_window(&self, p: LogicalPoint) -> LogicalPoint {
         let mut current = self.clone();
         let mut result = p;
-        while let Some(parent) = current.parent_item() {
+        while let Some(parent) = current.parent_item(ParentItemTraversalMode::StopAtPopups) {
             let geometry = parent.geometry();
             result += geometry.origin.to_vector();
             current = parent.clone();
@@ -458,7 +482,7 @@ impl ItemRc {
         if current.is_root_item_of(item_tree) {
             return result;
         }
-        while let Some(parent) = current.parent_item() {
+        while let Some(parent) = current.parent_item(ParentItemTraversalMode::StopAtPopups) {
             if parent.is_root_item_of(item_tree) {
                 break;
             }
@@ -780,6 +804,23 @@ impl ItemRc {
     ) -> Option<R> {
         self.visit_descendants_impl(&mut visitor)
     }
+
+    /// Returns the transform to apply to children to map them into the local coordinate space of this item.
+    /// Typically this is None, but rotation for example may return Some.
+    pub fn children_transform(&self) -> Option<ItemTransform> {
+        self.downcast::<crate::items::Rotate>().map(|rotate_item| {
+            let origin = euclid::Vector2D::<f32, crate::lengths::LogicalPx>::from_lengths(
+                rotate_item.as_pin_ref().rotation_origin_x().cast(),
+                rotate_item.as_pin_ref().rotation_origin_y().cast(),
+            );
+            ItemTransform::translation(-origin.x, -origin.y)
+                .cast()
+                .then_rotate(euclid::Angle {
+                    radians: rotate_item.as_pin_ref().rotation_angle().to_radians(),
+                })
+                .then_translate(origin)
+        })
+    }
 }
 
 impl PartialEq for ItemRc {
@@ -1003,8 +1044,9 @@ impl<'a> From<&'a [ItemTreeNode]> for ItemTreeNodeArray<'a> {
     }
 }
 
-#[repr(C)]
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 #[vtable]
+#[repr(C)]
 /// Object to be passed in visit_item_children method of the ItemTree.
 pub struct ItemVisitorVTable {
     /// Called for each child of the visited item
@@ -1013,14 +1055,14 @@ pub struct ItemVisitorVTable {
     /// as the parent's ItemTree.
     /// `index` is to be used again in the visit_item_children function of the ItemTree (the one passed as parameter)
     /// and `item` is a reference to the item itself
-    visit_item: fn(
+    visit_item: extern "C" fn(
         VRefMut<ItemVisitorVTable>,
         item_tree: &VRc<ItemTreeVTable, vtable::Dyn>,
         index: u32,
         item: Pin<VRef<ItemVTable>>,
     ) -> VisitChildrenResult,
     /// Destructor
-    drop: fn(VRefMut<ItemVisitorVTable>),
+    drop: extern "C" fn(VRefMut<ItemVisitorVTable>),
 }
 
 /// Type alias to `vtable::VRefMut<ItemVisitorVTable>`
@@ -1145,7 +1187,7 @@ pub(crate) mod ffi {
     use core::ffi::c_void;
 
     /// Call init() on the ItemVTable of each item in the item array.
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn slint_register_item_tree(
         item_tree_rc: &ItemTreeRc,
         window_handle: *const crate::window::ffi::WindowAdapterRcOpaque,
@@ -1155,7 +1197,7 @@ pub(crate) mod ffi {
     }
 
     /// Free the backend graphics resources allocated in the item array.
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn slint_unregister_item_tree(
         component: ItemTreeRefPin,
         item_array: Slice<vtable::VOffset<u8, ItemVTable, vtable::AllowPin>>,
@@ -1173,7 +1215,7 @@ pub(crate) mod ffi {
     /// Expose `crate::item_tree::visit_item_tree` to C++
     ///
     /// Safety: Assume a correct implementation of the item_tree array
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn slint_visit_item_tree(
         item_tree: &ItemTreeRc,
         item_tree_array: Slice<ItemTreeNode>,
@@ -1202,6 +1244,7 @@ pub(crate) mod ffi {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::vec;
 
     struct TestItemTree {
         parent_component: Option<ItemTreeRc>,
@@ -1223,11 +1266,11 @@ mod tests {
         fn get_item_ref(
             self: core::pin::Pin<&Self>,
             _1: u32,
-        ) -> core::pin::Pin<vtable::VRef<super::ItemVTable>> {
+        ) -> core::pin::Pin<vtable::VRef<'_, super::ItemVTable>> {
             unimplemented!("Not needed for this test")
         }
 
-        fn get_item_tree(self: core::pin::Pin<&Self>) -> Slice<ItemTreeNode> {
+        fn get_item_tree(self: core::pin::Pin<&Self>) -> Slice<'_, ItemTreeNode> {
             Slice::from_slice(&self.get_ref().item_tree)
         }
 
@@ -1427,11 +1470,11 @@ mod tests {
         assert!(fc.first_child().is_none());
         assert!(fc.last_child().is_none());
         assert!(fc.previous_sibling().is_none());
-        assert_eq!(fc.parent_item().unwrap(), item);
+        assert_eq!(fc.parent_item(ParentItemTraversalMode::StopAtPopups).unwrap(), item);
 
         // Examine item between first and last child:
         assert_eq!(fcn, lcp);
-        assert_eq!(lcp.parent_item().unwrap(), item);
+        assert_eq!(lcp.parent_item(ParentItemTraversalMode::StopAtPopups).unwrap(), item);
         assert_eq!(fcn.previous_sibling().unwrap(), fc);
         assert_eq!(fcn.next_sibling().unwrap(), lc);
 
@@ -1439,7 +1482,7 @@ mod tests {
         assert!(lc.first_child().is_none());
         assert!(lc.last_child().is_none());
         assert!(lc.next_sibling().is_none());
-        assert_eq!(lc.parent_item().unwrap(), item);
+        assert_eq!(lc.parent_item(ParentItemTraversalMode::StopAtPopups).unwrap(), item);
     }
 
     #[test]

@@ -2,10 +2,13 @@
 <!-- Copyright © SixtyFPS GmbH <info@slint.dev> ; SPDX-License-Identifier: MIT -->
 title: Types
 description: All Slint types
+// cSpell: ignore Farbfeld
 ---
 
 import SlintProperty  from '/src/components/SlintProperty.astro';
 import Link from '/src/components/Link.astro';
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import LangRefLink from '/src/components/LangRefLink.astro';
 
 Slint is a statically typed language and offers a rich range of primitive types.
 
@@ -13,13 +16,18 @@ Slint is a statically typed language and offers a rich range of primitive types.
 
 ### bool
 <SlintProperty propName="bool" typeName="bool" defaultValue='false'>
-boolean whose value can be either `true` or `false`.  
+boolean whose value can be either `true` or `false`.
 </SlintProperty>
 
 ### string
 <SlintProperty propName="string" typeName="string" defaultValue='""'>
 Any sequence of utf-8 encoded characters surrounded by quotes is a `string`: `"foo"`.
 
+```slint
+export component Example inherits Text {
+    text: "hello";
+}
+```
 Escape sequences may be embedded into strings to insert characters that would
 be hard to insert otherwise:
 
@@ -33,79 +41,113 @@ be hard to insert otherwise:
 
 Anything else following an unescaped `\` is an error.
 
-```slint
-export component Example inherits Text {
-    text: "hello";
-}
-```
-
 :::note[Note]
   The `\{...}` syntax is not valid within the `slint!` macro in Rust.
 :::
+
+
+`is-empty` property is true when `string` doesn't contain anything.
+
+```slint
+export component LengthOfString {
+    property<bool> empty: "".is-empty; // true
+    property<bool> not-empty: "hello".is-empty; // false
+}
+```
+
+`character-count` property returns the number of [grapheme clusters](https://www.unicode.org/reports/tr29/#Grapheme_Cluster_Boundaries).
+
+```slint
+export component CharacterCountOfString {
+    property<int> empty: "".character-count; // 0
+    property<int> hello: "hello".character-count; // 5
+    property<int> hiragana: "あいうえお".character-count; // 5
+    property<int> surrogate-pair: "😊𩸽".character-count; // 2
+    property<int> variation-selectors: "👍🏿".character-count; // 1
+    property<int> combining-character: "パ".character-count; // 1
+    property<int> zero-width-joiner: "👨‍👩‍👧‍👦".character-count; // 1
+    property<int> region-indicator-character: "🇦🇿🇿🇦".character-count; // 2
+    property<int> emoji-tag-sequences: "🏴󠁧󠁢󠁥󠁮󠁧󠁿".character-count; // 1
+}
+```
+
+The `to-lowercase` and `to-uppercase` methods convert `string` to lowercase or uppercase according to the [Unicode Character Property](https://www.unicode.org/versions/Unicode16.0.0/core-spec/chapter-4/#G124722).
+
+```slint
+export component ChangeCaseOfString {
+    property<string> hello: "HELLO".to-lowercase(); // "hello"
+    property<string> bye: "tschüß".to-uppercase(); // "TSCHÜSS"
+    property<string> odysseus: "ὈΔΥΣΣΕΎΣ".to-lowercase(); // "ὀδυσσεύς"
+    property<string> new_year: "农历新年".to-uppercase(); // "农历新年"
+}
+```
+
 </SlintProperty>
 
 ## Numeric Types
 
 ### angle
 <SlintProperty propName="angle" typeName="angle" defaultValue='0deg'>
-Angle measurement, corresponds to a literal like `90deg`, `1.2rad`, `0 25turn`  
+Angle measurement, corresponds to a literal like `90deg`, `1.2rad`, `0 25turn`
 </SlintProperty>
 
 ### duration
 <SlintProperty propName="duration" typeName="duration" defaultValue='0ms'>
-Type for the duration of animations. A suffix like `ms` (millisecond) or `s` (second) is used to indicate the precision. 
+Type for the duration of animations. A suffix like `ms` (millisecond) or `s` (second) is used to indicate the precision.
 </SlintProperty>
 
 ### float
 <SlintProperty propName="float" typeName="float" defaultValue='0'>
-Signed, 32-bit floating point number. Numbers with a `%` suffix are automatically divided by 100, so for example `30%` is the same as `0.30`.  
+Signed, 32-bit floating point number. Numbers with a `%` suffix are automatically divided by 100, so for example `30%` is the same as `0.30`.
 </SlintProperty>
 
 ### int
 <SlintProperty propName="int" typeName="int" defaultValue='0'>
-Signed integral number.  
+Signed integral number.
 </SlintProperty>
 
 ### length
 <SlintProperty propName="length" typeName="length" defaultValue='0px'>
-The type used for `x`, `y`, `width` and `height` coordinates. Corresponds to a literal like `1px`, `1pt`, `1in`, `1mm`, or `1cm`. It can be converted to and from length provided the binding is run in a context where there is an access to the device pixel ratio.  
+The type used for `x`, `y`, `width` and `height` coordinates. Corresponds to a literal like `1px`, `1pt`, `1in`, `1mm`, or `1cm`. It can be converted to and from length provided the binding is run in a context where there is an access to the device pixel ratio.
 </SlintProperty>
 
 ### percent
 <SlintProperty propName="percent" typeName="percent" defaultValue='0%'>
-Signed, 32-bit floating point number that is interpreted as percentage. Literal number assigned to properties of this type must have a `%` suffix.  
+Signed, 32-bit floating point number that is interpreted as percentage. Literal number assigned to properties of this type must have a `%` suffix.
 </SlintProperty>
 
-### physical-length 
+### physical-length
 <SlintProperty propName="physical-length" typeName="physical-length" defaultValue='0phx'>
-This is an amount of physical pixels. To convert from an integer to a length unit, one can simply multiply by `1px`. Or to convert from a length to a float, one can divide by `1phx`.  
+This is an amount of physical pixels. To convert from an integer to a length unit, one can simply multiply by `1px`. Or to convert from a length to a float, one can divide by `1phx`.
 </SlintProperty>
 
 ### relative-font-size
 <SlintProperty propName="relative-font-size" typeName="relative-font-size" defaultValue='0rem'>
-Relative font size factor that is multiplied with the `Window.default-font-size` and can be converted to a `length`.  
+Relative font size factor that is multiplied with the `Window.default-font-size` and can be converted to a `length`.
 </SlintProperty>
 
-                                                                                                                                                                               
+
 
 Please see the language specific API references how these types are mapped to the APIs of the different programming languages.
 
 ## Color and Brush Types
 ### brush
 <SlintProperty propName="brush" typeName="brush" defaultValue='transparent'>
-A brush is a special type that can be either initialized from a `color` or a `gradient`. See <Link type="ColorsRef" label="Colors & Brushes" />.  
+A brush is a special type that can be either initialized from a `color` or a `gradient`. See <Link type="ColorsRef" label="Colors & Brushes" />.
 </SlintProperty>
 
 ### color
 <SlintProperty propName="color" typeName="color" defaultValue='transparent'>
-RGB color with an alpha channel, with 8 bit precision for each channel. CSS color names as well as the hexadecimal color encodings are supported, such as #RRGGBBAA or #RGB. See <Link type="ColorsRef" label="Colors & Brushes" />.  
+RGB color with an alpha channel, with 8 bit precision for each channel. CSS color names as well as the hexadecimal color encodings are supported, such as #RRGGBBAA or #RGB. See <Link type="ColorsRef" label="Colors & Brushes" />.
 </SlintProperty>
 
 ## Images
 ### image
 <SlintProperty propName="image" typeName="image" defaultValue='empty image'>
 
-The `image` type is a reference to an image. It's defined using the `@image-url("...")` construct.
+The `image` type is a reference to an image.
+
+In Slint, an image can be loaded from a file with the `@image-url("...")` construct.
 The address within the `@image-url` function must be a string literal and the image is resolved at compile time.
 
 Slint looks for images in the following places:
@@ -114,6 +156,31 @@ Slint looks for images in the following places:
 2. The include path used by the compiler to look up `.slint` files.
 
 Loading image from `http` is only supported in [SlintPad](https://slintpad.com).
+
+Supported format are SVG, and formats supported by the [`image` crate](https://crates.io/crates/image):
+AVIF, BMP, DDS, Farbfeld, GIF, HDR, ICO, JPEG, EXR, PNG, PNM, QOI, TGA, TIFF, WebP.
+
+For Rust applications, not all formats are enabled by default. Enable them with the `image-default-formats` Cargo feature.
+
+<Tabs syncKey="dev-language">
+<TabItem label="C++">
+In C++, properties or struct fields of the image type are mapped to <LangRefLink lang="cpp" relpath="api/structslint_1_1Image">`slint::Image`</LangRefLink>.
+</TabItem>
+<TabItem label="Rust">
+In Rust, properties or struct fields of the image type are mapped to <LangRefLink lang="rust-slint" relpath="struct.Image">`slint::Image`</LangRefLink>.
+:::note[Note]
+Some image formats can be disabled using cargo features to reduce binary size and speed up compilation.
+:::
+</TabItem>
+<TabItem label="NodeJS" >
+In JavaScript properties or struct fields of the image type are mapped an object that implement the <LangRefLink lang="nodejs" relpath="interfaces/ImageData.html">ImageData interface</LangRefLink>.
+</TabItem>
+
+<TabItem label="Python" >
+In Python, properties or struct fields of the image type are mapped to <LangRefLink lang="python" relpath="slint.html#Image">`Image`</LangRefLink>.
+</TabItem>
+
+</Tabs>
 
 Access an `image`'s dimension using its `width` and `height` properties.
 
@@ -132,7 +199,7 @@ export component Example inherits Window {
 
         // Check the size to find out if the image is empty.
         if some_image.width > 0 : Image {
-            source: some_image
+            source: some_image;
         }
     }
 }
@@ -225,6 +292,10 @@ The following conversions are possible:
 -   Arrays generally don't convert between each other. Array literals can be converted if the element types are convertible.
 -   String can be converted to float by using the `to-float` function. That function returns 0 if the string isn't
     a valid number. You can check with `is-float()` if the string contains a valid number
+-   `float` can be converted to a formatted `string` using `to-fixed` and `to-precision` which can be passed the
+    number of digits after the decimal point and and the number of significant digits respectively. They behave like their
+    JavaScript counterparts [`toFixed()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number/toFixed)
+    and [`toPrecision()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Number/toPrecision).
 
 ```slint
 export component Example {

@@ -1,7 +1,7 @@
 {
   "name": "slint-docs",
   "type": "module",
-  "version": "1.9.2",
+  "version": "1.13.0",
   "scripts": {
     "dev": "astro dev",
     "start": "astro dev",
@@ -19,20 +19,20 @@
   },
   "dependencies": {
     "@astrojs/check": "0.9.4",
-    "@astrojs/starlight": "0.30.3",
-    "@expressive-code/plugin-line-numbers": "0.38.3",
+    "@astrojs/starlight": "0.34.4",
+    "@expressive-code/plugin-line-numbers": "0.41.2",
     "@types/node": "20.16.10",
-    "astro": "5.1.2",
-    "playwright": "1.49.1",
-    "playwright-ctrf-json-reporter": "0.0.18",
+    "astro": "5.10.1",
+    "astro-embed": "0.9.0",
+    "playwright-ctrf-json-reporter": "0.0.21",
     "rehype-external-links": "3.0.0",
-    "sharp": "0.33.5",
-    "starlight-links-validator": "0.14.1",
-    "starlight-sidebar-topics": "0.3.0",
-    "typescript": "5.7.2"
+    "sharp": "0.34.2",
+    "starlight-links-validator": "0.17.0",
+    "starlight-sidebar-topics": "0.6.0",
+    "typescript": "5.8.3"
   },
   "devDependencies": {
-    "@playwright/test": "1.49.1",
-    "cspell": "8.17.1"
+    "@playwright/test": "1.53.1",
+    "cspell": "9.1.2"
   }
 }

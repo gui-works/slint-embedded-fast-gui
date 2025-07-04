@@ -202,6 +202,7 @@ impl Item for NativeButton {
         self: Pin<&Self>,
         orientation: Orientation,
         _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
     ) -> LayoutInfo {
         let standard_button_kind = self.actual_standard_button_kind();
         let mut text: qttypes::QString = self.actual_text(standard_button_kind);
@@ -236,7 +237,7 @@ impl Item for NativeButton {
 
     fn input_event_filter_before_children(
         self: Pin<&Self>,
-        event: MouseEvent,
+        event: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
@@ -246,7 +247,7 @@ impl Item for NativeButton {
 
     fn input_event(
         self: Pin<&Self>,
-        event: MouseEvent,
+        event: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         self_rc: &i_slint_core::items::ItemRc,
     ) -> InputEventResult {
@@ -261,7 +262,7 @@ impl Item for NativeButton {
         let was_pressed = self.pressed();
 
         Self::FIELD_OFFSETS.pressed.apply_pin(self).set(match event {
-            MouseEvent::Pressed { button, .. } => button == PointerEventButton::Left,
+            MouseEvent::Pressed { button, .. } => *button == PointerEventButton::Left,
             MouseEvent::Exit | MouseEvent::Released { .. } => false,
             MouseEvent::Moved { .. } => {
                 return if was_pressed {
@@ -271,10 +272,14 @@ impl Item for NativeButton {
                 }
             }
             MouseEvent::Wheel { .. } => return InputEventResult::EventIgnored,
+            MouseEvent::DragMove(..) | MouseEvent::Drop(..) => {
+                return InputEventResult::EventIgnored
+            }
         });
         if let MouseEvent::Released { position, .. } = event {
             let geo = self_rc.geometry();
-            if LogicalRect::new(LogicalPoint::default(), geo.size).contains(position) && was_pressed
+            if LogicalRect::new(LogicalPoint::default(), geo.size).contains(*position)
+                && was_pressed
             {
                 self.activate();
             }
@@ -317,7 +322,7 @@ impl Item for NativeButton {
             Self::FIELD_OFFSETS
                 .has_focus
                 .apply_pin(self)
-                .set(event == &FocusEvent::FocusIn || event == &FocusEvent::WindowReceivedFocus);
+                .set(matches!(event, FocusEvent::FocusIn(_)));
             FocusEventResult::FocusAccepted
         } else {
             FocusEventResult::FocusIgnored
@@ -421,6 +426,19 @@ impl Item for NativeButton {
 
             qApp->style()->drawControl(QStyle::CE_PushButton, &option, painter->get(), widget);
         });
+    }
+
+    fn bounding_rect(
+        self: core::pin::Pin<&Self>,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+        geometry: LogicalRect,
+    ) -> LogicalRect {
+        geometry
+    }
+
+    fn clips_children(self: core::pin::Pin<&Self>) -> bool {
+        false
     }
 }
 

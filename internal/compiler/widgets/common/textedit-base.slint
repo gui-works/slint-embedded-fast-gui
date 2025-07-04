@@ -58,44 +58,84 @@ export component TextEditBase inherits Rectangle {
 
     forward-focus: text-input;
 
-    scroll-view := ScrollView {
-        x: root.scroll-view-padding;
-        y: root.scroll-view-padding;
-        width: parent.width - 2 * root.scroll-view-padding;
-        height: parent.height - 2 * root.scroll-view-padding;
-        viewport-width: root.wrap == TextWrap.no-wrap ? max(self.visible-width, text-input.preferred-width) : self.visible-width;
-        viewport-height: max(self.visible-height, text-input.preferred-height);
-
-        text-input := TextInput {
-            enabled: true;
-            single-line: false;
-            wrap: word-wrap;
-            selection-background-color: root.selection-background-color;
-            selection-foreground-color: root.selection-foreground-color;
-
-            edited => {
-                root.edited(self.text);
-            }
-
-            key-pressed(event) => {
-                root.key-pressed(event)
-            }
-
-            key-released(event) => {
-                root.key-released(event)
-            }
-
-            cursor-position-changed(cpos) => {
-                if (cpos.x + root.viewport-x < 12px) {
-                    root.viewport-x = min(0px, max(parent.visible-width - self.width,  - cpos.x + 12px));
-                } else if (cpos.x + root.viewport-x > parent.visible-width - 12px) {
-                    root.viewport-x = min(0px, max(parent.visible-width - self.width,  parent.visible-width - cpos.x - 12px));
+    ContextMenuArea {
+        enabled: root.enabled;
+        Menu {
+            MenuItem {
+                title: @tr("Cut");
+                enabled: !root.read-only && root.enabled;
+                activated => {
+                    text-input.cut();
                 }
-                if (cpos.y + root.viewport-y < 12px) {
-                    root.viewport-y = min(0px, max(parent.visible-height - self.height,  - cpos.y + 12px));
-                } else if (cpos.y + root.viewport-y > parent.visible-height - 12px - 20px) {
-                    // FIXME: font-height hardcoded to 20px
-                        root.viewport-y = min(0px, max(parent.visible-height - self.height,  parent.visible-height - cpos.y - 12px - 20px));
+            }
+
+            MenuItem {
+                title: @tr("Copy");
+                enabled: !root.text.is-empty;
+                activated => {
+                    text-input.copy();
+                }
+            }
+
+            MenuItem {
+                enabled: !root.read-only && root.enabled;
+                title: @tr("Paste");
+                activated => {
+                    text-input.paste();
+                }
+            }
+
+            MenuItem {
+                title: @tr("Select All");
+                enabled: !root.text.is-empty;
+                activated => {
+                    text-input.select-all();
+                }
+            }
+        }
+
+        scroll-view := ScrollView {
+            x: root.scroll-view-padding;
+            y: root.scroll-view-padding;
+            width: parent.width - 2 * root.scroll-view-padding;
+            height: parent.height - 2 * root.scroll-view-padding;
+            viewport-width: root.wrap == TextWrap.no-wrap ? max(self.visible-width, text-input.preferred-width) : self.visible-width;
+            viewport-height: max(self.visible-height, text-input.preferred-height);
+
+            text-input := TextInput {
+                enabled: true;
+                single-line: false;
+                wrap: word-wrap;
+                selection-background-color: root.selection-background-color;
+                selection-foreground-color: root.selection-foreground-color;
+                page-height: scroll-view.visible-height;
+                // Disable TextInput's built-in accessibility support as the widget takes care of that.
+                accessible-role: none;
+
+                edited => {
+                    root.edited(self.text);
+                }
+
+                key-pressed(event) => {
+                    root.key-pressed(event)
+                }
+
+                key-released(event) => {
+                    root.key-released(event)
+                }
+
+                cursor-position-changed(cpos) => {
+                    if (cpos.x + root.viewport-x < 12px) {
+                        root.viewport-x = min(0px, max(parent.visible-width - self.width,  - cpos.x + 12px));
+                    } else if (cpos.x + root.viewport-x > parent.visible-width - 12px) {
+                        root.viewport-x = min(0px, max(parent.visible-width - self.width,  parent.visible-width - cpos.x - 12px));
+                    }
+                    if (cpos.y + root.viewport-y < 12px) {
+                        root.viewport-y = min(0px, max(parent.visible-height - self.height,  - cpos.y + 12px));
+                    } else if (cpos.y + root.viewport-y > parent.visible-height - 12px - 20px) {
+                        // FIXME: font-height hardcoded to 20px
+                            root.viewport-y = min(0px, max(parent.visible-height - self.height,  parent.visible-height - cpos.y - 12px - 20px));
+                    }
                 }
             }
         }
@@ -113,7 +153,7 @@ export component TextEditBase inherits Rectangle {
         font-family: text-input.font-family;
         color: root.placeholder-color;
         overflow: elide;
-        // the label is set on the TextEdit itself
+        // `accessible-placeholder-text` is set on TextEdit already
         accessible-role: none;
     }
 

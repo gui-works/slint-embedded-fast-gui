@@ -73,7 +73,7 @@ struct VRcInner<'vt, VTable: VTableMeta, X> {
     data: X,
 }
 
-impl<'vt, VTable: VTableMeta, X> VRcInner<'vt, VTable, X> {
+impl<VTable: VTableMeta, X> VRcInner<'_, VTable, X> {
     unsafe fn data_ptr(s: *const Self) -> *const X {
         (s as *const u8).add(*core::ptr::addr_of!((*s).data_offset) as usize) as *const X
     }
@@ -232,7 +232,7 @@ impl<VTable: VTableMetaDropInPlace, X> VRc<VTable, X> {
     ///
     /// This is safe because there is no way to access a mutable reference to the pointee.
     /// (There is no `get_mut` or `make_mut`),
-    pub fn borrow_pin(this: &Self) -> Pin<VRef<VTable>> {
+    pub fn borrow_pin(this: &Self) -> Pin<VRef<'_, VTable>> {
         unsafe { Pin::new_unchecked(Self::borrow(this)) }
     }
 

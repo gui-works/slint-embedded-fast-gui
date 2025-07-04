@@ -87,12 +87,14 @@ pub fn get_semantic_tokens(
                         SyntaxKind::StructDeclaration => Some((self::TYPE, 1 << self::DEFINITION)),
                         SyntaxKind::EnumDeclaration => Some((self::ENUM, 1 << self::DEFINITION)),
                         SyntaxKind::PropertyChangedCallback => Some((self::PROPERTY, 0)),
+                        SyntaxKind::LetStatement => Some((self::VARIABLE, 1 << self::DEFINITION)),
                         _ => None,
                     }
                 }
                 SyntaxKind::ChildrenPlaceholder => Some((self::MACRO, 0)),
                 SyntaxKind::Binding | SyntaxKind::TwoWayBinding => Some((self::PROPERTY, 0)),
                 SyntaxKind::ReturnStatement => Some((self::KEYWORD, 0)),
+                SyntaxKind::LetStatement => Some((self::KEYWORD, 0)),
                 SyntaxKind::AtImageUrl => Some((self::MACRO, 0)),
                 SyntaxKind::AtGradient => Some((self::MACRO, 0)),
                 SyntaxKind::AtTr => Some((self::MACRO, 0)),
@@ -107,7 +109,7 @@ pub fn get_semantic_tokens(
                 SyntaxKind::ExportIdentifier => {
                     Some((
                         self::TYPE,
-                        if token.parent().parent().map_or(false, |p| {
+                        if token.parent().parent().is_some_and(|p| {
                             p.children().any(|n| n.kind() == SyntaxKind::ExportName)
                         }) {
                             0
@@ -119,16 +121,18 @@ pub fn get_semantic_tokens(
                 SyntaxKind::ExportName => Some((self::TYPE, 1 << self::DECLARATION)),
                 SyntaxKind::ImportSpecifier => Some((self::KEYWORD, 0)),
                 SyntaxKind::ImportIdentifier => Some((self::KEYWORD, 0)),
-                SyntaxKind::ExternalName => Some((
-                    self::TYPE,
-                    if token.parent().parent().map_or(false, |p| {
-                        p.children().any(|n| n.kind() == SyntaxKind::InternalName)
-                    }) {
-                        0
-                    } else {
-                        1 << self::DECLARATION
-                    },
-                )),
+                SyntaxKind::ExternalName => {
+                    Some((
+                        self::TYPE,
+                        if token.parent().parent().is_some_and(|p| {
+                            p.children().any(|n| n.kind() == SyntaxKind::InternalName)
+                        }) {
+                            0
+                        } else {
+                            1 << self::DECLARATION
+                        },
+                    ))
+                }
                 SyntaxKind::InternalName => Some((self::TYPE, 1 << self::DECLARATION)),
                 SyntaxKind::ObjectTypeMember => Some((self::PROPERTY, 1 << self::DEFINITION)),
                 SyntaxKind::StructDeclaration => Some((self::KEYWORD, 0)),

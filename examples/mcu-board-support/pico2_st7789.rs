@@ -28,7 +28,7 @@ mod rp_pico2;
 use rp_pico2::hal::{self, pac, prelude::*, timer::CopyableTimer0, Timer};
 use slint::platform::{software_renderer as renderer, PointerEventButton, WindowEvent};
 
-const HEAP_SIZE: usize = 200 * 1024;
+const HEAP_SIZE: usize = 400 * 1024;
 static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
 
 #[global_allocator]
@@ -151,9 +151,10 @@ pub fn init() {
     let stolen_spi = unsafe { core::ptr::read(&spi as *const _) };
 
     let spi = singleton!(:SpiRefCell = SpiRefCell::new((spi, 0.Hz()))).unwrap();
+    let mipidsi_buffer = singleton!(:[u8; 512] = [0; 512]).unwrap();
 
     let display_spi = SharedSpiWithFreq { refcell: spi, cs, freq: SPI_ST7789VW_MAX_FREQ };
-    let di = display_interface_spi::SPIInterface::new(display_spi, dc);
+    let di = mipidsi::interface::SpiInterface::new(display_spi, dc, mipidsi_buffer);
     let display = mipidsi::Builder::new(mipidsi::models::ST7789, di)
         .reset_pin(rst)
         .display_size(DISPLAY_SIZE.height as _, DISPLAY_SIZE.width as _)
@@ -210,7 +211,7 @@ struct PicoBackend<DrawBuffer, Touch> {
 }
 
 impl<
-        DI: display_interface::WriteOnlyDataCommand,
+        DI: mipidsi::interface::Interface<Word = u8>,
         RST: OutputPin<Error = Infallible>,
         TO: WriteTarget<TransmittedWord = u8> + embedded_hal_nb::spi::FullDuplex,
         CH: SingleChannel,
@@ -283,11 +284,11 @@ impl<
                     let is_pointer_release_event =
                         matches!(event, WindowEvent::PointerReleased { .. });
 
-                    window.dispatch_event(event);
+                    window.try_dispatch_event(event)?;
 
                     // removes hover state on widgets
                     if is_pointer_release_event {
-                        window.dispatch_event(WindowEvent::PointerExited);
+                        window.try_dispatch_event(WindowEvent::PointerExited)?;
                     }
                     // Don't go to sleep after a touch event that forces a redraw
                     continue;
@@ -358,7 +359,7 @@ struct DrawBuffer<Display, PioTransfer, Stolen> {
 }
 
 impl<
-        DI: display_interface::WriteOnlyDataCommand,
+        DI: mipidsi::interface::Interface<Word = u8>,
         RST: OutputPin<Error = Infallible>,
         TO: WriteTarget<TransmittedWord = u8>,
         CH: SingleChannel,
@@ -418,7 +419,7 @@ impl<
 }
 
 impl<
-        DI: display_interface::WriteOnlyDataCommand,
+        DI: mipidsi::interface::Interface<Word = u8>,
         RST: OutputPin<Error = Infallible>,
         TO: WriteTarget<TransmittedWord = u8> + embedded_hal_nb::spi::FullDuplex,
         CH: SingleChannel,
@@ -606,7 +607,8 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     bl.set_high().unwrap();
     let spi = singleton!(:SpiRefCell = SpiRefCell::new((spi, 0.Hz()))).unwrap();
     let display_spi = SharedSpiWithFreq { refcell: spi, cs, freq: SPI_ST7789VW_MAX_FREQ };
-    let di = display_interface_spi::SPIInterface::new(display_spi, dc);
+    let mut buffer = [0_u8; 512];
+    let di = mipidsi::interface::SpiInterface::new(display_spi, dc, &mut buffer);
     let mut display = mipidsi::Builder::new(mipidsi::models::ST7789, di)
         .reset_pin(rst)
         .display_size(DISPLAY_SIZE.height as _, DISPLAY_SIZE.width as _)

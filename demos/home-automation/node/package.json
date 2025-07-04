@@ -1,10 +1,10 @@
 {
     "name": "home_automation",
-    "version": "1.9.2",
+    "version": "1.13.0",
     "main": "main.js",
     "type": "module",
     "dependencies": {
-        "@biomejs/biome": "1.9.4",
+        "@biomejs/biome": "2.0.6",
         "slint-ui": "workspace:*"
     },
     "scripts": {

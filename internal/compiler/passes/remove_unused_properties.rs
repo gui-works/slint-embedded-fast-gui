@@ -17,7 +17,7 @@ pub fn remove_unused_properties(doc: &Document) {
                 for (prop, decl) in &elem.property_declarations {
                     if !decl.expose_in_public_api
                         && !elem.named_references.is_referenced(prop)
-                        && !elem.property_analysis.borrow().get(prop).map_or(false, |v| v.is_used())
+                        && !elem.property_analysis.borrow().get(prop).is_some_and(|v| v.is_used())
                         && !elem.change_callbacks.contains_key(prop)
                     {
                         to_remove.insert(prop.to_owned());
@@ -28,6 +28,12 @@ pub fn remove_unused_properties(doc: &Document) {
                     elem.property_analysis.borrow_mut().remove(x);
                     elem.bindings.remove(x);
                 }
+                // Remove changed callbacks over properties that are not materialized as they are not used
+                let mut change_callbacks = std::mem::take(&mut elem.change_callbacks);
+                change_callbacks.retain(|prop, _| {
+                    super::materialize_fake_properties::has_declared_property(&elem, prop)
+                });
+                elem.change_callbacks = change_callbacks;
             },
         );
     }

@@ -15,7 +15,7 @@ on:
             features:
                 type: string
                 description: features to enable for build
-                # Keep in sync with features in nightly_snapshot.yaml, cpp_package.yaml,api/node/Cargo.toml, and api/python/Cargo.toml
+                # Keep in sync with features in nightly_snapshot.yaml, cpp_package.yaml,api/node/Cargo.toml, and api/python/slint/Cargo.toml
                 default: "backend-linuxkms-noseat,backend-winit,renderer-femtovg,renderer-skia,renderer-software"
             codesign:
                 type: boolean
@@ -30,7 +30,7 @@ on:
             features:
                 type: string
                 description: features to enable for build
-                # Keep in sync with features in nightly_snapshot.yaml, cpp_package.yaml,api/node/Cargo.toml, and api/python/Cargo.toml
+                # Keep in sync with features in nightly_snapshot.yaml, cpp_package.yaml,api/node/Cargo.toml, and api/python/slint/Cargo.toml
                 default: "backend-linuxkms-noseat,backend-winit,renderer-femtovg,renderer-skia,renderer-software"
             codesign:
                 type: boolean
@@ -55,15 +55,27 @@ env:
 
 jobs:
     build_windows:
-        runs-on: windows-2022
+        strategy:
+            matrix:
+                arch: [x86_64-pc-windows-msvc, aarch64-pc-windows-msvc]
+                include:
+                  - arch: x86_64-pc-windows-msvc
+                    runner: windows-2022
+                    package_suffix: x86_64
+                  - arch: aarch64-pc-windows-msvc
+                    runner: windows-11-arm
+                    package_suffix: arm64
+
+        runs-on: ${{ matrix.runner}}
         steps:
             - uses: actions/checkout@v4
             - uses: ./.github/actions/setup-rust
               with:
-                  target: x86_64-pc-windows-msvc
+                  target: ${{ matrix.arch }}
             - uses: baptiste0928/cargo-install@v3
               with:
                   crate: cargo-about
+                  version: "=0.6.6"
             - name: Build
               run: cargo build --verbose --no-default-features --features ${{ github.event.inputs.features || inputs.features }} --release -p slint-${{ github.event.inputs.program || inputs.program }}
             - name: Create artifact directory
@@ -81,12 +93,12 @@ jobs:
             - name: Upload artifact
               uses: actions/upload-artifact@v4
               with:
-                  name: slint-${{ github.event.inputs.program || inputs.program }}-windows
+                  name: slint-${{ github.event.inputs.program || inputs.program }}-windows-${{ matrix.package_suffix }}
                   path: |
                       pkg
 
     build_linux:
-        runs-on: ubuntu-20.04
+        runs-on: ubuntu-22.04
         steps:
             - uses: actions/checkout@v4
             - uses: ./.github/actions/install-linux-dependencies
@@ -98,6 +110,7 @@ jobs:
             - uses: baptiste0928/cargo-install@v3
               with:
                   crate: cargo-about
+                  version: "=0.6.6"
             - name: Build
               run: cargo build --verbose --no-default-features --features ${{ github.event.inputs.features || inputs.features }} --release -p slint-${{ github.event.inputs.program || inputs.program }}
             - name: Create artifact directory
@@ -115,7 +128,7 @@ jobs:
                   path: slint-${{ github.event.inputs.program || inputs.program }}-linux.tar.gz
 
     build_linux_arm:
-      runs-on: ubuntu-20.04
+      runs-on: ubuntu-22.04
       strategy:
         matrix:
             target:
@@ -132,6 +145,7 @@ jobs:
           - uses: baptiste0928/cargo-install@v3
             with:
                 crate: cargo-about
+                version: "=0.6.6"
           - name: Build
             run: cross build --target=${{ matrix.target }} --no-default-features --features ${{ github.event.inputs.features || inputs.features }} --release -p slint-${{ github.event.inputs.program || inputs.program }}
           - name: Create artifact directory
@@ -158,13 +172,10 @@ jobs:
             - uses: ./.github/actions/setup-rust
               with:
                   target: aarch64-apple-darwin
-            # Pin Python version until https://github.com/slint-ui/slint/issues/6615 is fixed.
-            - uses: actions/setup-python@v5
-              with:
-                python-version: '3.12'
             - uses: baptiste0928/cargo-install@v3
               with:
                   crate: cargo-about
+                  version: "=0.6.6"
             - name: Build x86_64
               run: cargo build --verbose --target x86_64-apple-darwin --no-default-features --features ${{ github.event.inputs.features || inputs.features }} --release -p slint-${{ github.event.inputs.program || inputs.program }}
             - name: Build aarch64

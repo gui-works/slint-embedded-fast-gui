@@ -14,12 +14,46 @@ use i_slint_core::{items::ImageRendering, ImageInner};
 
 use super::itemrenderer::CanvasRc;
 
-pub struct Texture {
-    pub id: femtovg::ImageId,
-    canvas: CanvasRc,
+pub trait TextureImporter
+where
+    Self: femtovg::Renderer + Sized,
+{
+    #[cfg(not(target_family = "wasm"))]
+    fn convert_opengl_texture(opengl_texture: std::num::NonZero<u32>) -> Self::NativeTexture;
+
+    #[cfg(feature = "unstable-wgpu-24")]
+    fn convert_wgpu_24_texture(wgpu_texture: wgpu_24::Texture) -> Self::NativeTexture;
 }
 
-impl Texture {
+impl TextureImporter for femtovg::renderer::OpenGl {
+    #[cfg(not(target_family = "wasm"))]
+    fn convert_opengl_texture(opengl_texture: std::num::NonZero<u32>) -> Self::NativeTexture {
+        glow::NativeTexture(opengl_texture)
+    }
+
+    #[cfg(feature = "unstable-wgpu-24")]
+    fn convert_wgpu_24_texture(_wgpu_texture: wgpu_24::Texture) -> Self::NativeTexture {
+        unimplemented!()
+    }
+}
+
+#[cfg(all(feature = "wgpu", not(target_family = "wasm")))]
+impl TextureImporter for femtovg::renderer::WGPURenderer {
+    fn convert_opengl_texture(_opengl_texture: std::num::NonZero<u32>) -> Self::NativeTexture {
+        todo!()
+    }
+
+    #[cfg(feature = "unstable-wgpu-24")]
+    fn convert_wgpu_24_texture(wgpu_texture: wgpu_24::Texture) -> Self::NativeTexture {
+        wgpu_texture
+    }
+}
+pub struct Texture<R: femtovg::Renderer + TextureImporter> {
+    pub id: femtovg::ImageId,
+    canvas: CanvasRc<R>,
+}
+
+impl<R: femtovg::Renderer + TextureImporter> Texture<R> {
     pub fn size(&self) -> Option<IntSize> {
         self.canvas
             .borrow()
@@ -32,11 +66,15 @@ impl Texture {
         femtovg::RenderTarget::Image(self.id)
     }
 
-    pub fn adopt(canvas: &CanvasRc, image_id: femtovg::ImageId) -> Rc<Texture> {
+    pub fn adopt(canvas: &CanvasRc<R>, image_id: femtovg::ImageId) -> Rc<Texture<R>> {
         Texture { id: image_id, canvas: canvas.clone() }.into()
     }
 
-    pub fn new_empty_on_gpu(canvas: &CanvasRc, width: u32, height: u32) -> Option<Rc<Texture>> {
+    pub fn new_empty_on_gpu(
+        canvas: &CanvasRc<R>,
+        width: u32,
+        height: u32,
+    ) -> Option<Rc<Texture<R>>> {
         if width == 0 || height == 0 {
             return None;
         }
@@ -87,7 +125,7 @@ impl Texture {
     // a renderer instead (which implies a current context).
     pub fn new_from_image(
         image: &ImageInner,
-        canvas: &CanvasRc,
+        canvas: &CanvasRc<R>,
         target_size_for_scalable_source: Option<euclid::Size2D<u32, PhysicalPx>>,
         scaling: ImageRendering,
         tiling: (ImageTiling, ImageTiling),
@@ -135,7 +173,27 @@ impl Texture {
                 canvas
                     .borrow_mut()
                     .create_image_from_native_texture(
-                        glow::NativeTexture(*texture_id),
+                        <R as TextureImporter>::convert_opengl_texture(*texture_id),
+                        femtovg::ImageInfo::new(
+                            image_flags,
+                            size.width as _,
+                            size.height as _,
+                            femtovg::PixelFormat::Rgba8,
+                        ),
+                    )
+                    .unwrap()
+            }
+            #[cfg(all(not(target_arch = "wasm32"), feature = "unstable-wgpu-24"))]
+            ImageInner::WGPUTexture(any_wgpu_texture) => {
+                let texture = match any_wgpu_texture {
+                    i_slint_core::graphics::WGPUTexture::WGPU24Texture(texture) => texture.clone(),
+                };
+                let size = texture.size();
+
+                canvas
+                    .borrow_mut()
+                    .create_image_from_native_texture(
+                        <R as TextureImporter>::convert_wgpu_24_texture(texture),
                         femtovg::ImageInfo::new(
                             image_flags,
                             size.width as _,
@@ -156,7 +214,7 @@ impl Texture {
     }
 }
 
-impl Drop for Texture {
+impl<R: femtovg::Renderer + TextureImporter> Drop for Texture<R> {
     fn drop(&mut self) {
         self.canvas.borrow_mut().delete_image(self.id);
     }
@@ -188,17 +246,24 @@ impl TextureCacheKey {
 
 // Cache used to avoid repeatedly decoding images from disk. Entries with a count
 // of 1 are drained after flushing the renderer commands to the screen.
-#[derive(Default)]
-pub struct TextureCache(HashMap<TextureCacheKey, Rc<Texture>>);
+pub struct TextureCache<R: femtovg::Renderer + TextureImporter>(
+    HashMap<TextureCacheKey, Rc<Texture<R>>>,
+);
 
-impl TextureCache {
+impl<R: femtovg::Renderer + TextureImporter> Default for TextureCache<R> {
+    fn default() -> Self {
+        Self(Default::default())
+    }
+}
+
+impl<R: femtovg::Renderer + TextureImporter> TextureCache<R> {
     // Look up the given image cache key in the image cache and upgrade the weak reference to a strong one if found,
     // otherwise a new image is created/loaded from the given callback.
     pub(crate) fn lookup_image_in_cache_or_create(
         &mut self,
         cache_key: TextureCacheKey,
-        image_create_fn: impl Fn() -> Option<Rc<Texture>>,
-    ) -> Option<Rc<Texture>> {
+        image_create_fn: impl Fn() -> Option<Rc<Texture<R>>>,
+    ) -> Option<Rc<Texture<R>>> {
         Some(match self.0.entry(cache_key) {
             std::collections::hash_map::Entry::Occupied(existing_entry) => {
                 existing_entry.get().clone()

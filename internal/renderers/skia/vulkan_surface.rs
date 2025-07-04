@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
 use std::sync::Arc;
 
 use i_slint_core::api::{PhysicalSize as PhysicalWindowSize, Window};
@@ -19,6 +18,57 @@ use vulkano::instance::{Instance, InstanceCreateFlags, InstanceCreateInfo, Insta
 use vulkano::swapchain::{Surface, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo};
 use vulkano::sync::GpuFuture;
 use vulkano::{sync, Handle, Validated, VulkanError, VulkanLibrary, VulkanObject};
+
+use crate::SkiaSharedContext;
+
+pub struct SharedVulkanContext {
+    instance: Arc<Instance>,
+    // TODO: share also physical/logical device and queue, but their selection process is surface compatibility dependent.
+}
+
+impl super::SkiaSharedContextInner {
+    fn shared_vulkan_context(
+        &self,
+    ) -> Result<&SharedVulkanContext, i_slint_core::platform::PlatformError> {
+        if let Some(ctx) = self.vulkan_context.get() {
+            return Ok(ctx);
+        }
+        self.vulkan_context.set(SharedVulkanContext::new()?).ok();
+        Ok(self.vulkan_context.get().unwrap())
+    }
+}
+
+impl SharedVulkanContext {
+    fn new() -> Result<Self, i_slint_core::platform::PlatformError> {
+        let library = VulkanLibrary::new()
+            .map_err(|load_err| format!("Error loading vulkan library: {load_err}"))?;
+
+        let required_extensions = InstanceExtensions {
+            khr_surface: true,
+            mvk_macos_surface: true,
+            ext_metal_surface: true,
+            khr_wayland_surface: true,
+            khr_xlib_surface: true,
+            khr_xcb_surface: true,
+            khr_win32_surface: true,
+            khr_get_surface_capabilities2: true,
+            khr_get_physical_device_properties2: true,
+            ..InstanceExtensions::empty()
+        }
+        .intersection(library.supported_extensions());
+
+        let instance = Instance::new(
+            library.clone(),
+            InstanceCreateInfo {
+                flags: InstanceCreateFlags::ENUMERATE_PORTABILITY,
+                enabled_extensions: required_extensions,
+                ..Default::default()
+            },
+        )
+        .map_err(|instance_err| format!("Error creating Vulkan instance: {instance_err}"))?;
+        Ok(Self { instance })
+    }
+}
 
 /// This surface renders into the given window using Vulkan.
 pub struct VulkanSurface {
@@ -69,7 +119,7 @@ impl VulkanSurface {
             let surface_capabilities = device
                 .physical_device()
                 .surface_capabilities(&surface, Default::default())
-                .map_err(|vke| format!("Error macthing Vulkan surface capabilities: {vke}"))?;
+                .map_err(|vke| format!("Error matching Vulkan surface capabilities: {vke}"))?;
             let image_format = vulkano::format::Format::B8G8R8A8_UNORM.into();
 
             Swapchain::new(
@@ -129,7 +179,7 @@ impl VulkanSurface {
                 instance.handle().as_raw() as _,
                 physical_device.handle().as_raw() as _,
                 device.handle().as_raw() as _,
-                (queue.handle().as_raw() as _, queue.id_within_family() as _),
+                (queue.handle().as_raw() as _, queue.queue_index() as _),
                 &get_proc,
             )
         };
@@ -159,40 +209,18 @@ impl VulkanSurface {
 
 impl super::Surface for VulkanSurface {
     fn new(
-        window_handle: Rc<dyn raw_window_handle::HasWindowHandle>,
-        display_handle: Rc<dyn raw_window_handle::HasDisplayHandle>,
+        shared_context: &SkiaSharedContext,
+        window_handle: Arc<dyn raw_window_handle::HasWindowHandle>,
+        display_handle: Arc<dyn raw_window_handle::HasDisplayHandle>,
         size: PhysicalWindowSize,
         requested_graphics_api: Option<RequestedGraphicsAPI>,
     ) -> Result<Self, i_slint_core::platform::PlatformError> {
-        if requested_graphics_api.map_or(false, |api| api != RequestedGraphicsAPI::Vulkan) {
+        if requested_graphics_api.map_or(false, |api| !matches!(api, RequestedGraphicsAPI::Vulkan))
+        {
             return Err(format!("Requested non-Vulkan rendering with Vulkan renderer").into());
         }
-        let library = VulkanLibrary::new()
-            .map_err(|load_err| format!("Error loading vulkan library: {load_err}"))?;
 
-        let required_extensions = InstanceExtensions {
-            khr_surface: true,
-            mvk_macos_surface: true,
-            ext_metal_surface: true,
-            khr_wayland_surface: true,
-            khr_xlib_surface: true,
-            khr_xcb_surface: true,
-            khr_win32_surface: true,
-            khr_get_surface_capabilities2: true,
-            khr_get_physical_device_properties2: true,
-            ..InstanceExtensions::empty()
-        }
-        .intersection(library.supported_extensions());
-
-        let instance = Instance::new(
-            library.clone(),
-            InstanceCreateInfo {
-                flags: InstanceCreateFlags::ENUMERATE_PORTABILITY,
-                enabled_extensions: required_extensions,
-                ..Default::default()
-            },
-        )
-        .map_err(|instance_err| format!("Error creating Vulkan instance: {instance_err}"))?;
+        let instance = shared_context.0.shared_vulkan_context()?.instance.clone();
 
         let window_handle = window_handle
             .window_handle()
@@ -308,7 +336,7 @@ impl super::Surface for VulkanSurface {
             .try_into()
             .map_err(|_| format!("internal error: invalid swapchain image width {width}"))?;
         let height = swapchain.image_extent()[1];
-        let height: i32 = width
+        let height: i32 = height
             .try_into()
             .map_err(|_| format!("internal error: invalid swapchain image height {height}"))?;
 
@@ -464,12 +492,7 @@ fn create_surface(
             }),
             _,
         ) => unsafe {
-            Surface::from_win32(
-                instance.clone(),
-                hinstance.unwrap().get() as *const std::ffi::c_void,
-                hwnd.get() as *const std::ffi::c_void,
-                None,
-            )
+            Surface::from_win32(instance.clone(), hinstance.unwrap().get(), hwnd.get(), None)
         },
         _ => unimplemented!(),
     }

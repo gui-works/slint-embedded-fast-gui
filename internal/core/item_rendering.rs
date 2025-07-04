@@ -10,14 +10,14 @@ use crate::graphics::{CachedGraphicsData, FontRequest, Image, IntRect};
 use crate::item_tree::ItemTreeRc;
 use crate::item_tree::{ItemVisitor, ItemVisitorResult, ItemVisitorVTable, VisitChildrenResult};
 use crate::lengths::{
-    LogicalBorderRadius, LogicalLength, LogicalPoint, LogicalPx, LogicalRect, LogicalSize,
-    LogicalVector,
+    ItemTransform, LogicalBorderRadius, LogicalLength, LogicalPoint, LogicalPx, LogicalRect,
+    LogicalSize, LogicalVector, SizeLengths,
 };
 use crate::properties::PropertyTracker;
-use crate::window::WindowInner;
+use crate::window::{WindowAdapter, WindowInner};
 use crate::{Brush, Coord, SharedString};
-#[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
+use alloc::rc::Rc;
 use core::cell::{Cell, RefCell};
 use core::pin::Pin;
 #[cfg(feature = "std")]
@@ -181,21 +181,19 @@ impl<T: Clone> ItemCache<T> {
     }
 }
 
-/// Return true if the item might be a clipping item
-pub fn is_clipping_item(item: Pin<ItemRef>) -> bool {
-    //(FIXME: there should be some flag in the vtable instead of down-casting)
-    ItemRef::downcast_pin::<Flickable>(item).is_some()
-        || ItemRef::downcast_pin::<Clip>(item).map_or(false, |clip_item| clip_item.as_ref().clip())
-}
-
 /// Renders the children of the item with the specified index into the renderer.
-pub fn render_item_children(renderer: &mut dyn ItemRenderer, component: &ItemTreeRc, index: isize) {
+pub fn render_item_children(
+    renderer: &mut dyn ItemRenderer,
+    component: &ItemTreeRc,
+    index: isize,
+    window_adapter: &Rc<dyn WindowAdapter>,
+) {
     let mut actual_visitor =
         |component: &ItemTreeRc, index: u32, item: Pin<ItemRef>| -> VisitChildrenResult {
             renderer.save_state();
             let item_rc = ItemRc::new(component.clone(), index);
 
-            let (do_draw, item_geometry) = renderer.filter_item(&item_rc);
+            let (do_draw, item_geometry) = renderer.filter_item(&item_rc, window_adapter);
 
             let item_origin = item_geometry.origin;
             renderer.translate(item_origin.to_vector());
@@ -203,7 +201,7 @@ pub fn render_item_children(renderer: &mut dyn ItemRenderer, component: &ItemTre
             // Don't render items that are clipped, with the exception of the Clip or Flickable since
             // they themselves clip their content.
             let render_result = if do_draw
-               || is_clipping_item(item)
+               || item.as_ref().clips_children()
                // HACK, the geometry of the box shadow does not include the shadow, because when the shadow is the root for repeated elements it would translate the children
                || ItemRef::downcast_pin::<BoxShadow>(item).is_some()
             {
@@ -217,7 +215,7 @@ pub fn render_item_children(renderer: &mut dyn ItemRenderer, component: &ItemTre
             };
 
             if matches!(render_result, RenderingResult::ContinueRenderingChildren) {
-                render_item_children(renderer, component, index as isize);
+                render_item_children(renderer, component, index as isize, window_adapter);
             }
             renderer.restore_state();
             VisitChildrenResult::CONTINUE
@@ -236,11 +234,12 @@ pub fn render_component_items(
     component: &ItemTreeRc,
     renderer: &mut dyn ItemRenderer,
     origin: LogicalPoint,
+    window_adapter: &Rc<dyn WindowAdapter>,
 ) {
     renderer.save_state();
     renderer.translate(origin.to_vector());
 
-    render_item_children(renderer, component, -1);
+    render_item_children(renderer, component, -1, window_adapter);
 
     renderer.restore_state();
 }
@@ -264,7 +263,7 @@ pub fn item_children_bounding_rect(
                 bounding_rect = bounding_rect.union(&clipped_item_geometry);
             }
 
-            if !is_clipping_item(item) {
+            if !item.as_ref().clips_children() {
                 bounding_rect = bounding_rect.union(&item_children_bounding_rect(
                     component,
                     index as isize,
@@ -284,6 +283,12 @@ pub fn item_children_bounding_rect(
 }
 
 /// Trait for an item that represent a Rectangle to the Renderer
+#[allow(missing_docs)]
+pub trait RenderRectangle {
+    fn background(self: Pin<&Self>) -> Brush;
+}
+
+/// Trait for an item that represent a Rectangle with a border to the Renderer
 #[allow(missing_docs)]
 pub trait RenderBorderRectangle {
     fn background(self: Pin<&Self>) -> Brush;
@@ -310,13 +315,39 @@ pub trait RenderImage {
 pub trait RenderText {
     fn target_size(self: Pin<&Self>) -> LogicalSize;
     fn text(self: Pin<&Self>) -> SharedString;
-    fn font_request(self: Pin<&Self>, window: &WindowInner) -> FontRequest;
+    fn font_request(self: Pin<&Self>, self_rc: &ItemRc) -> FontRequest;
     fn color(self: Pin<&Self>) -> Brush;
     fn alignment(self: Pin<&Self>) -> (TextHorizontalAlignment, TextVerticalAlignment);
     fn wrap(self: Pin<&Self>) -> TextWrap;
     fn overflow(self: Pin<&Self>) -> TextOverflow;
     fn letter_spacing(self: Pin<&Self>) -> LogicalLength;
     fn stroke(self: Pin<&Self>) -> (Brush, LogicalLength, TextStrokeStyle);
+
+    fn text_bounding_rect(
+        self: Pin<&Self>,
+        self_rc: &ItemRc,
+        window_adapter: &Rc<dyn WindowAdapter>,
+        mut geometry: euclid::Rect<f32, crate::lengths::LogicalPx>,
+    ) -> euclid::Rect<f32, crate::lengths::LogicalPx> {
+        let window_inner = WindowInner::from_pub(window_adapter.window());
+        let text_string = self.text();
+        let font_request = self.font_request(self_rc);
+        let scale_factor = crate::lengths::ScaleFactor::new(window_inner.scale_factor());
+        let max_width = geometry.size.width_length();
+        geometry.size = geometry.size.max(
+            window_adapter
+                .renderer()
+                .text_size(
+                    font_request.clone(),
+                    text_string.as_str(),
+                    Some(max_width.cast()),
+                    scale_factor,
+                    self.wrap(),
+                )
+                .cast(),
+        );
+        geometry
+    }
 }
 
 /// Trait used to render each items.
@@ -325,13 +356,26 @@ pub trait RenderText {
 /// draw_rectangle should draw a rectangle in `(pos.x + rect.x, pos.y + rect.y)`
 #[allow(missing_docs)]
 pub trait ItemRenderer {
-    fn draw_rectangle(&mut self, rect: Pin<&Rectangle>, _self_rc: &ItemRc, _size: LogicalSize);
+    fn draw_rectangle(
+        &mut self,
+        rect: Pin<&dyn RenderRectangle>,
+        _self_rc: &ItemRc,
+        _size: LogicalSize,
+        _cache: &CachedRenderingData,
+    );
     fn draw_border_rectangle(
         &mut self,
         rect: Pin<&dyn RenderBorderRectangle>,
         _self_rc: &ItemRc,
         _size: LogicalSize,
         _cache: &CachedRenderingData,
+    );
+    fn draw_window_background(
+        &mut self,
+        rect: Pin<&dyn RenderRectangle>,
+        self_rc: &ItemRc,
+        size: LogicalSize,
+        cache: &CachedRenderingData,
     );
     fn draw_image(
         &mut self,
@@ -451,19 +495,22 @@ pub trait ItemRenderer {
 
     fn draw_image_direct(&mut self, image: crate::graphics::Image);
 
-    /// Fills a rectangle at (0,0) with the given size. This is used for example by the Skia renderer to
-    /// handle window backgrounds with a brush (gradient).
-    fn draw_rect(&mut self, _size: LogicalSize, _brush: Brush) {
-        unimplemented!()
-    }
-
     /// This is called before it is being rendered (before the draw_* function).
     /// Returns
     ///  - if the item needs to be drawn (false means it is clipped or doesn't need to be drawn)
     ///  - the geometry of the item
-    fn filter_item(&mut self, item: &ItemRc) -> (bool, LogicalRect) {
+    fn filter_item(
+        &mut self,
+        item: &ItemRc,
+        window_adapter: &Rc<dyn WindowAdapter>,
+    ) -> (bool, LogicalRect) {
         let item_geometry = item.geometry();
-        (self.get_current_clip().intersects(&item_geometry), item_geometry)
+        // Query bounding rect untracked, as properties that affect the bounding rect are already tracked
+        // when rendering the item.
+        let bounding_rect = crate::properties::evaluate_no_tracking(|| {
+            item.bounding_rect(&item_geometry, window_adapter)
+        });
+        (self.get_current_clip().intersects(&bounding_rect), item_geometry)
     }
 
     fn window(&self) -> &crate::window::WindowInner;
@@ -478,8 +525,94 @@ pub trait ItemRenderer {
     }
 }
 
+/// Helper trait to express the features of an item renderer.
+pub trait ItemRendererFeatures {
+    /// The renderer supports applying 2D transformations to items.
+    const SUPPORTS_TRANSFORMATIONS: bool;
+}
+
+/// After rendering an item, we cache the geometry and the transform it applies to
+/// children.
+#[derive(Clone)]
+
+pub enum CachedItemBoundingBoxAndTransform {
+    /// A regular item with a translation
+    RegularItem {
+        /// The item's bounding rect relative to its parent.
+        bounding_rect: LogicalRect,
+        /// The item's offset relative to its parent.
+        offset: LogicalVector,
+    },
+    /// An item such as Rotate that defines an additional transformation
+    ItemWithTransform {
+        /// The item's bounding rect relative to its parent.
+        bounding_rect: LogicalRect,
+        /// The item's transform to apply to children.
+        transform: Box<ItemTransform>,
+    },
+    /// A clip item.
+    ClipItem {
+        /// The item's geometry relative to its parent.
+        geometry: LogicalRect,
+    },
+}
+
+impl CachedItemBoundingBoxAndTransform {
+    fn bounding_rect(&self) -> &LogicalRect {
+        match self {
+            CachedItemBoundingBoxAndTransform::RegularItem { bounding_rect, .. } => bounding_rect,
+            CachedItemBoundingBoxAndTransform::ItemWithTransform { bounding_rect, .. } => {
+                bounding_rect
+            }
+            CachedItemBoundingBoxAndTransform::ClipItem { geometry } => geometry,
+        }
+    }
+
+    fn transform(&self) -> ItemTransform {
+        match self {
+            CachedItemBoundingBoxAndTransform::RegularItem { offset, .. } => {
+                ItemTransform::translation(offset.x as f32, offset.y as f32)
+            }
+            CachedItemBoundingBoxAndTransform::ItemWithTransform { transform, .. } => **transform,
+            CachedItemBoundingBoxAndTransform::ClipItem { geometry } => {
+                ItemTransform::translation(geometry.origin.x as f32, geometry.origin.y as f32)
+            }
+        }
+    }
+
+    fn new<T: ItemRendererFeatures>(
+        item_rc: &ItemRc,
+        window_adapter: &Rc<dyn WindowAdapter>,
+    ) -> Self {
+        let geometry = item_rc.geometry();
+
+        if item_rc.borrow().as_ref().clips_children() {
+            return Self::ClipItem { geometry };
+        }
+
+        // Evaluate the bounding rect untracked, as properties that affect the bounding rect are already tracked
+        // at rendering time.
+        let bounding_rect = crate::properties::evaluate_no_tracking(|| {
+            item_rc.bounding_rect(&geometry, window_adapter)
+        });
+
+        if let Some(complex_child_transform) =
+            T::SUPPORTS_TRANSFORMATIONS.then(|| item_rc.children_transform()).flatten()
+        {
+            Self::ItemWithTransform {
+                bounding_rect,
+                transform: complex_child_transform
+                    .then_translate(geometry.origin.to_vector().cast())
+                    .into(),
+            }
+        } else {
+            Self::RegularItem { bounding_rect, offset: geometry.origin.to_vector() }
+        }
+    }
+}
+
 /// The cache that needs to be held by the Window for the partial rendering
-pub type PartialRenderingCache = RenderingCache<LogicalRect>;
+pub type PartialRenderingCache = RenderingCache<CachedItemBoundingBoxAndTransform>;
 
 /// A region composed of a few rectangles that need to be redrawn.
 #[derive(Default, Clone, Debug)]
@@ -573,8 +706,8 @@ impl DirtyRegion {
             if let Some(x) = ret.rectangles[i].intersection(&other) {
                 ret.rectangles[i] = x;
             } else {
-                ret.rectangles.swap(i, ret.count);
                 ret.count -= 1;
+                ret.rectangles.swap(i, ret.count);
                 continue;
             }
             i += 1;
@@ -622,16 +755,19 @@ pub struct PartialRenderer<'a, T> {
     pub dirty_region: DirtyRegion,
     /// The actual renderer which the drawing call will be forwarded to
     pub actual_renderer: T,
+    /// The window adapter the renderer is rendering into.
+    pub window_adapter: Rc<dyn WindowAdapter>,
 }
 
-impl<'a, T> PartialRenderer<'a, T> {
+impl<'a, T: ItemRenderer + ItemRendererFeatures> PartialRenderer<'a, T> {
     /// Create a new PartialRenderer
     pub fn new(
         cache: &'a RefCell<PartialRenderingCache>,
         initial_dirty_region: DirtyRegion,
         actual_renderer: T,
     ) -> Self {
-        Self { cache, dirty_region: initial_dirty_region, actual_renderer }
+        let window_adapter = actual_renderer.window().window_adapter();
+        Self { cache, dirty_region: initial_dirty_region, actual_renderer, window_adapter }
     }
 
     /// Visit the tree of item and compute what are the dirty regions
@@ -643,10 +779,24 @@ impl<'a, T> PartialRenderer<'a, T> {
     ) {
         #[derive(Clone, Copy)]
         struct ComputeDirtyRegionState {
-            offset: euclid::Vector2D<Coord, LogicalPx>,
-            old_offset: euclid::Vector2D<Coord, LogicalPx>,
+            transform_to_screen: ItemTransform,
+            old_transform_to_screen: ItemTransform,
             clipped: LogicalRect,
             must_refresh_children: bool,
+        }
+
+        impl ComputeDirtyRegionState {
+            /// Adjust transform_to_screen and old_transform_to_screen to map from item coordinates
+            /// to the screen when using it on a child, specified by its children transform.
+            fn adjust_transforms_for_child(
+                &mut self,
+                children_transform: &ItemTransform,
+                old_children_transform: &ItemTransform,
+            ) {
+                self.transform_to_screen = children_transform.then(&self.transform_to_screen);
+                self.old_transform_to_screen =
+                    old_children_transform.then(&self.old_transform_to_screen);
+            }
         }
 
         crate::item_tree::visit_items(
@@ -663,16 +813,31 @@ impl<'a, T> PartialRenderer<'a, T> {
                         dependency_tracker: Some(tr),
                     }) => {
                         if tr.is_dirty() {
-                            let old_geom = *cached_geom;
+                            let old_geom = cached_geom.clone();
                             drop(borrowed);
-                            let geom =
-                                crate::properties::evaluate_no_tracking(|| item_rc.geometry());
+                            let new_geom = crate::properties::evaluate_no_tracking(|| {
+                                CachedItemBoundingBoxAndTransform::new::<T>(
+                                    &item_rc,
+                                    &self.window_adapter,
+                                )
+                            });
 
-                            self.mark_dirty_rect(old_geom, state.old_offset, &state.clipped);
-                            self.mark_dirty_rect(geom, state.offset, &state.clipped);
+                            self.mark_dirty_rect(
+                                old_geom.bounding_rect(),
+                                state.old_transform_to_screen,
+                                &state.clipped,
+                            );
+                            self.mark_dirty_rect(
+                                new_geom.bounding_rect(),
+                                state.transform_to_screen,
+                                &state.clipped,
+                            );
 
-                            new_state.offset += geom.origin.to_vector();
-                            new_state.old_offset += old_geom.origin.to_vector();
+                            new_state.adjust_transforms_for_child(
+                                &new_geom.transform(),
+                                &old_geom.transform(),
+                            );
+
                             if ItemRef::downcast_pin::<Clip>(item).is_some()
                                 || ItemRef::downcast_pin::<Opacity>(item).is_some()
                             {
@@ -686,25 +851,42 @@ impl<'a, T> PartialRenderer<'a, T> {
                             tr.as_ref().register_as_dependency_to_current_binding();
 
                             if state.must_refresh_children
-                                || new_state.offset != new_state.old_offset
+                                || new_state.transform_to_screen
+                                    != new_state.old_transform_to_screen
                             {
                                 self.mark_dirty_rect(
-                                    *cached_geom,
-                                    state.old_offset,
+                                    cached_geom.bounding_rect(),
+                                    state.old_transform_to_screen,
                                     &state.clipped,
                                 );
-                                self.mark_dirty_rect(*cached_geom, state.offset, &state.clipped);
+                                self.mark_dirty_rect(
+                                    cached_geom.bounding_rect(),
+                                    state.transform_to_screen,
+                                    &state.clipped,
+                                );
                             }
 
-                            new_state.offset += cached_geom.origin.to_vector();
-                            new_state.old_offset += cached_geom.origin.to_vector();
-                            if crate::properties::evaluate_no_tracking(|| is_clipping_item(item)) {
+                            new_state.adjust_transforms_for_child(
+                                &cached_geom.transform(),
+                                &cached_geom.transform(),
+                            );
+
+                            if let CachedItemBoundingBoxAndTransform::ClipItem { geometry } =
+                                &cached_geom
+                            {
                                 new_state.clipped = new_state
                                     .clipped
                                     .intersection(
-                                        &cached_geom
-                                            .translate(state.offset)
-                                            .union(&cached_geom.translate(state.old_offset)),
+                                        &state
+                                            .transform_to_screen
+                                            .outer_transformed_rect(&geometry.cast())
+                                            .cast()
+                                            .union(
+                                                &state
+                                                    .old_transform_to_screen
+                                                    .outer_transformed_rect(&geometry.cast())
+                                                    .cast(),
+                                            ),
                                     )
                                     .unwrap_or_default();
                             }
@@ -713,40 +895,60 @@ impl<'a, T> PartialRenderer<'a, T> {
                     }
                     _ => {
                         drop(borrowed);
-                        let geom = crate::properties::evaluate_no_tracking(|| {
-                            let geom = item_rc.geometry();
-                            new_state.offset += geom.origin.to_vector();
-                            new_state.old_offset += geom.origin.to_vector();
-                            if is_clipping_item(item) {
+                        let bounding_rect = crate::properties::evaluate_no_tracking(|| {
+                            let geom = CachedItemBoundingBoxAndTransform::new::<T>(
+                                &item_rc,
+                                &self.window_adapter,
+                            );
+
+                            new_state
+                                .adjust_transforms_for_child(&geom.transform(), &geom.transform());
+
+                            if let CachedItemBoundingBoxAndTransform::ClipItem { geometry } = geom {
                                 new_state.clipped = new_state
                                     .clipped
-                                    .intersection(&geom.translate(state.offset))
+                                    .intersection(
+                                        &state
+                                            .transform_to_screen
+                                            .outer_transformed_rect(&geometry.cast())
+                                            .cast(),
+                                    )
                                     .unwrap_or_default();
                             }
-                            geom
+                            *geom.bounding_rect()
                         });
-                        self.mark_dirty_rect(geom, state.offset, &state.clipped);
+                        self.mark_dirty_rect(
+                            &bounding_rect,
+                            state.transform_to_screen,
+                            &state.clipped,
+                        );
                         ItemVisitorResult::Continue(new_state)
                     }
                 }
             },
-            ComputeDirtyRegionState {
-                offset: origin.to_vector(),
-                old_offset: origin.to_vector(),
-                clipped: LogicalRect::from_size(size),
-                must_refresh_children: false,
+            {
+                let initial_transform =
+                    euclid::Transform2D::translation(origin.x as f32, origin.y as f32);
+                ComputeDirtyRegionState {
+                    transform_to_screen: initial_transform,
+                    old_transform_to_screen: initial_transform,
+                    clipped: LogicalRect::from_size(size),
+                    must_refresh_children: false,
+                }
             },
         );
     }
 
     fn mark_dirty_rect(
         &mut self,
-        rect: LogicalRect,
-        offset: euclid::Vector2D<Coord, LogicalPx>,
+        rect: &LogicalRect,
+        transform: ItemTransform,
         clip_rect: &LogicalRect,
     ) {
         if !rect.is_empty() {
-            if let Some(rect) = rect.translate(offset).intersection(clip_rect) {
+            if let Some(rect) =
+                transform.outer_transformed_rect(&rect.cast()).cast().intersection(clip_rect)
+            {
                 self.dirty_region.add_rect(rect);
             }
         }
@@ -755,7 +957,7 @@ impl<'a, T> PartialRenderer<'a, T> {
     fn do_rendering(
         cache: &RefCell<PartialRenderingCache>,
         rendering_data: &CachedRenderingData,
-        render_fn: impl FnOnce() -> LogicalRect,
+        render_fn: impl FnOnce() -> CachedItemBoundingBoxAndTransform,
     ) {
         let mut cache = cache.borrow_mut();
         if let Some(entry) = rendering_data.get_entry(&mut cache) {
@@ -783,7 +985,7 @@ macro_rules! forward_rendering_call {
             let mut ret = None;
             Self::do_rendering(&self.cache, &obj.cached_rendering_data, || {
                 ret = Some(self.actual_renderer.$fn(obj, item_rc, size));
-                item_rc.geometry()
+                CachedItemBoundingBoxAndTransform::new::<T>(&item_rc, &self.window_adapter)
             });
             ret.unwrap_or_default()
         }
@@ -796,54 +998,59 @@ macro_rules! forward_rendering_call2 {
             let mut ret = None;
             Self::do_rendering(&self.cache, &cache, || {
                 ret = Some(self.actual_renderer.$fn(obj, item_rc, size, &cache));
-                item_rc.geometry()
+                CachedItemBoundingBoxAndTransform::new::<T>(&item_rc, &self.window_adapter)
             });
             ret.unwrap_or_default()
         }
     };
 }
 
-impl<'a, T: ItemRenderer> ItemRenderer for PartialRenderer<'a, T> {
-    fn filter_item(&mut self, item_rc: &ItemRc) -> (bool, LogicalRect) {
+impl<T: ItemRenderer + ItemRendererFeatures> ItemRenderer for PartialRenderer<'_, T> {
+    fn filter_item(
+        &mut self,
+        item_rc: &ItemRc,
+        window_adapter: &Rc<dyn WindowAdapter>,
+    ) -> (bool, LogicalRect) {
         let item = item_rc.borrow();
         let eval = || {
-            if let Some(clip) = ItemRef::downcast_pin::<Clip>(item) {
-                // Make sure we register a dependency on the clip
-                clip.clip();
-            }
-            item_rc.geometry()
+            // registers dependencies on the geometry and clip properties.
+            CachedItemBoundingBoxAndTransform::new::<T>(item_rc, window_adapter)
         };
 
         let rendering_data = item.cached_rendering_data_offset();
         let mut cache = self.cache.borrow_mut();
-        let item_geometry = match rendering_data.get_entry(&mut cache) {
+        let item_bounding_rect = match rendering_data.get_entry(&mut cache) {
             Some(CachedGraphicsData { data, dependency_tracker }) => {
                 dependency_tracker
                     .get_or_insert_with(|| Box::pin(PropertyTracker::default()))
                     .as_ref()
                     .evaluate_if_dirty(|| *data = eval());
-                *data
+                *data.bounding_rect()
             }
             None => {
                 let cache_entry = crate::graphics::CachedGraphicsData::new(eval);
-                let geom = cache_entry.data;
+                let geom = cache_entry.data.clone();
                 rendering_data.cache_index.set(cache.insert(cache_entry));
                 rendering_data.cache_generation.set(cache.generation());
-                geom
+                *geom.bounding_rect()
             }
         };
 
-        let clipped_geom = self.get_current_clip().intersection(&item_geometry);
-        let draw = clipped_geom.map_or(false, |clipped_geom| {
+        let clipped_geom = self.get_current_clip().intersection(&item_bounding_rect);
+        let draw = clipped_geom.is_some_and(|clipped_geom| {
             let clipped_geom = clipped_geom.translate(self.translation());
             self.dirty_region.draw_intersects(clipped_geom)
         });
 
+        // Query untracked, as the bounding rect calculation already registers a dependency on the geometry.
+        let item_geometry = crate::properties::evaluate_no_tracking(|| item_rc.geometry());
+
         (draw, item_geometry)
     }
 
-    forward_rendering_call!(fn draw_rectangle(Rectangle));
+    forward_rendering_call2!(fn draw_rectangle(dyn RenderRectangle));
     forward_rendering_call2!(fn draw_border_rectangle(dyn RenderBorderRectangle));
+    forward_rendering_call2!(fn draw_window_background(dyn RenderRectangle));
     forward_rendering_call2!(fn draw_image(dyn RenderImage));
     forward_rendering_call2!(fn draw_text(dyn RenderText));
     forward_rendering_call!(fn draw_text_input(TextInput));
@@ -910,10 +1117,6 @@ impl<'a, T: ItemRenderer> ItemRenderer for PartialRenderer<'a, T> {
         self.actual_renderer.draw_image_direct(image)
     }
 
-    fn draw_rect(&mut self, size: LogicalSize, brush: Brush) {
-        self.actual_renderer.draw_rect(size, brush);
-    }
-
     fn window(&self) -> &crate::window::WindowInner {
         self.actual_renderer.window()
     }
@@ -930,46 +1133,31 @@ pub struct PartialRenderingState {
     partial_cache: RefCell<PartialRenderingCache>,
     /// This is the area which we are going to redraw in the next frame, no matter if the items are dirty or not
     force_dirty: RefCell<DirtyRegion>,
-    repaint_buffer_type: Cell<RepaintBufferType>,
-    /// This is the area which was dirty on the previous frame.
-    /// Only used if repaint_buffer_type == RepaintBufferType::SwappedBuffers
-    prev_frame_dirty: Cell<DirtyRegion>,
     /// Force a redraw in the next frame, no matter what's dirty. Use only as a last resort.
     force_screen_refresh: Cell<bool>,
 }
 
 impl PartialRenderingState {
-    /// Sets the repaint type of the back buffer used for the next rendering. This helps to compute the partial
-    /// rendering region correctly, for example when using swapped buffers, the region will include the dirty region
-    /// of the previous frame.
-    pub fn set_repaint_buffer_type(&self, repaint_buffer_type: RepaintBufferType) {
-        if self.repaint_buffer_type.replace(repaint_buffer_type) != repaint_buffer_type {
-            self.partial_cache.borrow_mut().clear();
-        }
-    }
-
-    /// Returns the current repaint buffer type.
-    pub fn repaint_buffer_type(&self) -> RepaintBufferType {
-        self.repaint_buffer_type.get()
-    }
-
     /// Creates a partial renderer that's initialized with the partial rendering caches maintained in this state structure.
     /// Call [`Self::apply_dirty_region`] after this function to compute the correct partial rendering region.
-    pub fn create_partial_renderer<'a, T: ItemRenderer>(
-        &'a self,
+    pub fn create_partial_renderer<T: ItemRenderer + ItemRendererFeatures>(
+        &self,
         renderer: T,
-    ) -> PartialRenderer<'a, T> {
+    ) -> PartialRenderer<'_, T> {
         PartialRenderer::new(&self.partial_cache, self.force_dirty.take(), renderer)
     }
 
     /// Compute the correct partial rendering region based on the components to be drawn, the bounding rectangles of
-    /// changes items within, and the current repaint buffer type.
-    pub fn apply_dirty_region<T: ItemRenderer>(
+    /// changes items within, and the current repaint buffer type. Returns the computed dirty region just for this frame.
+    /// The provided buffer_dirty_region specifies which area of the buffer is known to *additionally* require repainting,
+    /// where `None` means that buffer is not known to be dirty beyond what applies to this frame (reused buffer).
+    pub fn apply_dirty_region<T: ItemRenderer + ItemRendererFeatures>(
         &self,
         partial_renderer: &mut PartialRenderer<'_, T>,
         components: &[(&ItemTreeRc, LogicalPoint)],
         logical_window_size: LogicalSize,
-    ) {
+        dirty_region_of_existing_buffer: Option<DirtyRegion>,
+    ) -> DirtyRegion {
         for (component, origin) in components {
             partial_renderer.compute_dirty_regions(component, *origin, logical_window_size);
         }
@@ -980,14 +1168,15 @@ impl PartialRenderingState {
             partial_renderer.dirty_region = screen_region.into();
         }
 
-        partial_renderer.dirty_region = match self.repaint_buffer_type.get() {
-            RepaintBufferType::NewBuffer => screen_region.into(),
-            RepaintBufferType::ReusedBuffer => partial_renderer.dirty_region.clone(),
-            RepaintBufferType::SwappedBuffers => partial_renderer
-                .dirty_region
-                .union(&self.prev_frame_dirty.replace(partial_renderer.dirty_region.clone())),
+        let region_to_repaint = partial_renderer.dirty_region.clone();
+
+        partial_renderer.dirty_region = match dirty_region_of_existing_buffer {
+            Some(dirty_region) => partial_renderer.dirty_region.union(&dirty_region),
+            None => partial_renderer.dirty_region.clone(),
         }
         .intersection(screen_region);
+
+        region_to_repaint
     }
 
     /// Add the specified region to the list of regions to include in the next rendering.
@@ -1016,4 +1205,15 @@ impl PartialRenderingState {
     pub fn force_screen_refresh(&self) {
         self.force_screen_refresh.set(true);
     }
+}
+
+#[test]
+fn dirty_region_no_intersection() {
+    let mut region = DirtyRegion::default();
+    region.add_rect(LogicalRect::new(LogicalPoint::new(10., 10.), LogicalSize::new(16., 16.)));
+    region.add_rect(LogicalRect::new(LogicalPoint::new(100., 100.), LogicalSize::new(16., 16.)));
+    region.add_rect(LogicalRect::new(LogicalPoint::new(200., 100.), LogicalSize::new(16., 16.)));
+    let i = region
+        .intersection(LogicalRect::new(LogicalPoint::new(50., 50.), LogicalSize::new(10., 10.)));
+    assert_eq!(i.iter().count(), 0);
 }

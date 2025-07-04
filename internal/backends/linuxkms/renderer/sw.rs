@@ -7,14 +7,14 @@ use i_slint_core::api::PhysicalSize as PhysicalWindowSize;
 use i_slint_core::platform::PlatformError;
 pub use i_slint_core::software_renderer::SoftwareRenderer;
 use i_slint_core::software_renderer::{PremultipliedRgbaColor, RepaintBufferType, TargetPixel};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::display::RenderingRotation;
 
 pub struct SoftwareRendererAdapter {
     renderer: SoftwareRenderer,
-    display: Rc<dyn crate::display::swdisplay::SoftwareBufferDisplay>,
-    presenter: Rc<dyn crate::display::Presenter>,
+    display: Arc<dyn crate::display::swdisplay::SoftwareBufferDisplay>,
+    presenter: Arc<dyn crate::display::Presenter>,
     size: PhysicalWindowSize,
 }
 
@@ -90,15 +90,10 @@ impl crate::fullscreenwindowadapter::FullscreenRenderer for SoftwareRendererAdap
         &self.renderer
     }
 
-    fn is_ready_to_present(&self) -> bool {
-        self.presenter.is_ready_to_present()
-    }
-
     fn render_and_present(
         &self,
         rotation: RenderingRotation,
         _draw_mouse_cursor_callback: &dyn Fn(&mut dyn i_slint_core::item_rendering::ItemRenderer),
-        ready_for_next_animation_frame: Box<dyn FnOnce()>,
     ) -> Result<(), PlatformError> {
         self.display.map_back_buffer(&mut |pixels, age, format| {
             self.renderer.set_repaint_buffer_type(match age {
@@ -143,18 +138,11 @@ impl crate::fullscreenwindowadapter::FullscreenRenderer for SoftwareRendererAdap
 
             Ok(())
         })?;
-        self.presenter.present_with_next_frame_callback(ready_for_next_animation_frame)?;
+        self.presenter.present()?;
         Ok(())
     }
 
     fn size(&self) -> i_slint_core::api::PhysicalSize {
         self.size
-    }
-
-    fn register_page_flip_handler(
-        &self,
-        event_loop_handle: crate::calloop_backend::EventLoopHandle,
-    ) -> Result<(), PlatformError> {
-        self.presenter.register_page_flip_handler(event_loop_handle)
     }
 }

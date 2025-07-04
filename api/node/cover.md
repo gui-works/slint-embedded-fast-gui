@@ -34,7 +34,8 @@ To use Slint with Deno, ensure the following programs are installed:
 Slint-node comes with pre-built binaries for macOS, Linux, and Windows. If you'd like to use Slint-node on a system
 without pre-built binaries, you need to additional software:
 
-  * **[Rust compiler](https://www.rust-lang.org/tools/install)** (1.77 or newer) * Depending on your operating system, you may need additional components. For a list of required system libraries,
+  * **[Rust compiler](https://www.rust-lang.org/tools/install)**
+  * Depending on your operating system, you may need additional components. For a list of required system libraries,
     see <https://github.com/slint-ui/slint/blob/master/docs/building.md#prerequisites>.
 
 ## Getting Started (Node.js)
@@ -170,7 +171,7 @@ export component Demo inherits Window {
 
 This file declares the user interface.
 
-4. Clear the conent of`index.ts` and add the following code:
+4. Clear the content of `index.ts` and add the following code:
 
 ```ts
 import * as slint from "slint-ui";
@@ -182,7 +183,7 @@ await demo.run();
 
 This is your main TypeScript entry point:
 
-* Import the Slint API as an [ECMAScript module](https://nodejs.org/api/esm.html#modules-ecmascript-modules) module. 
+* Import the Slint API as an [ECMAScript module](https://nodejs.org/api/esm.html#modules-ecmascript-modules) module.
 * Invoke `loadFile()` to compile and load the `.slint` file.
 * Instantiate the `Demo` component declared in `main.slint`.
 * Run it by showing it on the screen and reacting to user input.
@@ -357,7 +358,7 @@ component.person = new ui.Person({ name: "Tim", age: 30 });
 
 ### enums
 
-A value of an exported enum can be set as string or by usign the value from the exported enum.
+A value of an exported enum can be set as string or by using the value from the exported enum.
 
 **`my-component.slint`**
 

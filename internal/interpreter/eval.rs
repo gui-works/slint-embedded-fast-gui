@@ -2,20 +2,25 @@
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use crate::api::{SetPropertyError, Struct, Value};
-use crate::dynamic_item_tree::InstanceRef;
+use crate::dynamic_item_tree::{CallbackHandler, InstanceRef};
 use core::pin::Pin;
 use corelib::graphics::{GradientStop, LinearGradientBrush, PathElement, RadialGradientBrush};
-use corelib::items::{ColorScheme, ItemRef, PropertyAnimation};
+use corelib::items::{ColorScheme, ItemRef, MenuEntry, PropertyAnimation};
+use corelib::menus::{Menu, MenuFromItemTree, MenuVTable};
 use corelib::model::{Model, ModelExt, ModelRc, VecModel};
 use corelib::rtti::AnimatedBindingKind;
+use corelib::window::WindowInner;
 use corelib::{Brush, Color, PathData, SharedString, SharedVector};
 use i_slint_compiler::expression_tree::{
-    BuiltinFunction, EasingCurve, Expression, MinMaxOp, Path as ExprPath,
+    BuiltinFunction, Callable, EasingCurve, Expression, MinMaxOp, Path as ExprPath,
     PathElement as ExprPathElement,
 };
 use i_slint_compiler::langtype::Type;
+use i_slint_compiler::namedreference::NamedReference;
 use i_slint_compiler::object_tree::ElementRc;
 use i_slint_core as corelib;
+use i_slint_core::input::FocusReason;
+use i_slint_core::items::ItemRc;
 use smol_str::SmolStr;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -101,7 +106,7 @@ pub(crate) enum ComponentInstance<'a, 'id> {
 pub struct EvalLocalContext<'a, 'id> {
     local_variables: HashMap<SmolStr, Value>,
     function_arguments: Vec<Value>,
-    pub(crate) component_instance: ComponentInstance<'a, 'id>,
+    pub(crate) component_instance: InstanceRef<'a, 'id>,
     /// When Some, a return statement was executed and one must stop evaluating
     return_value: Option<Value>,
 }
@@ -111,7 +116,7 @@ impl<'a, 'id> EvalLocalContext<'a, 'id> {
         Self {
             local_variables: Default::default(),
             function_arguments: Default::default(),
-            component_instance: ComponentInstance::InstanceRef(component),
+            component_instance: component,
             return_value: None,
         }
     }
@@ -122,7 +127,7 @@ impl<'a, 'id> EvalLocalContext<'a, 'id> {
         function_arguments: Vec<Value>,
     ) -> Self {
         Self {
-            component_instance: ComponentInstance::InstanceRef(component),
+            component_instance: component,
             function_arguments,
             local_variables: Default::default(),
             return_value: None,
@@ -141,27 +146,29 @@ pub fn eval_expression(expression: &Expression, local_context: &mut EvalLocalCon
         Expression::StringLiteral(s) => Value::String(s.as_str().into()),
         Expression::NumberLiteral(n, unit) => Value::Number(unit.normalize(*n)),
         Expression::BoolLiteral(b) => Value::Bool(*b),
-        Expression::CallbackReference { .. } => panic!("callback in expression"),
-        Expression::FunctionReference { .. } => panic!("function in expression"),
-        Expression::BuiltinFunctionReference(..) => panic!(
-            "naked builtin function reference not allowed, should be handled by function call"
-        ),
         Expression::ElementReference(_) => todo!("Element references are only supported in the context of built-in function calls at the moment"),
-        Expression::MemberFunction { .. } => panic!("member function expressions must not appear in the code generator anymore"),
-        Expression::BuiltinMacroReference { .. } => panic!("macro expressions must not appear in the code generator anymore"),
         Expression::PropertyReference(nr) => {
-            load_property_helper(&local_context.component_instance, &nr.element(), nr.name()).unwrap()
+            load_property_helper(&ComponentInstance::InstanceRef(local_context.component_instance), &nr.element(), nr.name()).unwrap()
         }
-        Expression::RepeaterIndexReference { element } => load_property_helper(&local_context.component_instance,
+        Expression::RepeaterIndexReference { element } => load_property_helper(&ComponentInstance::InstanceRef(local_context.component_instance),
             &element.upgrade().unwrap().borrow().base_type.as_component().root_element,
             crate::dynamic_item_tree::SPECIAL_PROPERTY_INDEX,
         )
         .unwrap(),
-        Expression::RepeaterModelReference { element } => load_property_helper(&local_context.component_instance,
-            &element.upgrade().unwrap().borrow().base_type.as_component().root_element,
-            crate::dynamic_item_tree::SPECIAL_PROPERTY_MODEL_DATA,
-        )
-        .unwrap(),
+        Expression::RepeaterModelReference { element } => {
+            let value = load_property_helper(&ComponentInstance::InstanceRef(local_context.component_instance),
+                    &element.upgrade().unwrap().borrow().base_type.as_component().root_element,
+                    crate::dynamic_item_tree::SPECIAL_PROPERTY_MODEL_DATA,
+                )
+                .unwrap();
+            if matches!(value, Value::Void) {
+                // Uninitialized model data (because the model returned None) should still be initialized to the default value of the type
+                default_value_for_type(&expression.ty())
+            } else {
+                value
+            }
+
+        },
         Expression::FunctionParameterReference { index, .. } => {
             local_context.function_arguments[*index].clone()
         }
@@ -177,7 +184,7 @@ pub fn eval_expression(expression: &Expression, local_context: &mut EvalLocalCon
             let index = eval_expression(index, local_context);
             match (array, index) {
                 (Value::Model(model), Value::Number(index)) => {
-                    model.row_data_tracked(index as usize).unwrap_or_else(|| default_value_for_type(&expression.ty()))
+                    model.row_data_tracked(index as isize as usize).unwrap_or_else(|| default_value_for_type(&expression.ty()))
                 }
                 _ => {
                     Value::Void
@@ -189,7 +196,7 @@ pub fn eval_expression(expression: &Expression, local_context: &mut EvalLocalCon
             match (v, to) {
                 (Value::Number(n), Type::Int32) => Value::Number(n.trunc()),
                 (Value::Number(n), Type::String) => {
-                    Value::String(i_slint_core::format!("{}", n as f32))
+                    Value::String(i_slint_core::string::shared_string_from_number(n))
                 }
                 (Value::Number(n), Type::Color) => Color::from_argb_encoded(n as u32).into(),
                 (Value::Brush(brush), Type::Color) => brush.color().into(),
@@ -206,17 +213,21 @@ pub fn eval_expression(expression: &Expression, local_context: &mut EvalLocalCon
             }
             v
         }
-        Expression::FunctionCall { function, arguments, source_location: _ } => match &**function {
-            Expression::FunctionReference(nr, _) => {
-                let args = arguments.iter().map(|e| eval_expression(e, local_context)).collect::<Vec<_>>();
-                call_function(&local_context.component_instance, &nr.element(), nr.name(), args).unwrap()
+        Expression::FunctionCall { function, arguments, source_location } => match &function {
+            Callable::Function(nr) => {
+                let is_item_member = nr.element().borrow().native_class().is_some_and(|n| n.properties.contains_key(nr.name()));
+                if is_item_member {
+                    call_item_member_function(nr, local_context)
+                } else {
+                    let args = arguments.iter().map(|e| eval_expression(e, local_context)).collect::<Vec<_>>();
+                    call_function(&ComponentInstance::InstanceRef(local_context.component_instance), &nr.element(), nr.name(), args).unwrap()
+                }
             }
-            Expression::CallbackReference(nr, _) => {
+            Callable::Callback(nr) => {
                 let args = arguments.iter().map(|e| eval_expression(e, local_context)).collect::<Vec<_>>();
-                invoke_callback(&local_context.component_instance, &nr.element(), nr.name(), &args).unwrap()
+                invoke_callback(&ComponentInstance::InstanceRef(local_context.component_instance), &nr.element(), nr.name(), &args).unwrap()
             }
-            Expression::BuiltinFunctionReference(f, _) => call_builtin_function(f.clone(), arguments, local_context),
-            _ => panic!("call of something not a callback: {function:?}"),
+            Callable::Builtin(f) => call_builtin_function(f.clone(), arguments, local_context, source_location),
         }
         Expression::SelfAssignment { lhs, rhs, op, .. } => {
             let rhs = eval_expression(rhs, local_context);
@@ -236,7 +247,7 @@ pub fn eval_expression(expression: &Expression, local_context: &mut EvalLocalCon
                     if let (Some(a), Some(b)) = (a, b) {
                         a.merge(&b).into()
                     } else {
-                        panic!("unsupported {:?} {} {:?}", a, op, b);
+                        panic!("unsupported {a:?} {op} {b:?}");
                     }
                 }
                 ('-', Value::Number(a), Value::Number(b)) => Value::Number(a - b),
@@ -254,7 +265,7 @@ pub fn eval_expression(expression: &Expression, local_context: &mut EvalLocalCon
                 ('!', a, b) => Value::Bool(a != b),
                 ('&', Value::Bool(a), Value::Bool(b)) => Value::Bool(a && b),
                 ('|', Value::Bool(a), Value::Bool(b)) => Value::Bool(a || b),
-                (op, lhs, rhs) => panic!("unsupported {:?} {} {:?}", lhs, op, rhs),
+                (op, lhs, rhs) => panic!("unsupported {lhs:?} {op} {rhs:?}"),
             }
         }
         Expression::UnaryOp { sub, op } => {
@@ -263,7 +274,7 @@ pub fn eval_expression(expression: &Expression, local_context: &mut EvalLocalCon
                 (Value::Number(a), '+') => Value::Number(a),
                 (Value::Number(a), '-') => Value::Number(-a),
                 (Value::Bool(a), '!') => Value::Bool(!a),
-                (sub, op) => panic!("unsupported {} {:?}", op, sub),
+                (sub, op) => panic!("unsupported {op} {sub:?}"),
             }
         }
         Expression::ImageReference{ resource_ref, nine_slice, .. } => {
@@ -292,7 +303,7 @@ pub fn eval_expression(expression: &Expression, local_context: &mut EvalLocalCon
                     todo!()
                 }
             }.unwrap_or_else(|_| {
-                eprintln!("Could not load image {:?}",resource_ref );
+                eprintln!("Could not load image {resource_ref:?}" );
                 Default::default()
             });
             if let Some(n) = nine_slice {
@@ -369,7 +380,7 @@ pub fn eval_expression(expression: &Expression, local_context: &mut EvalLocalCon
             local_context.return_value.clone().unwrap()
         }
         Expression::LayoutCacheAccess { layout_cache_prop, index, repeater_index } => {
-            let cache = load_property_helper(&local_context.component_instance, &layout_cache_prop.element(), layout_cache_prop.name()).unwrap();
+            let cache = load_property_helper(&ComponentInstance::InstanceRef(local_context.component_instance), &layout_cache_prop.element(), layout_cache_prop.name()).unwrap();
             if let Value::LayoutCache(cache) = cache {
                 if let Some(ri) = repeater_index {
                     let offset : usize = eval_expression(ri, local_context).try_into().unwrap();
@@ -395,7 +406,8 @@ pub fn eval_expression(expression: &Expression, local_context: &mut EvalLocalCon
                 MinMaxOp::Max => Value::Number(lhs.max(rhs)),
             }
         }
-        Expression::EmptyComponentFactory => Value::ComponentFactory(Default::default())
+        Expression::EmptyComponentFactory => Value::ComponentFactory(Default::default()),
+        Expression::DebugHook { expression, .. } => eval_expression(expression, local_context),
     }
 }
 
@@ -403,33 +415,27 @@ fn call_builtin_function(
     f: BuiltinFunction,
     arguments: &[Expression],
     local_context: &mut EvalLocalContext,
+    source_location: &Option<i_slint_compiler::diagnostics::SourceLocation>,
 ) -> Value {
     match f {
-        BuiltinFunction::GetWindowScaleFactor => match local_context.component_instance {
-            ComponentInstance::InstanceRef(component) => {
-                Value::Number(component.access_window(|window| window.scale_factor()) as _)
-            }
-            ComponentInstance::GlobalComponent(_) => {
-                panic!("Cannot get the window from a global component")
-            }
-        },
-        BuiltinFunction::GetWindowDefaultFontSize => match local_context.component_instance {
-            ComponentInstance::InstanceRef(component) => {
-                Value::Number(component.access_window(|window| {
-                    window.window_item().unwrap().as_pin_ref().default_font_size().get()
-                }) as _)
-            }
-            ComponentInstance::GlobalComponent(_) => {
-                panic!("Cannot get the window from a global component")
-            }
-        },
+        BuiltinFunction::GetWindowScaleFactor => Value::Number(
+            local_context.component_instance.access_window(|window| window.scale_factor()) as _,
+        ),
+        BuiltinFunction::GetWindowDefaultFontSize => {
+            Value::Number(local_context.component_instance.access_window(|window| {
+                window.window_item().unwrap().as_pin_ref().default_font_size().get()
+            }) as _)
+        }
         BuiltinFunction::AnimationTick => {
             Value::Number(i_slint_core::animations::animation_tick() as f64)
         }
         BuiltinFunction::Debug => {
             let to_print: SharedString =
                 eval_expression(&arguments[0], local_context).try_into().unwrap();
-            corelib::debug_log!("{}", to_print);
+            local_context.component_instance.description.debug_handler.borrow()(
+                source_location.as_ref(),
+                &to_print,
+            );
             Value::Void
         }
         BuiltinFunction::Mod => {
@@ -490,21 +496,36 @@ fn call_builtin_function(
             let y: f64 = eval_expression(&arguments[1], local_context).try_into().unwrap();
             Value::Number(x.log(y))
         }
+        BuiltinFunction::Ln => {
+            let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            Value::Number(x.ln())
+        }
         BuiltinFunction::Pow => {
             let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
             let y: f64 = eval_expression(&arguments[1], local_context).try_into().unwrap();
             Value::Number(x.powf(y))
         }
+        BuiltinFunction::Exp => {
+            let x: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            Value::Number(x.exp())
+        }
+        BuiltinFunction::ToFixed => {
+            let n: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            let digits: i32 = eval_expression(&arguments[1], local_context).try_into().unwrap();
+            let digits: usize = digits.max(0) as usize;
+            Value::String(i_slint_core::string::shared_string_from_number_fixed(n, digits))
+        }
+        BuiltinFunction::ToPrecision => {
+            let n: f64 = eval_expression(&arguments[0], local_context).try_into().unwrap();
+            let precision: i32 = eval_expression(&arguments[1], local_context).try_into().unwrap();
+            let precision: usize = precision.max(0) as usize;
+            Value::String(i_slint_core::string::shared_string_from_number_precision(n, precision))
+        }
         BuiltinFunction::SetFocusItem => {
             if arguments.len() != 1 {
                 panic!("internal error: incorrect argument count to SetFocusItem")
             }
-            let component = match local_context.component_instance {
-                ComponentInstance::InstanceRef(c) => c,
-                ComponentInstance::GlobalComponent(_) => {
-                    panic!("Cannot access the focus item from a global component")
-                }
-            };
+            let component = local_context.component_instance;
             if let Expression::ElementReference(focus_item) = &arguments[0] {
                 generativity::make_guard!(guard);
 
@@ -525,6 +546,7 @@ fn call_builtin_function(
                             item_info.item_index(),
                         ),
                         true,
+                        FocusReason::Programmatic,
                     )
                 });
                 Value::Void
@@ -536,12 +558,7 @@ fn call_builtin_function(
             if arguments.len() != 1 {
                 panic!("internal error: incorrect argument count to SetFocusItem")
             }
-            let component = match local_context.component_instance {
-                ComponentInstance::InstanceRef(c) => c,
-                ComponentInstance::GlobalComponent(_) => {
-                    panic!("Cannot access the focus item from a global component")
-                }
-            };
+            let component = local_context.component_instance;
             if let Expression::ElementReference(focus_item) = &arguments[0] {
                 generativity::make_guard!(guard);
 
@@ -562,6 +579,7 @@ fn call_builtin_function(
                             item_info.item_index(),
                         ),
                         false,
+                        FocusReason::Programmatic,
                     )
                 });
                 Value::Void
@@ -573,12 +591,7 @@ fn call_builtin_function(
             if arguments.len() != 1 {
                 panic!("internal error: incorrect argument count to ShowPopupWindow")
             }
-            let component = match local_context.component_instance {
-                ComponentInstance::InstanceRef(c) => c,
-                ComponentInstance::GlobalComponent(_) => {
-                    panic!("Cannot show popup from a global component")
-                }
-            };
+            let component = local_context.component_instance;
             if let Expression::ElementReference(popup_window) = &arguments[0] {
                 let popup_window = popup_window.upgrade().unwrap();
                 let pop_comp = popup_window.borrow().enclosing_component.upgrade().unwrap();
@@ -639,19 +652,29 @@ fn call_builtin_function(
             }
         }
         BuiltinFunction::ClosePopupWindow => {
-            let component = match local_context.component_instance {
-                ComponentInstance::InstanceRef(c) => c,
-                ComponentInstance::GlobalComponent(_) => {
-                    panic!("Cannot show popup from a global component")
-                }
-            };
-
+            let component = local_context.component_instance;
             if let Expression::ElementReference(popup_window) = &arguments[0] {
                 let popup_window = popup_window.upgrade().unwrap();
+                let pop_comp = popup_window.borrow().enclosing_component.upgrade().unwrap();
+                let parent_component = pop_comp
+                    .parent_element
+                    .upgrade()
+                    .unwrap()
+                    .borrow()
+                    .enclosing_component
+                    .upgrade()
+                    .unwrap();
+                let popup_list = parent_component.popup_windows.borrow();
+                let popup =
+                    popup_list.iter().find(|p| Rc::ptr_eq(&p.component, &pop_comp)).unwrap();
+
+                generativity::make_guard!(guard);
+                let enclosing_component =
+                    enclosing_component_for_element(&popup.parent_element, component, guard);
                 crate::dynamic_item_tree::close_popup(
                     popup_window,
-                    component,
-                    component.window_adapter(),
+                    enclosing_component,
+                    enclosing_component.window_adapter(),
                 );
 
                 Value::Void
@@ -667,12 +690,7 @@ fn call_builtin_function(
                 .try_into()
                 .expect("internal error: popup menu position argument should be a point");
 
-            let component = match local_context.component_instance {
-                ComponentInstance::InstanceRef(c) => c,
-                ComponentInstance::GlobalComponent(_) => {
-                    panic!("Cannot show popup from a global component")
-                }
-            };
+            let component = local_context.component_instance;
             let elem = element.upgrade().unwrap();
             generativity::make_guard!(guard);
             let enclosing_component = enclosing_component_for_element(&elem, component, guard);
@@ -699,63 +717,100 @@ fn call_builtin_function(
                 )),
                 Default::default(),
             );
-            inst.run_setup_code();
 
             generativity::make_guard!(guard);
             let inst_ref = inst.unerase(guard);
-            let entries = eval_expression(entries, local_context);
-            compiled.set_property(inst_ref.borrow(), "entries", entries).unwrap();
-            let item_rc_ = item_rc.clone();
+            if let Expression::ElementReference(e) = entries {
+                let menu_item_tree =
+                    e.upgrade().unwrap().borrow().enclosing_component.upgrade().unwrap();
+                let (entries, sub_menu, activated) =
+                    menu_item_tree_properties(crate::dynamic_item_tree::make_menu_item_tree(
+                        &menu_item_tree,
+                        &enclosing_component,
+                    ));
+                compiled.set_binding(inst_ref.borrow(), "entries", entries).unwrap();
+                compiled.set_callback_handler(inst_ref.borrow(), "sub-menu", sub_menu).unwrap();
+                compiled.set_callback_handler(inst_ref.borrow(), "activated", activated).unwrap();
+            } else {
+                let entries = eval_expression(entries, local_context);
+                compiled.set_property(inst_ref.borrow(), "entries", entries).unwrap();
+                let item_weak = item_rc.downgrade();
+                compiled
+                    .set_callback_handler(
+                        inst_ref.borrow(),
+                        "sub-menu",
+                        Box::new(move |args: &[Value]| -> Value {
+                            item_weak
+                                .upgrade()
+                                .unwrap()
+                                .downcast::<corelib::items::ContextMenu>()
+                                .unwrap()
+                                .sub_menu
+                                .call(&(args[0].clone().try_into().unwrap(),))
+                                .into()
+                        }),
+                    )
+                    .unwrap();
+                let item_weak = item_rc.downgrade();
+                compiled
+                    .set_callback_handler(
+                        inst_ref.borrow(),
+                        "activated",
+                        Box::new(move |args: &[Value]| -> Value {
+                            item_weak
+                                .upgrade()
+                                .unwrap()
+                                .downcast::<corelib::items::ContextMenu>()
+                                .unwrap()
+                                .activated
+                                .call(&(args[0].clone().try_into().unwrap(),));
+                            Value::Void
+                        }),
+                    )
+                    .unwrap();
+            }
+            let item_weak = item_rc.downgrade();
             compiled
                 .set_callback_handler(
                     inst_ref.borrow(),
-                    "sub-menu",
-                    Box::new(move |args: &[Value]| -> Value {
-                        item_rc_
+                    "close",
+                    Box::new(move |_args: &[Value]| -> Value {
+                        let Some(item_rc) = item_weak.upgrade() else { return Value::Void };
+                        if let Some(id) = item_rc
                             .downcast::<corelib::items::ContextMenu>()
                             .unwrap()
-                            .sub_menu
-                            .call(&(args[0].clone().try_into().unwrap(),))
-                            .into()
+                            .popup_id
+                            .take()
+                        {
+                            WindowInner::from_pub(item_rc.window_adapter().unwrap().window())
+                                .close_popup(id);
+                        }
+                        Value::Void
                     }),
                 )
                 .unwrap();
-            let item_rc_ = item_rc.clone();
-            compiled
-                .set_callback_handler(
-                    inst_ref.borrow(),
-                    "activated",
-                    Box::new(move |args: &[Value]| -> Value {
-                        item_rc_
-                            .downcast::<corelib::items::ContextMenu>()
-                            .unwrap()
-                            .activated
-                            .call(&(args[0].clone().try_into().unwrap(),))
-                            .into()
-                    }),
-                )
-                .unwrap();
-
             component.access_window(|window| {
-                window.show_popup(
-                    &vtable::VRc::into_dyn(inst),
+                let context_menu_elem = item_rc.downcast::<corelib::items::ContextMenu>().unwrap();
+                if let Some(old_id) = context_menu_elem.popup_id.take() {
+                    window.close_popup(old_id)
+                }
+                let id = window.show_popup(
+                    &vtable::VRc::into_dyn(inst.clone()),
                     position,
                     corelib::items::PopupClosePolicy::CloseOnClickOutside,
                     &item_rc,
-                )
+                    true,
+                );
+                context_menu_elem.popup_id.set(Some(id));
             });
+            inst.run_setup_code();
             Value::Void
         }
         BuiltinFunction::SetSelectionOffsets => {
             if arguments.len() != 3 {
                 panic!("internal error: incorrect argument count to select range function call")
             }
-            let component = match local_context.component_instance {
-                ComponentInstance::InstanceRef(c) => c,
-                ComponentInstance::GlobalComponent(_) => {
-                    panic!("Cannot invoke member function on item from a global component")
-                }
-            };
+            let component = local_context.component_instance;
             if let Expression::ElementReference(element) = &arguments[0] {
                 generativity::make_guard!(guard);
 
@@ -799,79 +854,13 @@ fn call_builtin_function(
                 panic!("internal error: first argument to set-selection-offsets must be an element")
             }
         }
-        BuiltinFunction::ItemMemberFunction(name) => {
-            if arguments.len() != 1 {
-                panic!("internal error: incorrect argument count to item member function call")
-            }
-            let component = match local_context.component_instance {
-                ComponentInstance::InstanceRef(c) => c,
-                ComponentInstance::GlobalComponent(_) => {
-                    panic!("Cannot invoke member function on item from a global component")
-                }
-            };
-            if let Expression::ElementReference(element) = &arguments[0] {
-                generativity::make_guard!(guard);
-
-                let elem = element.upgrade().unwrap();
-                let enclosing_component = enclosing_component_for_element(&elem, component, guard);
-                let description = enclosing_component.description;
-                let item_info = &description.items[elem.borrow().id.as_str()];
-                let item_ref =
-                    unsafe { item_info.item_from_item_tree(enclosing_component.as_ptr()) };
-
-                let item_comp = enclosing_component.self_weak().get().unwrap().upgrade().unwrap();
-                let item_rc = corelib::items::ItemRc::new(
-                    vtable::VRc::into_dyn(item_comp),
-                    item_info.item_index(),
-                );
-
-                let window_adapter = component.window_adapter();
-
-                // TODO: Make this generic through RTTI
-                if let Some(textinput) =
-                    ItemRef::downcast_pin::<corelib::items::TextInput>(item_ref)
-                {
-                    match &*name {
-                        "select-all" => textinput.select_all(&window_adapter, &item_rc),
-                        "clear-selection" => textinput.clear_selection(&window_adapter, &item_rc),
-                        "cut" => textinput.cut(&window_adapter, &item_rc),
-                        "copy" => textinput.copy(&window_adapter, &item_rc),
-                        "paste" => textinput.paste(&window_adapter, &item_rc),
-                        _ => panic!("internal: Unknown member function {name} called on TextInput"),
-                    }
-                } else if let Some(s) =
-                    ItemRef::downcast_pin::<corelib::items::SwipeGestureHandler>(item_ref)
-                {
-                    match &*name {
-                        "cancel" => s.cancel(&window_adapter, &item_rc),
-                        _ => panic!("internal: Unknown member function {name} called on SwipeGestureHandler"),
-                    }
-                } else {
-                    panic!(
-                        "internal error: member function {name} called on element that doesn't have it: {}",
-                        elem.borrow().original_name()
-                    )
-                }
-
-                Value::Void
-            } else {
-                panic!("internal error: argument to set-selection-offsetsAll must be an element")
-            }
-        }
         BuiltinFunction::ItemFontMetrics => {
             if arguments.len() != 1 {
                 panic!(
                     "internal error: incorrect argument count to item font metrics function call"
                 )
             }
-            let component = match local_context.component_instance {
-                ComponentInstance::InstanceRef(c) => c,
-                ComponentInstance::GlobalComponent(_) => {
-                    panic!(
-                        "Cannot invoke item font metrics function on item from a global component"
-                    )
-                }
-            };
+            let component = local_context.component_instance;
             if let Expression::ElementReference(element) = &arguments[0] {
                 generativity::make_guard!(guard);
 
@@ -881,12 +870,20 @@ fn call_builtin_function(
                 let item_info = &description.items[elem.borrow().id.as_str()];
                 let item_ref =
                     unsafe { item_info.item_from_item_tree(enclosing_component.as_ptr()) };
+                let item_comp = enclosing_component.self_weak().get().unwrap().upgrade().unwrap();
+                let item_rc = corelib::items::ItemRc::new(
+                    vtable::VRc::into_dyn(item_comp),
+                    item_info.item_index(),
+                );
                 let window_adapter = component.window_adapter();
-                let metrics =
-                    i_slint_core::items::slint_text_item_fontmetrics(&window_adapter, item_ref);
+                let metrics = i_slint_core::items::slint_text_item_fontmetrics(
+                    &window_adapter,
+                    item_ref,
+                    &item_rc,
+                );
                 metrics.into()
             } else {
-                panic!("internal error: argument to set-selection-offsetsAll must be an element")
+                panic!("internal error: argument to item-font-metrics must be an element")
             }
         }
         BuiltinFunction::StringIsFloat => {
@@ -905,6 +902,49 @@ fn call_builtin_function(
             }
             if let Value::String(s) = eval_expression(&arguments[0], local_context) {
                 Value::Number(core::str::FromStr::from_str(s.as_str()).unwrap_or(0.))
+            } else {
+                panic!("Argument not a string");
+            }
+        }
+        BuiltinFunction::StringIsEmpty => {
+            if arguments.len() != 1 {
+                panic!("internal error: incorrect argument count to StringIsEmpty")
+            }
+            if let Value::String(s) = eval_expression(&arguments[0], local_context) {
+                Value::Bool(s.is_empty())
+            } else {
+                panic!("Argument not a string");
+            }
+        }
+        BuiltinFunction::StringCharacterCount => {
+            if arguments.len() != 1 {
+                panic!("internal error: incorrect argument count to StringCharacterCount")
+            }
+            if let Value::String(s) = eval_expression(&arguments[0], local_context) {
+                Value::Number(
+                    unicode_segmentation::UnicodeSegmentation::graphemes(s.as_str(), true).count()
+                        as f64,
+                )
+            } else {
+                panic!("Argument not a string");
+            }
+        }
+        BuiltinFunction::StringToLowercase => {
+            if arguments.len() != 1 {
+                panic!("internal error: incorrect argument count to StringToLowercase")
+            }
+            if let Value::String(s) = eval_expression(&arguments[0], local_context) {
+                Value::String(s.to_lowercase().into())
+            } else {
+                panic!("Argument not a string");
+            }
+        }
+        BuiltinFunction::StringToUppercase => {
+            if arguments.len() != 1 {
+                panic!("internal error: incorrect argument count to StringToUppercase")
+            }
+            if let Value::String(s) = eval_expression(&arguments[0], local_context) {
+                Value::String(s.to_uppercase().into())
             } else {
                 panic!("Argument not a string");
             }
@@ -1080,16 +1120,77 @@ fn call_builtin_function(
             let a = (1. * a).clamp(0., 1.);
             Value::Brush(Brush::SolidColor(Color::from_hsva(h, s, v, a)))
         }
-        BuiltinFunction::ColorScheme => match local_context.component_instance {
-            ComponentInstance::InstanceRef(component) => component
-                .window_adapter()
-                .internal(corelib::InternalToken)
-                .map_or(ColorScheme::Unknown, |x| x.color_scheme())
-                .into(),
-            ComponentInstance::GlobalComponent(_) => {
-                panic!("Cannot get the window from a global component")
+        BuiltinFunction::ColorScheme => local_context
+            .component_instance
+            .window_adapter()
+            .internal(corelib::InternalToken)
+            .map_or(ColorScheme::Unknown, |x| x.color_scheme())
+            .into(),
+        BuiltinFunction::SupportsNativeMenuBar => local_context
+            .component_instance
+            .window_adapter()
+            .internal(corelib::InternalToken)
+            .is_some_and(|x| x.supports_native_menu_bar())
+            .into(),
+        BuiltinFunction::SetupNativeMenuBar => {
+            let component = local_context.component_instance;
+            if let [Expression::PropertyReference(entries_nr), Expression::PropertyReference(sub_menu_nr), Expression::PropertyReference(activated_nr), Expression::ElementReference(item_tree_root), Expression::BoolLiteral(no_native)] =
+                arguments
+            {
+                let menu_item_tree = item_tree_root
+                    .upgrade()
+                    .unwrap()
+                    .borrow()
+                    .enclosing_component
+                    .upgrade()
+                    .unwrap();
+                let menu_item_tree =
+                    crate::dynamic_item_tree::make_menu_item_tree(&menu_item_tree, &component);
+
+                if let Some(w) = component.window_adapter().internal(i_slint_core::InternalToken) {
+                    if !no_native && w.supports_native_menu_bar() {
+                        w.setup_menubar(vtable::VBox::new(menu_item_tree));
+                        return Value::Void;
+                    }
+                }
+
+                let (entries, sub_menu, activated) = menu_item_tree_properties(menu_item_tree);
+
+                assert_eq!(
+                    entries_nr.element().borrow().id,
+                    component.description.original.root_element.borrow().id,
+                    "entries need to be in the main element"
+                );
+                local_context
+                    .component_instance
+                    .description
+                    .set_binding(component.borrow(), entries_nr.name(), entries)
+                    .unwrap();
+                let i = &ComponentInstance::InstanceRef(local_context.component_instance);
+                set_callback_handler(i, &sub_menu_nr.element(), sub_menu_nr.name(), sub_menu)
+                    .unwrap();
+                set_callback_handler(i, &activated_nr.element(), activated_nr.name(), activated)
+                    .unwrap();
+
+                return Value::Void;
             }
-        },
+            let [entries, Expression::PropertyReference(sub_menu), Expression::PropertyReference(activated)] =
+                arguments
+            else {
+                panic!("internal error: incorrect arguments to SetupNativeMenuBar: {arguments:?}")
+            };
+            if let Some(w) = component.window_adapter().internal(i_slint_core::InternalToken) {
+                if w.supports_native_menu_bar() {
+                    w.setup_menubar(vtable::VBox::new(MenuWrapper {
+                        entries: entries.clone(),
+                        sub_menu: sub_menu.clone(),
+                        activated: activated.clone(),
+                        item_tree: component.self_weak().get().unwrap().clone(),
+                    }));
+                }
+            }
+            Value::Void
+        }
         BuiltinFunction::MonthDayCount => {
             let m: u32 = eval_expression(&arguments[0], local_context).try_into().unwrap();
             let y: i32 = eval_expression(&arguments[1], local_context).try_into().unwrap();
@@ -1134,34 +1235,20 @@ fn call_builtin_function(
                     .unwrap_or_default(),
             ))
         }
-        BuiltinFunction::TextInputFocused => match local_context.component_instance {
-            ComponentInstance::InstanceRef(component) => {
-                Value::Bool(component.access_window(|window| window.text_input_focused()) as _)
-            }
-            ComponentInstance::GlobalComponent(_) => {
-                panic!("Cannot get the window from a global component")
-            }
-        },
-        BuiltinFunction::SetTextInputFocused => match local_context.component_instance {
-            ComponentInstance::InstanceRef(component) => {
-                component.access_window(|window| {
-                    window.set_text_input_focused(
-                        eval_expression(&arguments[0], local_context).try_into().unwrap(),
-                    )
-                });
-                Value::Void
-            }
-            ComponentInstance::GlobalComponent(_) => {
-                panic!("Cannot get the window from a global component")
-            }
-        },
+        BuiltinFunction::TextInputFocused => Value::Bool(
+            local_context.component_instance.access_window(|window| window.text_input_focused())
+                as _,
+        ),
+        BuiltinFunction::SetTextInputFocused => {
+            local_context.component_instance.access_window(|window| {
+                window.set_text_input_focused(
+                    eval_expression(&arguments[0], local_context).try_into().unwrap(),
+                )
+            });
+            Value::Void
+        }
         BuiltinFunction::ImplicitLayoutInfo(orient) => {
-            let component = match local_context.component_instance {
-                ComponentInstance::InstanceRef(c) => c,
-                ComponentInstance::GlobalComponent(_) => {
-                    panic!("Cannot access the implicit item size from a global component")
-                }
-            };
+            let component = local_context.component_instance;
             if let [Expression::ElementReference(item)] = arguments {
                 generativity::make_guard!(guard);
 
@@ -1171,14 +1258,18 @@ fn call_builtin_function(
                 let item_info = &description.items[item.borrow().id.as_str()];
                 let item_ref =
                     unsafe { item_info.item_from_item_tree(enclosing_component.as_ptr()) };
-
+                let item_comp = enclosing_component.self_weak().get().unwrap().upgrade().unwrap();
                 let window_adapter = component.window_adapter();
                 item_ref
                     .as_ref()
-                    .layout_info(crate::eval_layout::to_runtime(orient), &window_adapter)
+                    .layout_info(
+                        crate::eval_layout::to_runtime(orient),
+                        &window_adapter,
+                        &ItemRc::new(vtable::VRc::into_dyn(item_comp), item_info.item_index()),
+                    )
                     .into()
             } else {
-                panic!("internal error: incorrect arguments to ImplicitLayoutInfo {:?}", arguments);
+                panic!("internal error: incorrect arguments to ImplicitLayoutInfo {arguments:?}");
             }
         }
         BuiltinFunction::ItemAbsolutePosition => {
@@ -1186,12 +1277,7 @@ fn call_builtin_function(
                 panic!("internal error: incorrect argument count to ItemAbsolutePosition")
             }
 
-            let component = match local_context.component_instance {
-                ComponentInstance::InstanceRef(c) => c,
-                ComponentInstance::GlobalComponent(_) => {
-                    panic!("Cannot access the implicit item size from a global component")
-                }
-            };
+            let component = local_context.component_instance;
 
             if let Expression::ElementReference(item) = &arguments[0] {
                 generativity::make_guard!(guard);
@@ -1218,12 +1304,7 @@ fn call_builtin_function(
             if arguments.len() != 1 {
                 panic!("internal error: incorrect argument count to RegisterCustomFontByPath")
             }
-            let component = match local_context.component_instance {
-                ComponentInstance::InstanceRef(c) => c,
-                ComponentInstance::GlobalComponent(_) => {
-                    panic!("Cannot access the implicit item size from a global component")
-                }
-            };
+            let component = local_context.component_instance;
             if let Value::String(s) = eval_expression(&arguments[0], local_context) {
                 if let Some(err) = component
                     .window_adapter()
@@ -1267,16 +1348,61 @@ fn call_builtin_function(
             ))
         }
         BuiltinFunction::Use24HourFormat => Value::Bool(corelib::date_time::use_24_hour_format()),
-        BuiltinFunction::UpdateTimers => match local_context.component_instance {
-            ComponentInstance::InstanceRef(component) => {
-                crate::dynamic_item_tree::update_timers(component);
-                Value::Void
-            }
-            ComponentInstance::GlobalComponent(_) => {
-                panic!("timer in global?")
-            }
-        },
+        BuiltinFunction::UpdateTimers => {
+            crate::dynamic_item_tree::update_timers(local_context.component_instance);
+            Value::Void
+        }
+        BuiltinFunction::DetectOperatingSystem => i_slint_core::detect_operating_system().into(),
     }
+}
+
+fn call_item_member_function(nr: &NamedReference, local_context: &mut EvalLocalContext) -> Value {
+    let component = local_context.component_instance;
+    let elem = nr.element();
+    let name = nr.name().as_str();
+    generativity::make_guard!(guard);
+    let enclosing_component = enclosing_component_for_element(&elem, component, guard);
+    let description = enclosing_component.description;
+    let item_info = &description.items[elem.borrow().id.as_str()];
+    let item_ref = unsafe { item_info.item_from_item_tree(enclosing_component.as_ptr()) };
+
+    let item_comp = enclosing_component.self_weak().get().unwrap().upgrade().unwrap();
+    let item_rc =
+        corelib::items::ItemRc::new(vtable::VRc::into_dyn(item_comp), item_info.item_index());
+
+    let window_adapter = component.window_adapter();
+
+    // TODO: Make this generic through RTTI
+    if let Some(textinput) = ItemRef::downcast_pin::<corelib::items::TextInput>(item_ref) {
+        match name {
+            "select-all" => textinput.select_all(&window_adapter, &item_rc),
+            "clear-selection" => textinput.clear_selection(&window_adapter, &item_rc),
+            "cut" => textinput.cut(&window_adapter, &item_rc),
+            "copy" => textinput.copy(&window_adapter, &item_rc),
+            "paste" => textinput.paste(&window_adapter, &item_rc),
+            _ => panic!("internal: Unknown member function {name} called on TextInput"),
+        }
+    } else if let Some(s) = ItemRef::downcast_pin::<corelib::items::SwipeGestureHandler>(item_ref) {
+        match name {
+            "cancel" => s.cancel(&window_adapter, &item_rc),
+            _ => panic!("internal: Unknown member function {name} called on SwipeGestureHandler"),
+        }
+    } else if let Some(s) = ItemRef::downcast_pin::<corelib::items::ContextMenu>(item_ref) {
+        match name {
+            "close" => s.close(&window_adapter, &item_rc),
+            "is-open" => return Value::Bool(s.is_open(&window_adapter, &item_rc)),
+            _ => {
+                panic!("internal: Unknown member function {name} called on ContextMenu")
+            }
+        }
+    } else {
+        panic!(
+            "internal error: member function {name} called on element that doesn't have it: {}",
+            elem.borrow().original_name()
+        )
+    }
+
+    Value::Void
 }
 
 fn eval_assignment(lhs: &Expression, op: char, rhs: Value, local_context: &mut EvalLocalContext) {
@@ -1289,7 +1415,7 @@ fn eval_assignment(lhs: &Expression, op: char, rhs: Value, local_context: &mut E
         (Value::Number(a), Value::Number(b), '-') => Value::Number(a - b),
         (Value::Number(a), Value::Number(b), '/') => Value::Number(a / b),
         (Value::Number(a), Value::Number(b), '*') => Value::Number(a * b),
-        (lhs, rhs, op) => panic!("unsupported {:?} {} {:?}", lhs, op, rhs),
+        (lhs, rhs, op) => panic!("unsupported {lhs:?} {op} {rhs:?}"),
     };
     match lhs {
         Expression::PropertyReference(nr) => {
@@ -1297,7 +1423,7 @@ fn eval_assignment(lhs: &Expression, op: char, rhs: Value, local_context: &mut E
             generativity::make_guard!(guard);
             let enclosing_component = enclosing_component_instance_for_element(
                 &element,
-                &local_context.component_instance,
+                &ComponentInstance::InstanceRef(local_context.component_instance),
                 guard,
             );
 
@@ -1349,10 +1475,7 @@ fn eval_assignment(lhs: &Expression, op: char, rhs: Value, local_context: &mut E
         }
         Expression::RepeaterModelReference { element } => {
             let element = element.upgrade().unwrap();
-            let component_instance = match local_context.component_instance {
-                ComponentInstance::InstanceRef(i) => i,
-                ComponentInstance::GlobalComponent(_) => panic!("can't have repeater in global"),
-            };
+            let component_instance = local_context.component_instance;
             generativity::make_guard!(g1);
             let enclosing_component =
                 enclosing_component_for_element(&element, component_instance, g1);
@@ -1387,8 +1510,8 @@ fn eval_assignment(lhs: &Expression, op: char, rhs: Value, local_context: &mut E
             let index = eval_expression(index, local_context);
             match (array, index) {
                 (Value::Model(model), Value::Number(index)) => {
-                    let index = index as usize;
-                    if (index) < model.row_count() {
+                    if index >= 0. && (index as usize) < model.row_count() {
+                        let index = index as usize;
                         if op == '=' {
                             model.set_row_data(index, rhs);
                         } else {
@@ -1444,7 +1567,7 @@ fn load_property_helper(
             let item = unsafe { item_info.item_from_item_tree(enclosing_component.as_ptr()) };
             Ok(item_info.rtti.properties.get(name).ok_or(())?.get(item))
         }
-        ComponentInstance::GlobalComponent(glob) => Ok(glob.as_ref().get_property(name).unwrap()),
+        ComponentInstance::GlobalComponent(glob) => glob.as_ref().get_property(name),
     }
 }
 
@@ -1544,7 +1667,7 @@ fn check_value_type(value: &Value, ty: &Type) -> bool {
             matches!(value, Value::Model(m) if m.iter().all(|v| check_value_type(&v, inner)))
         }
         Type::Struct(s) => {
-            matches!(value, Value::Struct(str) if str.iter().all(|(k, v)| s.fields.get(k).map_or(false, |ty| check_value_type(v, ty))))
+            matches!(value, Value::Struct(str) if str.iter().all(|(k, v)| s.fields.get(k).is_some_and(|ty| check_value_type(v, ty))))
         }
         Type::Enumeration(en) => {
             matches!(value, Value::EnumerationValue(name, _) if name == en.name.as_str())
@@ -1601,6 +1724,42 @@ pub(crate) fn invoke_callback(
         }
         ComponentInstance::GlobalComponent(global) => {
             Some(global.as_ref().invoke_callback(callback_name, args).unwrap())
+        }
+    }
+}
+
+pub(crate) fn set_callback_handler(
+    component_instance: &ComponentInstance,
+    element: &ElementRc,
+    callback_name: &str,
+    handler: CallbackHandler,
+) -> Result<(), ()> {
+    generativity::make_guard!(guard);
+    match enclosing_component_instance_for_element(element, component_instance, guard) {
+        ComponentInstance::InstanceRef(enclosing_component) => {
+            let description = enclosing_component.description;
+            let element = element.borrow();
+            if element.id == element.enclosing_component.upgrade().unwrap().root_element.borrow().id
+            {
+                if let Some(callback_offset) = description.custom_callbacks.get(callback_name) {
+                    let callback = callback_offset.apply(&*enclosing_component.instance);
+                    callback.set_handler(handler);
+                    return Ok(());
+                } else if enclosing_component.description.original.is_global() {
+                    return Err(());
+                }
+            };
+            let item_info = &description.items[element.id.as_str()];
+            let item = unsafe { item_info.item_from_item_tree(enclosing_component.as_ptr()) };
+            if let Some(callback) = item_info.rtti.callbacks.get(callback_name) {
+                callback.set_handler(item, handler);
+                Ok(())
+            } else {
+                Err(())
+            }
+        }
+        ComponentInstance::GlobalComponent(global) => {
+            global.as_ref().set_callback_handler(callback_name, handler)
         }
     }
 }
@@ -1816,4 +1975,79 @@ pub fn default_value_for_type(ty: &Type) -> Value {
             panic!("There can't be such property")
         }
     }
+}
+
+pub struct MenuWrapper {
+    entries: Expression,
+    sub_menu: NamedReference,
+    activated: NamedReference,
+    item_tree: crate::dynamic_item_tree::ErasedItemTreeBoxWeak,
+}
+i_slint_core::MenuVTable_static!(static MENU_WRAPPER_VTABLE for MenuWrapper);
+impl Menu for MenuWrapper {
+    fn sub_menu(&self, parent: Option<&MenuEntry>, result: &mut SharedVector<MenuEntry>) {
+        let Some(s) = self.item_tree.upgrade() else { return };
+        generativity::make_guard!(guard);
+        let compo_box = s.unerase(guard);
+        let instance_ref = compo_box.borrow_instance();
+        let res = match parent {
+            None => eval_expression(
+                &self.entries,
+                &mut EvalLocalContext::from_component_instance(instance_ref),
+            ),
+            Some(parent) => {
+                let instance_ref = ComponentInstance::InstanceRef(instance_ref);
+                invoke_callback(
+                    &instance_ref,
+                    &self.sub_menu.element(),
+                    self.sub_menu.name(),
+                    &[parent.clone().into()],
+                )
+                .unwrap()
+            }
+        };
+        let Value::Model(model) = res else { panic!("Not a model of menu entries {res:?}") };
+        *result = model.iter().map(|v| v.try_into().unwrap()).collect();
+    }
+    fn activate(&self, entry: &MenuEntry) {
+        let Some(s) = self.item_tree.upgrade() else { return };
+        generativity::make_guard!(guard);
+        let compo_box = s.unerase(guard);
+        let instance_ref = compo_box.borrow_instance();
+        let instance_ref = ComponentInstance::InstanceRef(instance_ref);
+        invoke_callback(
+            &instance_ref,
+            &self.activated.element(),
+            self.activated.name(),
+            &[entry.clone().into()],
+        )
+        .unwrap();
+    }
+}
+
+fn menu_item_tree_properties(
+    menu: MenuFromItemTree,
+) -> (Box<dyn Fn() -> Value>, CallbackHandler, CallbackHandler) {
+    let context_menu_item_tree = Rc::new(menu);
+    let context_menu_item_tree_ = context_menu_item_tree.clone();
+    let entries = Box::new(move || {
+        let mut entries = SharedVector::default();
+        context_menu_item_tree_.sub_menu(None, &mut entries);
+        Value::Model(ModelRc::new(VecModel::from(
+            entries.into_iter().map(Value::from).collect::<Vec<_>>(),
+        )))
+    });
+    let context_menu_item_tree_ = context_menu_item_tree.clone();
+    let sub_menu = Box::new(move |args: &[Value]| -> Value {
+        let mut entries = SharedVector::default();
+        context_menu_item_tree_.sub_menu(Some(&args[0].clone().try_into().unwrap()), &mut entries);
+        Value::Model(ModelRc::new(VecModel::from(
+            entries.into_iter().map(Value::from).collect::<Vec<_>>(),
+        )))
+    });
+    let activated = Box::new(move |args: &[Value]| -> Value {
+        context_menu_item_tree.activate(&args[0].clone().try_into().unwrap());
+        Value::Void
+    });
+    (entries, sub_menu, activated)
 }

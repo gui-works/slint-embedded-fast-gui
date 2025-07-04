@@ -16,10 +16,8 @@ pub use crate::software_renderer;
 use crate::unsafe_single_threaded::OnceCell;
 pub use crate::window::{LayoutConstraints, WindowAdapter, WindowProperties};
 use crate::SharedString;
-#[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
 use alloc::rc::Rc;
-#[cfg(not(feature = "std"))]
 use alloc::string::String;
 #[cfg(all(feature = "std", not(target_os = "android")))]
 use once_cell::sync::OnceCell;
@@ -127,6 +125,13 @@ pub trait Platform {
     /// uses stderr if available, or `console.log` when targeting wasm.
     fn debug_log(&self, _arguments: core::fmt::Arguments) {
         crate::tests::default_debug_log(_arguments);
+    }
+
+    #[cfg(target_os = "android")]
+    #[doc(hidden)]
+    /// The long press interval before showing a context menu
+    fn long_press_interval(&self, _: crate::InternalToken) -> core::time::Duration {
+        core::time::Duration::from_millis(500)
     }
 }
 
@@ -280,7 +285,7 @@ pub use crate::input::PointerEventButton;
 /// A event that describes user input or windowing system events.
 ///
 /// Slint backends typically receive events from the windowing system, translate them to this
-/// enum and deliver them to the scene of items via [`slint::Window::dispatch_event()`](`crate::api::Window::dispatch_event()`).
+/// enum and deliver them to the scene of items via [`slint::Window::try_dispatch_event()`](`crate::api::Window::try_dispatch_event()`).
 ///
 /// The pointer variants describe events originating from an input device such as a mouse
 /// or a contact point on a touch-enabled surface.

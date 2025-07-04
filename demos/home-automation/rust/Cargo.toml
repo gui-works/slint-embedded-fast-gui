@@ -3,7 +3,7 @@
 
 [package]
 name = "home-automation"
-version = "1.9.2"
+version = "1.13.0"
 authors = ["Slint Developers <info@slint.dev>"]
 edition = "2021"
 publish = false
@@ -20,8 +20,9 @@ name = "home_automation_lib"
 
 [dependencies]
 slint = { path = "../../../api/rs/slint" }
+chrono = "0.4"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { version = "0.2" }
-web-sys = { version = "0.3", features=["console"] }
+web-sys = { version = "0.3", features = ["console"] }
 console_error_panic_hook = "0.1.5"

@@ -28,6 +28,8 @@ impl clru::WeightScale<ImageCacheKey, ImageInner> for ImageWeightInBytes {
             #[cfg(not(target_arch = "wasm32"))]
             ImageInner::BorrowedOpenGLTexture(..) => 0, // Assume storage in GPU memory
             ImageInner::NineSlice(nine) => self.weight(_key, &nine.0),
+            #[cfg(feature = "unstable-wgpu-24")]
+            ImageInner::WGPUTexture(..) => 0, // The texture is imported from the application and will never reside in our cache.
         }
     }
 }
@@ -42,7 +44,7 @@ pub(crate) struct ImageCache(
     >,
 );
 
-thread_local!(pub(crate) static IMAGE_CACHE: core::cell::RefCell<ImageCache>  =
+crate::thread_local!(pub(crate) static IMAGE_CACHE: core::cell::RefCell<ImageCache>  =
     core::cell::RefCell::new(
         ImageCache(
             clru::CLruCache::with_config(
@@ -87,7 +89,7 @@ impl ImageCache {
                 return Some(ImageInner::Svg(vtable::VRc::new(
                     super::svg::load_from_path(path, cache_key).map_or_else(
                         |err| {
-                            eprintln!("Error loading SVG from {}: {}", &path, err);
+                            crate::debug_log!("Error loading SVG from {}: {}", &path, err);
                             None
                         },
                         Some,
@@ -97,7 +99,7 @@ impl ImageCache {
 
             image::open(std::path::Path::new(&path.as_str())).map_or_else(
                 |decode_err| {
-                    eprintln!("Error loading image from {}: {}", &path, decode_err);
+                    crate::debug_log!("Error loading image from {}: {}", &path, decode_err);
                     None
                 },
                 |image| {
@@ -122,7 +124,7 @@ impl ImageCache {
                 return Some(ImageInner::Svg(vtable::VRc::new(
                     super::svg::load_from_data(data.as_slice(), cache_key).map_or_else(
                         |svg_err| {
-                            eprintln!("Error loading SVG: {}", svg_err);
+                            crate::debug_log!("Error loading SVG: {}", svg_err);
                             None
                         },
                         Some,
@@ -145,7 +147,7 @@ impl ImageCache {
                     buffer: dynamic_image_to_shared_image_buffer(image),
                 }),
                 Err(decode_err) => {
-                    eprintln!("Error decoding embedded image: {}", decode_err);
+                    crate::debug_log!("Error decoding embedded image: {}", decode_err);
                     None
                 }
             }

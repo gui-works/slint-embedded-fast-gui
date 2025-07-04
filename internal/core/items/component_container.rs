@@ -7,22 +7,21 @@ This module contains the builtin `ComponentContainer` and related items
 When adding an item or a property, it needs to be kept in sync with different place.
 Lookup the [`crate::items`] module documentation.
 */
-use super::{Item, ItemConsts, ItemRc, Rectangle, RenderingResult};
+use super::{Item, ItemConsts, ItemRc, RenderingResult};
 use crate::component_factory::{ComponentFactory, FactoryContext};
 use crate::input::{
     FocusEvent, FocusEventResult, InputEventFilterResult, InputEventResult, KeyEvent,
     KeyEventResult, MouseEvent,
 };
-use crate::item_rendering::CachedRenderingData;
+use crate::item_rendering::{CachedRenderingData, RenderRectangle};
 use crate::item_tree::{IndexRange, ItemTreeRc, ItemTreeWeak, ItemWeak};
 use crate::item_tree::{ItemTreeNode, ItemVisitorVTable, TraversalOrder, VisitChildrenResult};
 use crate::layout::{LayoutInfo, Orientation};
-use crate::lengths::{LogicalLength, LogicalSize};
+use crate::lengths::{LogicalLength, LogicalRect, LogicalSize};
 use crate::properties::{Property, PropertyTracker};
 #[cfg(feature = "rtti")]
 use crate::rtti::*;
 use crate::window::WindowAdapter;
-#[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use const_field_offset::FieldOffsets;
@@ -69,7 +68,7 @@ impl ComponentContainer {
             vtable::VRc::borrow_pin(&parent).as_ref().window_adapter(false, &mut window);
         }
         let prevent_focus_change =
-            window.as_ref().map_or(false, |w| w.window().0.prevent_focus_change.replace(true));
+            window.as_ref().is_some_and(|w| w.window().0.prevent_focus_change.replace(true));
 
         let factory_context = FactoryContext {
             parent_item_tree: self.my_component.get().unwrap().clone(),
@@ -152,13 +151,16 @@ impl Item for ComponentContainer {
         // Find my embedding item_tree_index:
         let pin_rc = vtable::VRc::borrow_pin(rc);
         let item_tree = pin_rc.as_ref().get_item_tree();
-        let ItemTreeNode::Item { children_index: child_item_tree_index, .. } =
+        let ItemTreeNode::Item { children_index, children_count, .. } =
             item_tree[self_rc.index() as usize]
         else {
-            panic!("Internal compiler error: ComponentContainer had no child.");
+            panic!("ComponentContainer not found in item tree");
         };
 
-        self.embedding_item_tree_index.set(child_item_tree_index).ok().unwrap();
+        assert_eq!(children_count, 1);
+        assert!(matches!(item_tree[children_index as usize], ItemTreeNode::DynamicTree { .. }));
+
+        self.embedding_item_tree_index.set(children_index).ok().unwrap();
 
         self.component_tracker.set(Box::pin(PropertyTracker::default())).ok().unwrap();
         self.self_weak.set(self_rc.downgrade()).ok().unwrap();
@@ -168,6 +170,7 @@ impl Item for ComponentContainer {
         self: Pin<&Self>,
         orientation: Orientation,
         _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
     ) -> LayoutInfo {
         self.ensure_updated();
         if let Some(rc) = self.item_tree.borrow().clone() {
@@ -179,7 +182,7 @@ impl Item for ComponentContainer {
 
     fn input_event_filter_before_children(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
@@ -188,7 +191,7 @@ impl Item for ComponentContainer {
 
     fn input_event(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventResult {
@@ -219,19 +222,36 @@ impl Item for ComponentContainer {
         item_rc: &ItemRc,
         size: LogicalSize,
     ) -> RenderingResult {
-        if let Some(item_tree) = self.item_tree.borrow().clone() {
-            let item_tree = vtable::VRc::borrow_pin(&item_tree);
-            let root_item = item_tree.as_ref().get_item_ref(0);
-            if let Some(window_item) =
-                crate::items::ItemRef::downcast_pin::<crate::items::WindowItem>(root_item)
-            {
-                let mut rect = Rectangle::default();
-                rect.background.set(window_item.background());
-                backend.draw_rectangle(core::pin::pin!(rect).as_ref(), item_rc, size);
-            }
-        }
-
+        backend.draw_rectangle(self, item_rc, size, &self.cached_rendering_data);
         RenderingResult::ContinueRenderingChildren
+    }
+
+    fn bounding_rect(
+        self: core::pin::Pin<&Self>,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+        geometry: LogicalRect,
+    ) -> LogicalRect {
+        geometry
+    }
+
+    fn clips_children(self: core::pin::Pin<&Self>) -> bool {
+        false
+    }
+}
+
+impl RenderRectangle for ComponentContainer {
+    fn background(self: Pin<&Self>) -> crate::Brush {
+        self.item_tree
+            .borrow()
+            .clone()
+            .and_then(|item_tree| {
+                let item_tree = vtable::VRc::borrow_pin(&item_tree);
+                let root_item = item_tree.as_ref().get_item_ref(0);
+                crate::items::ItemRef::downcast_pin::<crate::items::WindowItem>(root_item)
+                    .map(|window_item| window_item.background())
+            })
+            .unwrap_or_default()
     }
 }
 

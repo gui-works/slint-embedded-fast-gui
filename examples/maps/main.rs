@@ -99,6 +99,7 @@ struct TileCoordinate {
 }
 
 struct World {
+    client: reqwest::Client,
     loaded_tiles: BTreeMap<TileCoordinate, slint::Image>,
     loading_tiles: BTreeMap<TileCoordinate, Pin<Box<dyn Future<Output = slint::Image>>>>,
     osm_url: String,
@@ -112,6 +113,7 @@ struct World {
 impl World {
     fn new() -> Self {
         World {
+            client: reqwest::Client::new(),
             osm_url: std::env::var("OSM_TILES_URL")
                 .unwrap_or("https://tile.openstreetmap.org".to_string()),
             loaded_tiles: Default::default(),
@@ -160,8 +162,6 @@ impl World {
         self.loading_tiles.retain(|coord, _| keep(coord));
         self.loaded_tiles.retain(|coord, _| keep(coord));
 
-        let client = reqwest::Client::new();
-
         for x in min_x..max_x {
             for y in min_y..max_y {
                 let coord = TileCoordinate { z: self.zoom_level, x, y };
@@ -170,7 +170,7 @@ impl World {
                 }
                 self.loading_tiles.entry(coord).or_insert_with(|| {
                     let url = format!("{}/{}/{}/{}.png", self.osm_url, coord.z, coord.x, coord.y);
-                    let client = client.clone();
+                    let client = self.client.clone();
                     Box::pin(async move {
                         let response = client
                             .get(&url)
@@ -180,7 +180,7 @@ impl World {
                         let response = match response {
                             Ok(response) => response,
                             Err(err) => {
-                                eprintln!("Error loading {url}: {}", err);
+                                eprintln!("Error loading {url}: {err}");
                                 return slint::Image::default();
                             }
                         };
@@ -189,28 +189,34 @@ impl World {
                             return slint::Image::default();
                         }
 
-                        let image =
-                            match image::load_from_memory(&mut response.bytes().await.unwrap()) {
+                        let bytes = response.bytes().await.unwrap();
+                        // Use spawn_blocking to offload the image decoding to a thread as to not block the UI
+                        let buffer = tokio::task::spawn_blocking(move || {
+                            let image = match image::load_from_memory(&bytes) {
                                 Ok(image) => image,
                                 Err(err) => {
-                                    eprintln!("Error reading {url}: {}", err);
-                                    return slint::Image::default();
+                                    eprintln!("Error reading {url}: {err}");
+                                    return None;
                                 }
                             };
-                        println!("Loaded {url}");
-                        let image = image
-                            .resize(
-                                TILE_SIZE as u32,
-                                TILE_SIZE as u32,
-                                image::imageops::FilterType::Nearest,
-                            )
-                            .into_rgba8();
-                        let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
-                            image.as_raw(),
-                            image.width(),
-                            image.height(),
-                        );
-                        slint::Image::from_rgba8(buffer)
+                            println!("Loaded {url}");
+                            let image = image
+                                .resize(
+                                    TILE_SIZE as u32,
+                                    TILE_SIZE as u32,
+                                    image::imageops::FilterType::Nearest,
+                                )
+                                .into_rgba8();
+                            let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+                                image.as_raw(),
+                                image.width(),
+                                image.height(),
+                            );
+                            Some(buffer)
+                        })
+                        .await
+                        .unwrap();
+                        buffer.map(|buffer| slint::Image::from_rgba8(buffer)).unwrap_or_default()
                     })
                 });
             }

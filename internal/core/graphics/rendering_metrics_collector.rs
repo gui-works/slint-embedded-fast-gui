@@ -10,9 +10,7 @@ use crate::debug_log;
 use crate::timers::{Timer, TimerMode};
 use alloc::format;
 use alloc::rc::Rc;
-#[cfg(not(feature = "std"))]
 use alloc::string::String;
-#[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
@@ -36,7 +34,7 @@ pub struct RenderingMetrics {
 impl core::fmt::Display for RenderingMetrics {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if let Some(layer_count) = self.layers_created {
-            write!(f, "[{} layers created]", layer_count)
+            write!(f, "[{layer_count} layers created]")
         } else {
             Ok(())
         }

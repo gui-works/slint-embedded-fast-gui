@@ -120,6 +120,9 @@ fn format_node(
         SyntaxKind::ReturnStatement => {
             return format_return_statement(node, writer, state);
         }
+        SyntaxKind::LetStatement => {
+            return format_let_statement(node, writer, state);
+        }
         SyntaxKind::AtGradient => {
             return format_at_gradient(node, writer, state);
         }
@@ -251,14 +254,14 @@ fn whitespace_to_one_of(
                 return Ok(SyntaxMatch::Found(expected_kind));
             }
             _ => {
-                eprintln!("Inconsistency: expected {:?},  found {:?}", elements, n);
+                eprintln!("Inconsistency: expected {elements:?},  found {n:?}");
                 fold(n, writer, state)?;
                 return Ok(SyntaxMatch::NotFound);
             }
         }
         fold(n, writer, state)?;
     }
-    eprintln!("Inconsistency: expected {:?},  not found", elements);
+    eprintln!("Inconsistency: expected {elements:?},  not found");
     Ok(SyntaxMatch::NotFound)
 }
 
@@ -693,7 +696,7 @@ fn format_conditional_expression(
     writer: &mut impl TokenWriter,
     state: &mut FormatState,
 ) -> Result<(), std::io::Error> {
-    let has_if = node.child_text(SyntaxKind::Identifier).map_or(false, |x| x == "if");
+    let has_if = node.child_text(SyntaxKind::Identifier).is_some_and(|x| x == "if");
 
     let mut sub = node.children_with_tokens();
     if has_if {
@@ -797,6 +800,29 @@ fn format_return_statement(
     if node.child_node(SyntaxKind::Expression).is_some() {
         whitespace_to(&mut sub, SyntaxKind::Identifier, writer, state, " ")?;
     }
+    whitespace_to(&mut sub, SyntaxKind::Semicolon, writer, state, "")?;
+    state.new_line();
+    finish_node(sub, writer, state)?;
+    Ok(())
+}
+
+fn format_let_statement(
+    node: &SyntaxNode,
+    writer: &mut impl TokenWriter,
+    state: &mut FormatState,
+) -> Result<(), std::io::Error> {
+    let mut sub = node.children_with_tokens();
+    whitespace_to(&mut sub, SyntaxKind::Identifier, writer, state, "")?; // "let"
+    whitespace_to(&mut sub, SyntaxKind::DeclaredIdentifier, writer, state, " ")?;
+    // if type annotated
+    if node.child_token(SyntaxKind::Colon).is_some() {
+        whitespace_to(&mut sub, SyntaxKind::Colon, writer, state, "")?;
+        if node.child_node(SyntaxKind::Type).is_some() {
+            whitespace_to(&mut sub, SyntaxKind::Type, writer, state, " ")?;
+        }
+    }
+    whitespace_to(&mut sub, SyntaxKind::Equal, writer, state, " ")?;
+    whitespace_to(&mut sub, SyntaxKind::Expression, writer, state, " ")?;
     whitespace_to(&mut sub, SyntaxKind::Semicolon, writer, state, "")?;
     state.new_line();
     finish_node(sub, writer, state)?;
@@ -979,7 +1005,7 @@ fn format_state(
     writer: &mut impl TokenWriter,
     state: &mut FormatState,
 ) -> Result<(), std::io::Error> {
-    let has_when = node.child_text(SyntaxKind::Identifier).map_or(false, |x| x == "when");
+    let has_when = node.child_text(SyntaxKind::Identifier).is_some_and(|x| x == "when");
     let mut sub = node.children_with_tokens();
     let ok = if has_when {
         whitespace_to(&mut sub, SyntaxKind::DeclaredIdentifier, writer, state, "")?
@@ -1279,7 +1305,7 @@ fn format_member_access(
     state: &mut FormatState,
 ) -> Result<(), std::io::Error> {
     let n = syntax_nodes::MemberAccess::from(node.clone());
-    // Special case fo things like `42 .mod(x)` where a space is needed otherwise it lexes differently
+    // Special case of things like `42 .mod(x)` where a space is needed otherwise it lexes differently
     let need_space = n.Expression().child_token(SyntaxKind::NumberLiteral).is_some_and(|nl| {
         !nl.text().contains('.') && nl.text().chars().last().is_some_and(|c| c.is_numeric())
     });
@@ -2136,6 +2162,32 @@ export component MainWindow2 inherits Rectangle {
             r#"component X {
     expr: 42 .log(x) + 41 .log(y) + foo.bar + 21.0.log(0) + 54..log(8);
     x: 42px.max(42px.min(0.px));
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn let_statement() {
+        assert_formatting(
+            "component X { function foo() { let bar=42; } }",
+            r#"component X {
+    function foo() {
+        let bar = 42;
+    }
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn let_statement_type_annotation() {
+        assert_formatting(
+            "component X { function foo() { let bar : int=42; } }",
+            r#"component X {
+    function foo() {
+        let bar: int = 42;
+    }
 }
 "#,
         );

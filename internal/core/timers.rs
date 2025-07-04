@@ -10,9 +10,7 @@
 */
 
 #![warn(missing_docs)]
-#[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
-#[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 use core::{
     cell::{Cell, RefCell},
@@ -37,18 +35,17 @@ pub enum TimerMode {
     Repeated,
 }
 
-/// Timer is a handle to the timer system that allows triggering a callback to be called
-/// after a specified period of time.
+/// Timer is a handle to the timer system that triggers a callback after a specified
+/// period of time.
 ///
-/// Use [`Timer::start()`] to create a timer that can repeat at frequent interval, or
-/// [`Timer::single_shot`] if you just want to call a function with a delay and do not
-/// need to be able to stop it.
+/// Use [`Timer::start()`] to create a timer that repeatedly triggers a callback, or
+/// [`Timer::single_shot`] to trigger a callback only once.
 ///
 /// The timer will automatically stop when dropped. You must keep the Timer object
 /// around for as long as you want the timer to keep firing.
 ///
-/// The timer can only be used in the thread that runs the Slint event loop.
-/// They will not fire if used in another thread.
+/// Timers can only be used in the thread that runs the Slint event loop. They don't
+/// fire if used in another thread.
 ///
 /// ## Example
 /// ```rust,no_run
@@ -74,8 +71,8 @@ impl Timer {
     ///
     /// Arguments:
     /// * `mode`: The timer mode to apply, i.e. whether to repeatedly fire the timer or just once.
-    /// * `interval`: The duration from now until when the timer should fire. And the period of that timer
-    ///    for [`Repeated`](TimerMode::Repeated) timers.
+    /// * `interval`: The duration from now until when the timer should fire the first time, and subsequently
+    ///    for repeated [`Repeated`](TimerMode::Repeated) timers.
     /// * `callback`: The function to call when the time has been reached or exceeded.
     pub fn start(
         &self,
@@ -95,7 +92,7 @@ impl Timer {
         })
     }
 
-    /// Starts the timer with the duration, in order for the callback to called when the
+    /// Starts the timer with the duration and the callback to called when the
     /// timer fires. It is fired only once and then deleted.
     ///
     /// Arguments:
@@ -167,8 +164,7 @@ impl Timer {
         }
     }
 
-    /// Returns the interval of the timer.
-    /// Returns a duration of 0ms if the timer was never started.
+    /// Returns the interval of the timer. If the timer was never started, the returned duration is 0ms.
     pub fn interval(&self) -> core::time::Duration {
         self.id()
             .map(|timer_id| CURRENT_TIMERS.with(|timers| timers.borrow().timers[timer_id].duration))
@@ -286,7 +282,7 @@ impl TimerList {
                     }
                 }
 
-                for future_timer in timers_not_activated_this_time.into_iter() {
+                for future_timer in timers_not_activated_this_time.iter() {
                     timers.register_active_timer(*future_timer);
                 }
 
@@ -424,10 +420,7 @@ impl TimerList {
     }
 }
 
-#[cfg(all(not(feature = "std"), feature = "unsafe-single-threaded"))]
-use crate::unsafe_single_threaded::thread_local;
-
-thread_local!(static CURRENT_TIMERS : RefCell<TimerList> = RefCell::default());
+crate::thread_local!(static CURRENT_TIMERS : RefCell<TimerList> = RefCell::default());
 
 #[cfg(feature = "ffi")]
 pub(crate) mod ffi {
@@ -461,7 +454,7 @@ pub(crate) mod ffi {
     /// A value of -1 for the timer id means a new timer is to be allocated.
     /// The (new) timer id is returned.
     /// The timer MUST be destroyed with slint_timer_destroy.
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_timer_start(
         id: usize,
         mode: TimerMode,
@@ -485,7 +478,7 @@ pub(crate) mod ffi {
     }
 
     /// Execute a callback with a delay in millisecond
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_timer_singleshot(
         delay: u64,
         callback: extern "C" fn(*mut c_void),
@@ -497,7 +490,7 @@ pub(crate) mod ffi {
     }
 
     /// Stop a timer and free its raw data
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_timer_destroy(id: usize) {
         if id == 0 {
             return;
@@ -507,7 +500,7 @@ pub(crate) mod ffi {
     }
 
     /// Stop a timer
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_timer_stop(id: usize) {
         if id == 0 {
             return;
@@ -518,7 +511,7 @@ pub(crate) mod ffi {
     }
 
     /// Restart a repeated timer
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_timer_restart(id: usize) {
         if id == 0 {
             return;
@@ -529,7 +522,7 @@ pub(crate) mod ffi {
     }
 
     /// Returns true if the timer is running; false otherwise.
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_timer_running(id: usize) -> bool {
         if id == 0 {
             return false;
@@ -541,7 +534,7 @@ pub(crate) mod ffi {
     }
 
     /// Returns the interval in milliseconds. 0 when the timer was never started.
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_timer_interval(id: usize) -> u64 {
         if id == 0 {
             return 0;
@@ -716,6 +709,9 @@ assert_eq!(state.borrow().timer_200_called, 7015);
 assert_eq!(state.borrow().timer_once_called, 3);
 assert_eq!(state.borrow().timer_500_called, 3006);
 
+state.borrow().timer_200.stop();
+state.borrow().timer_500.stop();
+
 state.borrow_mut().timer_once.restart();
 for _ in 0..4 {
     i_slint_core::tests::slint_mock_elapsed_time(100);
@@ -726,6 +722,12 @@ for _ in 0..4 {
 }
 assert_eq!(state.borrow().timer_once_called, 4);
 
+state.borrow_mut().timer_once.stop();
+i_slint_core::tests::slint_mock_elapsed_time(1000);
+
+assert_eq!(state.borrow().timer_200_called, 7015);
+assert_eq!(state.borrow().timer_once_called, 4);
+assert_eq!(state.borrow().timer_500_called, 3006);
 ```
  */
 #[cfg(doctest)]
@@ -1138,6 +1140,9 @@ assert!(!later_timer.running());
 i_slint_core::tests::slint_mock_elapsed_time(800);
 assert_eq!(later_timer_expiration_count.get(), 0);
 assert!(!later_timer.running());
+i_slint_core::tests::slint_mock_elapsed_time(800);
+i_slint_core::tests::slint_mock_elapsed_time(800);
+assert_eq!(later_timer_expiration_count.get(), 0);
 ```
  */
 #[cfg(doctest)]

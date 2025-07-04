@@ -17,25 +17,24 @@ component BadOne {
 component SecondBadOne {
     forward-focus: ti;
     function focus() {
-//           ^error{Cannot override 'focus'}        
+//           ^error{Cannot override 'focus'}
     }
     ti := TextInput {}
 }
 
 export X := Rectangle {
+//       ^warning{':=' to declare a component is deprecated. The new syntax declare components with 'component MyComponent {'. Read the documentation for more info}
     edit := TextInput { }
     TouchArea {
         clicked => {
             (edit.focus)();
-//           ^error{'edit.focus' must be called. Did you forgot the '\(\)'\?}
+//           ^error{Member function must be called. Did you forgot the '()'?}
             edit.focus;
-//          ^error{'edit.focus' must be called. Did you forgot the '\(\)'\?}
+//          ^error{Member function must be called. Did you forgot the '()'?}
         }
     }
     x: edit.focus;
-//     ^error{Cannot convert function\(element ref\) -> void to length}
-//     ^^error{'edit.focus' must be called. Did you forgot the '\(\)'\?}
-//          ^^^warning{Call of impure function}
+//     ^error{Member function must be called. Did you forgot the '()'?}
 
     BadOne {}
     SecondBadOne {}

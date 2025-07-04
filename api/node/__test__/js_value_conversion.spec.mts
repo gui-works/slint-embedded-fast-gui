@@ -14,7 +14,7 @@ import {
     type Model,
 } from "../dist/index.js";
 
-const filename = fileURLToPath(import.meta.url);
+const filename = fileURLToPath(import.meta.url).replace("build", "__test__");
 const dirname = path.dirname(filename);
 
 test("get/set string properties", (t) => {
@@ -496,6 +496,17 @@ test("get/set brush properties", (t) => {
         t.deepEqual(ref_color.blue, 0);
         t.deepEqual(ref_color.alpha, 255);
     }
+
+    // ref is a brush, but setting to a color should not throw, but take the brush's color.
+    instance!.setProperty("ref-color", ref);
+    instance_ref = instance!.getProperty("ref-color");
+    if (t.true(instance_ref instanceof private_api.SlintBrush)) {
+        const ref_color = (instance_ref as private_api.SlintBrush).color;
+        t.deepEqual(ref_color.red, ref.color.red);
+        t.deepEqual(ref_color.green, ref.color.green);
+        t.deepEqual(ref_color.blue, ref.color.blue);
+        t.deepEqual(ref_color.alpha, ref.color.alpha);
+    }
 });
 
 test("get/set enum properties", (t) => {
@@ -790,7 +801,9 @@ test("model from array", (t) => {
     t.not(instance, null);
 
     instance!.setProperty("int-array", [10, 9, 8]);
-    const wrapped_int_model = instance!.getProperty("int-array");
+    const wrapped_int_model = instance!.getProperty(
+        "int-array",
+    ) as Model<number>;
     t.deepEqual(Array.from(wrapped_int_model), [10, 9, 8]);
     t.deepEqual(wrapped_int_model.rowCount(), 3);
     t.deepEqual(wrapped_int_model.rowData(0), 10);
@@ -805,7 +818,9 @@ test("model from array", (t) => {
         "Tobias",
         "Florian",
     ]);
-    const wrapped_string_model = instance!.getProperty("string-array");
+    const wrapped_string_model = instance!.getProperty(
+        "string-array",
+    ) as Model<string>;
     t.deepEqual(wrapped_string_model.rowCount(), 5);
     t.deepEqual(wrapped_string_model.rowData(0), "Simon");
     t.deepEqual(wrapped_string_model.rowData(1), "Olivier");
@@ -884,7 +899,7 @@ test("wrong callback return type ", (t) => {
   export struct Person {
     name: string,
     age: int,
-    
+
   }
   export component App {
     callback get-string() -> string;
@@ -938,7 +953,7 @@ test("wrong global callback return type ", (t) => {
             name: string,
             age: int,
         }
-        export global Global {   
+        export global Global {
             callback get-string() -> string;
             callback get-int() -> int;
             callback get-bool() -> bool;

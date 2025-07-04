@@ -300,7 +300,7 @@ struct Components<'a> {
     separator: Option<char>,
 }
 
-fn component_iter(path: &str) -> Components {
+fn component_iter(path: &str) -> Components<'_> {
     Components { path, offset: 0, separator: None }
 }
 
@@ -438,7 +438,7 @@ fn dirname_string(path: &str) -> String {
 fn test_dirname() {
     #[track_caller]
     fn th(input: &str, expected: &str) {
-        let result = dirname_string(&input);
+        let result = dirname_string(input);
         assert_eq!(result, expected);
     }
 

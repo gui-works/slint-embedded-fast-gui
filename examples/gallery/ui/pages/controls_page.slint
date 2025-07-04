@@ -8,6 +8,7 @@ import { Page } from "page.slint";
 
 export component ControlsPage inherits Page {
     title: @tr("Controls");
+    show-enable-read-only: true;
     description: @tr("This page gives an overview of the default widget set provided by Slint. The widgets are available in different styles native, fluent-(dark/light) and material-(dark/light). The widgets can be imported from \"std-widgets.slint\".");
 
     GroupBox {
@@ -97,6 +98,7 @@ export component ControlsPage inherits Page {
             LineEdit {
                 placeholder-text: @tr("Enter some text");
                 enabled: GallerySettings.widgets-enabled;
+                read-only: GallerySettings.widgets-read-only;
             }
 
             SpinBox {
@@ -107,7 +109,7 @@ export component ControlsPage inherits Page {
 
             time-picker-button := Button {
                 text: @tr("Open TimePickerPopup");
-
+                enabled: GallerySettings.widgets-enabled;
                 clicked => {
                     time-picker.show();
                 }
@@ -115,6 +117,7 @@ export component ControlsPage inherits Page {
 
             Button {
                 text: @tr("Open DatePickerPopup");
+                enabled: GallerySettings.widgets-enabled;
                 clicked => {
                     date-picker.show();
                 }
@@ -166,6 +169,7 @@ export component ControlsPage inherits Page {
                 col: 0;
                 text: @tr("indeterminate");
                 checked <=> progress-indicator.indeterminate;
+                enabled: GallerySettings.widgets-enabled;
             }
         }
     }

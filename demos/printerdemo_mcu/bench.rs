@@ -33,9 +33,7 @@ enum RenderMode {
 
 struct DrawBuffer<'a, T>(&'a mut [T]);
 
-impl<'a, T: TargetPixel> slint::platform::software_renderer::LineBufferProvider
-    for DrawBuffer<'a, T>
-{
+impl<T: TargetPixel> slint::platform::software_renderer::LineBufferProvider for DrawBuffer<'_, T> {
     type TargetPixel = T;
     fn process_line(
         &mut self,
@@ -74,11 +72,11 @@ fn render_only<T: TargetPixel + Default>(bencher: divan::Bencher, mode: RenderMo
 
     WINDOW.with(|window| {
         // Do a first rendering to evaluate bindings
-        let ok = do_rendering(&window, &mut buffer, mode);
+        let ok = do_rendering(window, &mut buffer, mode);
         assert!(ok);
 
         bencher.bench_local(|| {
-            let ok = do_rendering(&window, &mut buffer, mode);
+            let ok = do_rendering(window, &mut buffer, mode);
             assert!(ok);
         })
     });
@@ -93,7 +91,7 @@ fn full<T: TargetPixel + Default>(bencher: divan::Bencher) {
             let main_window = MainWindow::new().unwrap();
             let _ = main_window.show();
             main_window.window().set_size(SIZE);
-            let ok = do_rendering(&window, &mut buffer, RenderMode::FullBuffer);
+            let ok = do_rendering(window, &mut buffer, RenderMode::FullBuffer);
             assert!(ok);
         })
     });

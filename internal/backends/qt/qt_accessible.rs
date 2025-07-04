@@ -30,6 +30,9 @@ const VALUE_MINIMUM: u32 = CHECKED + 1;
 const VALUE_MAXIMUM: u32 = VALUE_MINIMUM + 1;
 const VALUE_STEP: u32 = VALUE_MAXIMUM + 1;
 const CHECKABLE: u32 = VALUE_STEP + 1;
+const EXPANDABLE: u32 = CHECKABLE + 1;
+const EXPANDED: u32 = EXPANDABLE + 1;
+const READ_ONLY: u32 = EXPANDED + 1;
 
 pub struct AccessibleItemPropertiesTracker {
     obj: *mut c_void,
@@ -208,6 +211,9 @@ impl SlintAccessibleItemData {
             if let Some(item_rc) = item.upgrade() {
                 item_rc.accessible_string_property(AccessibleStringProperty::Checkable);
                 item_rc.accessible_string_property(AccessibleStringProperty::Checked);
+                item_rc.accessible_string_property(AccessibleStringProperty::Expandable);
+                item_rc.accessible_string_property(AccessibleStringProperty::Expanded);
+                item_rc.accessible_string_property(AccessibleStringProperty::ReadOnly);
             }
         });
     }
@@ -267,6 +273,9 @@ cpp! {{
     const uint32_t VALUE_MAXIMUM { VALUE_MINIMUM + 1 };
     const uint32_t VALUE_STEP { VALUE_MAXIMUM + 1 };
     const uint32_t CHECKABLE { VALUE_STEP + 1 };
+    const uint32_t EXPANDABLE { CHECKABLE + 1 };
+    const uint32_t EXPANDED { EXPANDABLE + 1 };
+    const uint32_t READ_ONLY { EXPANDED + 1 };
 
     // ------------------------------------------------------------------------------
     // Helper:
@@ -322,6 +331,8 @@ cpp! {{
                     i_slint_core::items::AccessibleRole::Switch => QAccessible_Role_CheckBox,
                     i_slint_core::items::AccessibleRole::ListItem => QAccessible_Role_ListItem,
                     i_slint_core::items::AccessibleRole::TabPanel => QAccessible_Role_Pane,
+                    i_slint_core::items::AccessibleRole::Groupbox => QAccessible_Role_Grouping,
+                    i_slint_core::items::AccessibleRole::Image => QAccessible_Role_Graphic,
                     _ => QAccessible_Role_NoRole,
                 }
             });
@@ -361,6 +372,9 @@ cpp! {{
                     VALUE_MAXIMUM => item.accessible_string_property(AccessibleStringProperty::ValueMaximum),
                     VALUE_STEP => item.accessible_string_property(AccessibleStringProperty::ValueStep),
                     CHECKABLE => item.accessible_string_property(AccessibleStringProperty::Checkable),
+                    EXPANDABLE => item.accessible_string_property(AccessibleStringProperty::Expandable),
+                    EXPANDED => item.accessible_string_property(AccessibleStringProperty::Expanded),
+                    READ_ONLY => item.accessible_string_property(AccessibleStringProperty::ReadOnly),
                     _ => None,
                 };
                 if let Some(string) = string {
@@ -620,6 +634,15 @@ cpp! {{
             state.focused = has_focus_delegation;
             state.checked = (checked == "true") ? 1 : 0;
             state.checkable = (item_string_property(m_data, CHECKABLE) == "true") ? 1 : 0;
+            if (item_string_property(m_data, EXPANDABLE) == "true") {
+                state.expandable = 1;
+                if (item_string_property(m_data, EXPANDED) == "true") {
+                    state.expanded = 1;
+                } else {
+                    state.collapsed = 1;
+                }
+            }
+            state.readOnly = (item_string_property(m_data, READ_ONLY) == "true") ? 1 : 0;
             return state; /* FIXME */
         }
 
@@ -668,6 +691,8 @@ cpp! {{
                 actions << QAccessibleActionInterface::increaseAction();
             if (supported & rust!(Slint_accessible_item_an3 [] -> SupportedAccessibilityAction as "uint" { SupportedAccessibilityAction::Decrement }))
                 actions << QAccessibleActionInterface::decreaseAction();
+            if (supported & rust!(Slint_accessible_item_an4 [] -> SupportedAccessibilityAction as "uint" { SupportedAccessibilityAction::Expand }))
+                actions << QAccessibleActionInterface::pressAction();
             return actions;
         }
 
@@ -675,7 +700,12 @@ cpp! {{
             if (actionName == QAccessibleActionInterface::pressAction()) {
                 rust!(Slint_accessible_item_do_action1 [m_data: Pin<&SlintAccessibleItemData> as "void*"] {
                     let Some(item) = m_data.item.upgrade() else {return};
-                    item.accessible_action(&AccessibilityAction::Default);
+                    let supported_actions = item.supported_accessibility_actions();
+                    if supported_actions.contains(SupportedAccessibilityAction::Expand) {
+                        item.accessible_action(&AccessibilityAction::Expand);
+                    } else {
+                        item.accessible_action(&AccessibilityAction::Default);
+                    }
                 });
             } else if (actionName == QAccessibleActionInterface::increaseAction()) {
                 rust!(Slint_accessible_item_do_action2 [m_data: Pin<&SlintAccessibleItemData> as "void*"] {

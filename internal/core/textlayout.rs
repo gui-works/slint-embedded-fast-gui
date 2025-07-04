@@ -21,7 +21,6 @@
 //!         Emit current line as new line
 //!
 
-#[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
 use euclid::num::{One, Zero};
@@ -54,7 +53,7 @@ pub struct TextLayout<'a, Font: AbstractFont> {
     pub letter_spacing: Option<<Font as TextShaper>::Length>,
 }
 
-impl<'a, Font: AbstractFont> TextLayout<'a, Font> {
+impl<Font: AbstractFont> TextLayout<'_, Font> {
     // Measures the size of the given text when rendered with the specified font and optionally constrained
     // by the provided `max_width`.
     // Returns a tuple of the width of the longest line as well as height of all lines.
@@ -100,7 +99,7 @@ pub struct TextParagraphLayout<'a, Font: AbstractFont> {
     pub single_line: bool,
 }
 
-impl<'a, Font: AbstractFont> TextParagraphLayout<'a, Font> {
+impl<Font: AbstractFont> TextParagraphLayout<'_, Font> {
     /// Layout the given string in lines, and call the `layout_line` callback with the line to draw at position y.
     /// The signature of the `layout_line` function is: `(glyph_iterator, line_x, line_y, text_line, selection)`.
     /// Returns the baseline y coordinate as Ok, or the break value if `line_callback` returns `core::ops::ControlFlow::Break`.
@@ -461,7 +460,7 @@ fn test_elision() {
                 .map(|r| r.unwrap())
                 .collect::<Vec<char>>()
         })
-        .collect::<String>();
+        .collect::<std::string::String>();
     debug_assert_eq!(rendered_text, "This is a lo…")
 }
 
@@ -503,7 +502,7 @@ fn test_exact_fit() {
                 .map(|r| r.unwrap())
                 .collect::<Vec<char>>()
         })
-        .collect::<String>();
+        .collect::<std::string::String>();
     debug_assert_eq!(rendered_text, "Fits")
 }
 
@@ -548,10 +547,10 @@ fn test_no_line_separators_characters_rendered() {
                         .map(|r| r.unwrap())
                         .collect::<Vec<char>>()
                 })
-                .collect::<String>()
+                .collect::<std::string::String>()
         })
         .collect::<Vec<_>>();
-    debug_assert_eq!(rendered_text, vec!["Hello", "World"]);
+    debug_assert_eq!(rendered_text, std::vec!["Hello", "World"]);
 }
 
 #[test]
@@ -638,7 +637,7 @@ fn byte_offset_for_empty_line() {
 fn test_byte_offset() {
     let font = FixedTestFont;
     let text = "Hello                    World";
-    let mut end_helper_text = text.to_string();
+    let mut end_helper_text = std::string::String::from(text);
     end_helper_text.push('!');
 
     let paragraph = TextParagraphLayout {

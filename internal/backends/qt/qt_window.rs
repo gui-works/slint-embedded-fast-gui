@@ -13,12 +13,14 @@ use i_slint_core::graphics::{
 };
 use i_slint_core::input::{KeyEvent, KeyEventType, MouseEvent};
 use i_slint_core::item_rendering::{
-    CachedRenderingData, ItemCache, ItemRenderer, RenderBorderRectangle, RenderImage, RenderText,
+    CachedRenderingData, ItemCache, ItemRenderer, RenderBorderRectangle, RenderImage,
+    RenderRectangle, RenderText,
 };
+use i_slint_core::item_tree::ParentItemTraversalMode;
 use i_slint_core::item_tree::{ItemTreeRc, ItemTreeRef};
 use i_slint_core::items::{
-    self, ColorScheme, FillRule, ImageRendering, ItemRc, ItemRef, Layer, MouseCursor, Opacity,
-    PointerEventButton, PopupClosePolicy, RenderingResult, TextOverflow, TextStrokeStyle, TextWrap,
+    self, ColorScheme, FillRule, ImageRendering, ItemRc, ItemRef, Layer, LineCap, MouseCursor,
+    Opacity, PointerEventButton, RenderingResult, TextOverflow, TextStrokeStyle, TextWrap,
 };
 use i_slint_core::layout::Orientation;
 use i_slint_core::lengths::{
@@ -37,7 +39,7 @@ use std::rc::{Rc, Weak};
 
 use crate::key_generated;
 use i_slint_core::renderer::Renderer;
-use once_cell::unsync::OnceCell;
+use std::cell::OnceCell;
 
 cpp! {{
     #include <QtWidgets/QtWidgets>
@@ -105,7 +107,7 @@ cpp! {{
         void paintEvent(QPaintEvent *) override {
             if (!rust_window)
                 return;
-           auto painter = std::unique_ptr<QPainter>(new QPainter(this));
+            auto painter = std::unique_ptr<QPainter>(new QPainter(this));
             painter->setClipRect(rect());
             painter->setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
             QPainterPtr *painter_ptr = &painter;
@@ -127,11 +129,32 @@ cpp! {{
             });
         }
 
+        /// If this window is a PopupWindow and the mouse event is outside of the popup, then adjust the event to map to the parent window
+        /// Returns the position and the rust_window to which we need to deliver the event
+        std::tuple<QPoint, void*> adjust_mouse_event_to_popup_parent(QMouseEvent *event) {
+            auto pos = event->pos();
+            if (auto p = dynamic_cast<const SlintWidget*>(parent()); p && !rect().contains(pos)) {
+    #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+                QPoint eventPos = event->globalPosition().toPoint();
+    #else
+                QPoint eventPos = event->globalPos();
+    #endif
+                while (auto pp = dynamic_cast<const SlintWidget*>(p->parent())) {
+                    if (p->rect().contains(p->mapFromGlobal(eventPos)))
+                        break;
+                    p = pp;
+                }
+                return { p->mapFromGlobal(eventPos), p->rust_window };
+            } else {
+                return { pos, rust_window };
+            }
+        }
+
         void mousePressEvent(QMouseEvent *event) override {
+            isMouseButtonDown = true;
+            auto [pos, rust_window] = adjust_mouse_event_to_popup_parent(event);
             if (!rust_window)
                 return;
-            isMouseButtonDown = true;
-            QPoint pos = event->pos();
             int button = event->button();
             rust!(Slint_mousePressEvent [rust_window: &QtWindow as "void*", pos: qttypes::QPoint as "QPoint", button: u32 as "int" ] {
                 let position = LogicalPoint::new(pos.x as _, pos.y as _);
@@ -140,8 +163,10 @@ cpp! {{
             });
         }
         void mouseReleaseEvent(QMouseEvent *event) override {
+            auto [pos, rust_window] = adjust_mouse_event_to_popup_parent(event);
             if (!rust_window)
                 return;
+
             // HACK: Qt on windows is a bit special when clicking on the window
             //       close button and when the resulting close event is ignored.
             //       In that case a release event that was not preceded by
@@ -149,47 +174,28 @@ cpp! {{
             //       This confuses Slint, so eat this event.
             //
             //       One example is a popup is shown in the close event that
-            //       then ignores the the close request to ask the user what to
+            //       then ignores the close request to ask the user what to
             //       do. The stray release event will then close the popup
             //       straight away
-            if (!isMouseButtonDown) {
+            //
+            //       However, we must still forward the event to the right popup menu
+            //       that's why we compare rust_window with this->rust_window
+            if (!isMouseButtonDown && rust_window == this->rust_window) {
                 return;
             }
-            isMouseButtonDown = false;
+            isMouseButtonDown = event->button() != Qt::NoButton;
 
-            void *parent_of_popup_to_close = nullptr;
-            if (auto p = dynamic_cast<const SlintWidget*>(parent())) {
-                while (auto pp = dynamic_cast<const SlintWidget*>(p->parent())) {
-                    p = pp;
-                }
-                void *parent_window = p->rust_window;
-                bool inside = rect().contains(event->pos());
-                bool close_on_click = rust!(Slint_mouseReleaseEventPopup [parent_window: &QtWindow as "void*", inside: bool as "bool"] -> bool as "bool" {
-                    let close_policy = parent_window.top_close_policy();
-                    close_policy == PopupClosePolicy::CloseOnClick || (close_policy == PopupClosePolicy::CloseOnClickOutside && !inside)
-                });
-                if (close_on_click) {
-                    parent_of_popup_to_close = parent_window;
-                }
-            }
-
-            QPoint pos = event->pos();
             int button = event->button();
             rust!(Slint_mouseReleaseEvent [rust_window: &QtWindow as "void*", pos: qttypes::QPoint as "QPoint", button: u32 as "int" ] {
                 let position = LogicalPoint::new(pos.x as _, pos.y as _);
                 let button = from_qt_button(button);
                 rust_window.mouse_event(MouseEvent::Released{ position, button, click_count: 0 })
             });
-            if (parent_of_popup_to_close) {
-                rust!(Slint_mouseReleaseEventClosePopup [parent_of_popup_to_close: &QtWindow as "void*"] {
-                    parent_of_popup_to_close.close_top_popup();
-                });
-            }
         }
         void mouseMoveEvent(QMouseEvent *event) override {
+            auto [pos, rust_window] = adjust_mouse_event_to_popup_parent(event);
             if (!rust_window)
                 return;
-            QPoint pos = event->pos();
             rust!(Slint_mouseMoveEvent [rust_window: &QtWindow as "void*", pos: qttypes::QPoint as "QPoint"] {
                 let position = LogicalPoint::new(pos.x as _, pos.y as _);
                 rust_window.mouse_event(MouseEvent::Moved{position})
@@ -351,7 +357,8 @@ cpp! {{
                         text: i_slint_core::format!("{}", commit_string),
                         preedit_text: i_slint_core::format!("{}", preedit_string),
                         preedit_selection: (preedit_cursor >= 0).then_some(preedit_cursor..preedit_cursor),
-                        replacement_range: Some(replacement_start..replacement_start+replacement_length),
+                        replacement_range: (!commit_string.is_empty() || !preedit_string.is_empty() || preedit_cursor >= 0)
+                            .then_some(replacement_start..replacement_start+replacement_length),
                         ..Default::default()
                     };
                     runtime_window.process_key_input(event);
@@ -572,7 +579,7 @@ fn into_qbrush(
             cpp_class!(unsafe struct QRadialGradient as "QRadialGradient");
             let mut qrg = cpp! {
                 unsafe [width as "qreal", height as "qreal"] -> QRadialGradient as "QRadialGradient" {
-                    QRadialGradient qrg(width / 2, height / 2, (width + height) / 4);
+                    QRadialGradient qrg(width / 2, height / 2, sqrt(width * width + height * height) / 2);
                     return qrg;
                 }
             };
@@ -634,7 +641,13 @@ struct QtItemRenderer<'a> {
 }
 
 impl ItemRenderer for QtItemRenderer<'_> {
-    fn draw_rectangle(&mut self, rect_: Pin<&items::Rectangle>, _: &ItemRc, size: LogicalSize) {
+    fn draw_rectangle(
+        &mut self,
+        rect_: Pin<&dyn RenderRectangle>,
+        _: &ItemRc,
+        size: LogicalSize,
+        _cache: &CachedRenderingData,
+    ) {
         let rect: qttypes::QRectF = check_geometry!(size);
         let brush: qttypes::QBrush = into_qbrush(rect_.background(), rect.width, rect.height);
         let painter: &mut QPainterPtr = &mut self.painter;
@@ -660,6 +673,16 @@ impl ItemRenderer for QtItemRenderer<'_> {
         );
     }
 
+    fn draw_window_background(
+        &mut self,
+        _rect: Pin<&dyn RenderRectangle>,
+        _self_rc: &ItemRc,
+        _size: LogicalSize,
+        _cache: &CachedRenderingData,
+    ) {
+        // Background is applied via WindowProperties::background()
+    }
+
     fn draw_image(
         &mut self,
         image: Pin<&dyn RenderImage>,
@@ -673,14 +696,14 @@ impl ItemRenderer for QtItemRenderer<'_> {
     fn draw_text(
         &mut self,
         text: Pin<&dyn RenderText>,
-        _: &ItemRc,
+        self_rc: &ItemRc,
         size: LogicalSize,
         _: &CachedRenderingData,
     ) {
         let rect: qttypes::QRectF = check_geometry!(size);
         let fill_brush: qttypes::QBrush = into_qbrush(text.color(), rect.width, rect.height);
         let mut string: qttypes::QString = text.text().as_str().into();
-        let font: QFont = get_font(text.font_request(WindowInner::from_pub(self.window)));
+        let font: QFont = get_font(text.font_request(self_rc));
         let (horizontal_alignment, vertical_alignment) = text.alignment();
         let alignment = match horizontal_alignment {
             TextHorizontalAlignment::Left => key_generated::Qt_AlignmentFlag_AlignLeft,
@@ -850,14 +873,13 @@ impl ItemRenderer for QtItemRenderer<'_> {
     fn draw_text_input(
         &mut self,
         text_input: Pin<&items::TextInput>,
-        _: &ItemRc,
+        self_rc: &ItemRc,
         size: LogicalSize,
     ) {
         let rect: qttypes::QRectF = check_geometry!(size);
         let fill_brush: qttypes::QBrush = into_qbrush(text_input.color(), rect.width, rect.height);
 
-        let font: QFont =
-            get_font(text_input.font_request(&WindowInner::from_pub(self.window).window_adapter()));
+        let font: QFont = get_font(text_input.font_request(self_rc));
         let flags = match text_input.horizontal_alignment() {
             TextHorizontalAlignment::Left => key_generated::Qt_AlignmentFlag_AlignLeft,
             TextHorizontalAlignment::Center => key_generated::Qt_AlignmentFlag_AlignHCenter,
@@ -983,6 +1005,11 @@ impl ItemRenderer for QtItemRenderer<'_> {
         let fill_brush: qttypes::QBrush = into_qbrush(path.fill(), rect.width, rect.height);
         let stroke_brush: qttypes::QBrush = into_qbrush(path.stroke(), rect.width, rect.height);
         let stroke_width: f32 = path.stroke_width().get();
+        let stroke_pen_cap_style: i32 = match path.stroke_line_cap() {
+            LineCap::Butt => 0x00,
+            LineCap::Round => 0x20,
+            LineCap::Square => 0x10,
+        };
         let pos = qttypes::QPoint { x: offset.x as _, y: offset.y as _ };
         let mut painter_path = QPainterPath::default();
 
@@ -1018,6 +1045,8 @@ impl ItemRenderer for QtItemRenderer<'_> {
             }
         }
 
+        let anti_alias: bool = path.anti_alias();
+
         let painter: &mut QPainterPtr = &mut self.painter;
         cpp! { unsafe [
                 painter as "QPainterPtr*",
@@ -1025,12 +1054,15 @@ impl ItemRenderer for QtItemRenderer<'_> {
                 mut painter_path as "QPainterPath",
                 fill_brush as "QBrush",
                 stroke_brush as "QBrush",
-                stroke_width as "float"] {
+                stroke_width as "float",
+                stroke_pen_cap_style as "int",
+                anti_alias as "bool"] {
             (*painter)->save();
             auto cleanup = qScopeGuard([&] { (*painter)->restore(); });
             (*painter)->translate(pos);
-            (*painter)->setPen(stroke_width > 0 ? QPen(stroke_brush, stroke_width) : Qt::NoPen);
+            (*painter)->setPen(stroke_width > 0 ? QPen(stroke_brush, stroke_width, Qt::SolidLine, Qt::PenCapStyle(stroke_pen_cap_style)) : Qt::NoPen);
             (*painter)->setBrush(fill_brush);
+            (*painter)->setRenderHint(QPainter::Antialiasing, anti_alias);
             (*painter)->drawPath(painter_path);
         }}
     }
@@ -1557,10 +1589,12 @@ impl QtItemRenderer<'_> {
 
             std::mem::swap(&mut self.painter, &mut layer_painter);
 
+            let window_adapter = self.window().window_adapter();
+
             i_slint_core::item_rendering::render_item_children(
                 self,
                 &item_rc.item_tree(),
-                item_rc.index() as isize,
+                item_rc.index() as isize, &window_adapter
             );
 
             std::mem::swap(&mut self.painter, &mut layer_painter);
@@ -1607,8 +1641,14 @@ cpp! {{
     {
         void operator()(QWidget *widget_ptr)
         {
-            widget_ptr->hide();
-            widget_ptr->deleteLater();
+            if (widget_ptr->parent()) {
+                // if the widget is a popup, use deleteLater (#4129)
+                widget_ptr->hide();
+                widget_ptr->deleteLater();
+            } else {
+                // Otherwise, use normal delete as it would otherwise cause crash at exit (#7570)
+                delete widget_ptr;
+            }
         }
     };
 }}
@@ -1673,12 +1713,13 @@ impl QtWindow {
     }
 
     /// Return the QWidget*
-    fn widget_ptr(&self) -> NonNull<()> {
+    pub fn widget_ptr(&self) -> NonNull<()> {
         unsafe { std::mem::transmute_copy::<QWidgetPtr, NonNull<_>>(&self.widget_ptr) }
     }
 
     fn paint_event(&self, painter: QPainterPtr) {
         let runtime_window = WindowInner::from_pub(&self.window);
+        let window_adapter = runtime_window.window_adapter();
         runtime_window.draw_contents(|components| {
             i_slint_core::animations::update_animations();
             let mut renderer = QtItemRenderer {
@@ -1693,6 +1734,7 @@ impl QtWindow {
                     component,
                     &mut renderer,
                     *origin,
+                    &window_adapter,
                 );
             }
 
@@ -1744,14 +1786,6 @@ impl QtWindow {
         self.window.dispatch_event(event);
 
         timer_event();
-    }
-
-    fn close_top_popup(&self) {
-        WindowInner::from_pub(&self.window).close_top_popup();
-    }
-
-    fn top_close_policy(&self) -> PopupClosePolicy {
-        WindowInner::from_pub(&self.window).top_close_policy()
     }
 
     fn window_state_event(&self) {
@@ -2248,7 +2282,7 @@ impl i_slint_core::renderer::RendererSealed for QtWindow {
                 return string.toUtf8().size();
             QTextLine textLine = layout.lineAt(line);
             int cur;
-            if (pos.x() > textLine.naturalTextWidth()) {
+            if (pos.x() >= textLine.naturalTextWidth()) {
                 cur = textLine.textStart() + textLine.textLength();
                 // cur is one past the last character of the line (eg, the \n or space).
                 // Go one back to get back on this line.
@@ -2398,7 +2432,7 @@ fn accessible_item(item: Option<ItemRc>) -> Option<ItemRc> {
         if c.is_accessible() {
             return Some(c);
         } else {
-            current = c.parent_item();
+            current = c.parent_item(ParentItemTraversalMode::StopAtPopups);
         }
     }
     None
@@ -2504,7 +2538,10 @@ thread_local! {
 /// Called by C++'s TimerHandler::timerEvent, or every time a timer might have been started
 pub(crate) fn timer_event() {
     i_slint_core::platform::update_timers_and_animations();
+    restart_timer();
+}
 
+pub(crate) fn restart_timer() {
     let timeout = i_slint_core::timers::TimerList::next_timeout().map(|instant| {
         let now = std::time::Instant::now();
         let instant: std::time::Instant = instant.into();
@@ -2637,7 +2674,7 @@ pub(crate) mod ffi {
 
     use super::QtWindow;
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_qt_get_widget(
         window_adapter: &i_slint_core::window::WindowAdapterRc,
     ) -> *mut c_void {

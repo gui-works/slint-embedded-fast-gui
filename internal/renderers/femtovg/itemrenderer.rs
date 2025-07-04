@@ -12,7 +12,8 @@ use i_slint_core::graphics::euclid::{self};
 use i_slint_core::graphics::rendering_metrics_collector::RenderingMetrics;
 use i_slint_core::graphics::{IntRect, Point, Size};
 use i_slint_core::item_rendering::{
-    CachedRenderingData, ItemCache, ItemRenderer, RenderBorderRectangle, RenderImage, RenderText,
+    CachedRenderingData, ItemCache, ItemRenderer, RenderBorderRectangle, RenderImage,
+    RenderRectangle, RenderText,
 };
 use i_slint_core::items::{
     self, Clip, FillRule, ImageRendering, ImageTiling, ItemRc, Layer, Opacity, RenderingResult,
@@ -22,31 +23,43 @@ use i_slint_core::lengths::{
     LogicalBorderRadius, LogicalLength, LogicalPoint, LogicalRect, LogicalSize, LogicalVector,
     RectLengths, ScaleFactor, SizeLengths,
 };
-use i_slint_core::window::WindowInner;
 use i_slint_core::{Brush, Color, ImageInner, SharedString};
+
+use crate::images::TextureImporter;
 
 use super::images::{Texture, TextureCacheKey};
 use super::PhysicalSize;
 use super::{fonts, PhysicalBorderRadius, PhysicalLength, PhysicalPoint, PhysicalRect};
 
-type FemtovgBoxShadowCache = BoxShadowCache<ItemGraphicsCacheEntry>;
+type FemtovgBoxShadowCache<R> = BoxShadowCache<ItemGraphicsCacheEntry<R>>;
 
-pub type Canvas = femtovg::Canvas<femtovg::renderer::OpenGl>;
-pub type CanvasRc = Rc<RefCell<Canvas>>;
+pub use femtovg::Canvas;
+pub type CanvasRc<R> = Rc<RefCell<Canvas<R>>>;
 
-#[derive(Clone)]
-pub enum ItemGraphicsCacheEntry {
-    Texture(Rc<Texture>),
+pub enum ItemGraphicsCacheEntry<R: femtovg::Renderer + TextureImporter> {
+    Texture(Rc<Texture<R>>),
     ColorizedImage {
         // This original image Rc is kept here to keep the image in the shared image cache, so that
         // changes to the colorization brush will not require re-uploading the image.
-        _original_image: Rc<Texture>,
-        colorized_image: Rc<Texture>,
+        _original_image: Rc<Texture<R>>,
+        colorized_image: Rc<Texture<R>>,
     },
 }
 
-impl ItemGraphicsCacheEntry {
-    fn as_texture(&self) -> &Rc<Texture> {
+impl<R: femtovg::Renderer + TextureImporter> Clone for ItemGraphicsCacheEntry<R> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Texture(arg0) => Self::Texture(arg0.clone()),
+            Self::ColorizedImage { _original_image, colorized_image } => Self::ColorizedImage {
+                _original_image: _original_image.clone(),
+                colorized_image: colorized_image.clone(),
+            },
+        }
+    }
+}
+
+impl<R: femtovg::Renderer + TextureImporter> ItemGraphicsCacheEntry<R> {
+    fn as_texture(&self) -> &Rc<Texture<R>> {
         match self {
             ItemGraphicsCacheEntry::Texture(image) => image,
             ItemGraphicsCacheEntry::ColorizedImage { colorized_image, .. } => colorized_image,
@@ -57,7 +70,7 @@ impl ItemGraphicsCacheEntry {
     }
 }
 
-pub(super) type ItemGraphicsCache = ItemCache<Option<ItemGraphicsCacheEntry>>;
+pub(super) type ItemGraphicsCache<R> = ItemCache<Option<ItemGraphicsCacheEntry<R>>>;
 
 const KAPPA90: f32 = 0.55228;
 
@@ -68,15 +81,15 @@ struct State {
     current_render_target: femtovg::RenderTarget,
 }
 
-pub struct GLItemRenderer<'a> {
-    graphics_cache: &'a ItemGraphicsCache,
-    texture_cache: &'a RefCell<super::images::TextureCache>,
-    box_shadow_cache: FemtovgBoxShadowCache,
-    canvas: CanvasRc,
+pub struct GLItemRenderer<'a, R: femtovg::Renderer + TextureImporter> {
+    graphics_cache: &'a ItemGraphicsCache<R>,
+    texture_cache: &'a RefCell<super::images::TextureCache<R>>,
+    box_shadow_cache: FemtovgBoxShadowCache<R>,
+    canvas: CanvasRc<R>,
     // Textures from layering or tiling that were scheduled for rendering where we can't delete the femtovg::ImageId yet
     // because that can only happen after calling `flush`. Otherwise femtovg ends up processing
     // `set_render_target` commands with image ids that have been deleted.
-    textures_to_delete_after_flush: RefCell<Vec<Rc<super::images::Texture>>>,
+    textures_to_delete_after_flush: RefCell<Vec<Rc<super::images::Texture<R>>>>,
     window: &'a i_slint_core::api::Window,
     scale_factor: ScaleFactor,
     /// track the state manually since femtovg don't have accessor for its state
@@ -133,7 +146,10 @@ fn adjust_rect_and_border_for_inner_drawing(
     rect.size -= PhysicalSize::from_lengths(*border_width, *border_width);
 }
 
-fn path_bounding_box(canvas: &CanvasRc, path: &femtovg::Path) -> euclid::default::Box2D<f32> {
+fn path_bounding_box<R: femtovg::Renderer>(
+    canvas: &CanvasRc<R>,
+    path: &femtovg::Path,
+) -> euclid::default::Box2D<f32> {
     // `canvas.path_bbox()` applies the current transform. However we're not interested in that, since
     // we operate in item local coordinates with the `path` parameter as well as the resulting
     // paint.
@@ -172,13 +188,20 @@ fn clip_path_for_rect_alike_item(
     rect_with_radius_to_path(clip_rect, radius)
 }
 
-impl<'a> GLItemRenderer<'a> {
+impl<'a, R: femtovg::Renderer + TextureImporter> GLItemRenderer<'a, R> {
     pub fn global_alpha_transparent(&self) -> bool {
         self.state.last().unwrap().global_alpha == 0.0
     }
+}
 
-    /// Draws a `Rectangle` using the `GLItemRenderer`.
-    pub fn draw_rect(&mut self, size: LogicalSize, brush: Brush) {
+impl<'a, R: femtovg::Renderer + TextureImporter> ItemRenderer for GLItemRenderer<'a, R> {
+    fn draw_rectangle(
+        &mut self,
+        rect: Pin<&dyn RenderRectangle>,
+        _: &ItemRc,
+        size: LogicalSize,
+        _cache: &CachedRenderingData,
+    ) {
         let geometry = PhysicalRect::from(size * self.scale_factor);
         if geometry.is_empty() {
             return;
@@ -188,7 +211,7 @@ impl<'a> GLItemRenderer<'a> {
         }
         // TODO: cache path in item to avoid re-tesselation
         let path = rect_to_path(geometry);
-        let paint = match self.brush_to_paint(brush, &path) {
+        let paint = match self.brush_to_paint(rect.background(), &path) {
             Some(paint) => paint,
             None => return,
         }
@@ -196,12 +219,6 @@ impl<'a> GLItemRenderer<'a> {
         // the extra stroke triangle strip around the edges
         .with_anti_alias(false);
         self.canvas.borrow_mut().fill_path(&path, &paint);
-    }
-}
-
-impl<'a> ItemRenderer for GLItemRenderer<'a> {
-    fn draw_rectangle(&mut self, rect: Pin<&items::Rectangle>, _: &ItemRc, size: LogicalSize) {
-        self.draw_rect(size, rect.background());
     }
 
     fn draw_border_rectangle(
@@ -284,6 +301,17 @@ impl<'a> ItemRenderer for GLItemRenderer<'a> {
         }
     }
 
+    fn draw_window_background(
+        &mut self,
+        rect: Pin<&dyn RenderRectangle>,
+        _self_rc: &ItemRc,
+        _size: LogicalSize,
+        _cache: &CachedRenderingData,
+    ) {
+        // register a dependency for the partial renderer's dirty tracker. The actual rendering is done earlier in SkiaRenderer.
+        let _ = rect.background();
+    }
+
     fn draw_image(
         &mut self,
         image: Pin<&dyn RenderImage>,
@@ -297,7 +325,7 @@ impl<'a> ItemRenderer for GLItemRenderer<'a> {
     fn draw_text(
         &mut self,
         text: Pin<&dyn RenderText>,
-        _: &ItemRc,
+        self_rc: &ItemRc,
         size: LogicalSize,
         _cache: &CachedRenderingData,
     ) {
@@ -315,11 +343,7 @@ impl<'a> ItemRenderer for GLItemRenderer<'a> {
         let string = text.text();
         let string = string.as_str();
         let font = fonts::FONT_CACHE.with(|cache| {
-            cache.borrow_mut().font(
-                text.font_request(WindowInner::from_pub(self.window)),
-                self.scale_factor,
-                &text.text(),
-            )
+            cache.borrow_mut().font(text.font_request(self_rc), self.scale_factor, &text.text())
         });
 
         let text_path = rect_to_path((size * self.scale_factor).into());
@@ -383,7 +407,7 @@ impl<'a> ItemRenderer for GLItemRenderer<'a> {
     fn draw_text_input(
         &mut self,
         text_input: Pin<&items::TextInput>,
-        _: &ItemRc,
+        self_rc: &ItemRc,
         size: LogicalSize,
     ) {
         let width = size.width_length() * self.scale_factor;
@@ -398,7 +422,7 @@ impl<'a> ItemRenderer for GLItemRenderer<'a> {
 
         let font = fonts::FONT_CACHE.with(|cache| {
             cache.borrow_mut().font(
-                text_input.font_request(&WindowInner::from_pub(self.window).window_adapter()),
+                text_input.font_request(self_rc),
                 self.scale_factor,
                 &text_input.text(),
             )
@@ -624,16 +648,25 @@ impl<'a> ItemRenderer for GLItemRenderer<'a> {
             }
         }
 
+        let anti_alias = path.anti_alias();
+
         let fill_paint = self.brush_to_paint(path.fill(), &femtovg_path).map(|mut fill_paint| {
             fill_paint.set_fill_rule(match path.fill_rule() {
                 FillRule::Nonzero => femtovg::FillRule::NonZero,
                 FillRule::Evenodd => femtovg::FillRule::EvenOdd,
             });
+            fill_paint.set_anti_alias(anti_alias);
             fill_paint
         });
 
         let border_paint = self.brush_to_paint(path.stroke(), &femtovg_path).map(|mut paint| {
             paint.set_line_width((path.stroke_width() * self.scale_factor).get());
+            paint.set_line_cap(match path.stroke_line_cap() {
+                items::LineCap::Butt => femtovg::LineCap::Butt,
+                items::LineCap::Round => femtovg::LineCap::Round,
+                items::LineCap::Square => femtovg::LineCap::Square,
+            });
+            paint.set_anti_alias(anti_alias);
             paint
         });
 
@@ -1078,11 +1111,11 @@ impl<'a> ItemRenderer for GLItemRenderer<'a> {
     }
 }
 
-impl<'a> GLItemRenderer<'a> {
+impl<'a, R: femtovg::Renderer + TextureImporter> GLItemRenderer<'a, R> {
     pub(super) fn new(
-        canvas: &CanvasRc,
-        graphics_cache: &'a ItemGraphicsCache,
-        texture_cache: &'a RefCell<super::images::TextureCache>,
+        canvas: &CanvasRc<R>,
+        graphics_cache: &'a ItemGraphicsCache<R>,
+        texture_cache: &'a RefCell<super::images::TextureCache<R>>,
         window: &'a i_slint_core::api::Window,
         width: u32,
         height: u32,
@@ -1112,7 +1145,7 @@ impl<'a> GLItemRenderer<'a> {
         &mut self,
         item_rc: &ItemRc,
         layer_logical_size_fn: &dyn Fn() -> LogicalSize,
-    ) -> Option<Rc<Texture>> {
+    ) -> Option<Rc<Texture<R>>> {
         let existing_layer_texture =
             self.graphics_cache.with_entry(item_rc, |cache_entry| match cache_entry {
                 Some(ItemGraphicsCacheEntry::Texture(texture)) => Some(texture.clone()),
@@ -1170,10 +1203,13 @@ impl<'a> GLItemRenderer<'a> {
                     current_render_target: layer_image.as_render_target(),
                 };
 
+                let window_adapter = self.window().window_adapter();
+
                 i_slint_core::item_rendering::render_item_children(
                     self,
                     item_rc.item_tree(),
                     item_rc.index() as isize,
+                    &window_adapter,
                 );
 
                 {
@@ -1223,11 +1259,11 @@ impl<'a> GLItemRenderer<'a> {
 
     fn colorize_image(
         &self,
-        original_cache_entry: ItemGraphicsCacheEntry,
+        original_cache_entry: ItemGraphicsCacheEntry<R>,
         colorize_brush: Brush,
         scaling: ImageRendering,
         tiling: (ImageTiling, ImageTiling),
-    ) -> ItemGraphicsCacheEntry {
+    ) -> ItemGraphicsCacheEntry<R> {
         if colorize_brush.is_transparent() {
             return original_cache_entry;
         };
@@ -1539,7 +1575,7 @@ impl<'a> GLItemRenderer<'a> {
                     path_width / 2.,
                     path_height / 2.,
                     0.,
-                    (path_width + path_height) / 4.,
+                    0.5 * (path_width * path_width + path_height * path_height).sqrt(),
                     stops,
                 )
             }

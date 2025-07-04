@@ -30,6 +30,10 @@ pub fn default_geometry(root_component: &Rc<Component>, diag: &mut BuildDiagnost
             if elem.borrow().repeated.is_some() {
                 return None;
             }
+            if elem.borrow().geometry_props.is_none() {
+                // Not an element with geometry, skip it
+                return None;
+            }
 
             // whether the width, or height, is filling the parent
             let (mut w100, mut h100) = (false, false);
@@ -189,7 +193,7 @@ fn gen_layout_info_prop(elem: &ElementRc, diag: &mut BuildDiagnostics) {
                     }
                     let explicit_constraints =
                         LayoutConstraints::new(c, diag, DiagnosticLevel::Error);
-                    let use_implicit_size = c.borrow().builtin_type().map_or(false, |b| {
+                    let use_implicit_size = c.borrow().builtin_type().is_some_and(|b| {
                         b.default_size_binding == DefaultSizeBinding::ImplicitSize
                     });
 
@@ -213,12 +217,12 @@ fn gen_layout_info_prop(elem: &ElementRc, diag: &mut BuildDiagnostics) {
     let li_v = crate::layout::create_new_prop(
         elem,
         SmolStr::new_static("layoutinfo-v"),
-        crate::typeregister::layout_info_type(),
+        crate::typeregister::layout_info_type().into(),
     );
     let li_h = crate::layout::create_new_prop(
         elem,
         SmolStr::new_static("layoutinfo-h"),
-        crate::typeregister::layout_info_type(),
+        crate::typeregister::layout_info_type().into(),
     );
     elem.borrow_mut().layout_info_prop = Some((li_h.clone(), li_v.clone()));
     let mut expr_h = implicit_layout_info_call(elem, Orientation::Horizontal);
@@ -303,7 +307,7 @@ fn merge_explicit_constraints(
             debug_assert!(!matches!(e, Expression::Invalid));
             values.insert(s.into(), e);
         }
-        *expr = Expression::CodeBlock([store, Expression::Struct { ty, values }].into());
+        *expr = Expression::CodeBlock([store, Expression::Struct { ty: s.clone(), values }].into());
     }
 }
 
@@ -353,7 +357,7 @@ fn fix_percent_size(
             parent = crate::object_tree::find_parent_element(&parent).unwrap_or(parent)
         }
         debug_assert_eq!(
-            parent.borrow().lookup_property(&property).property_type,
+            parent.borrow().lookup_property(property).property_type,
             Type::LogicalLength
         );
         let fill =
@@ -412,7 +416,7 @@ fn make_default_aspect_ratio_preserving_binding(
     missing_size_property: &'static str,
     given_size_property: &'static str,
 ) {
-    if elem.borrow().is_binding_set(&missing_size_property, false) {
+    if elem.borrow().is_binding_set(missing_size_property, false) {
         return;
     }
 
@@ -443,10 +447,7 @@ fn make_default_aspect_ratio_preserving_binding(
             Expression::StoreLocalVariable {
                 name: "image_implicit_size".into(),
                 value: Box::new(Expression::FunctionCall {
-                    function: Box::new(Expression::BuiltinFunctionReference(
-                        BuiltinFunction::ImageSize,
-                        None,
-                    )),
+                    function: BuiltinFunction::ImageSize.into(),
                     arguments: vec![Expression::PropertyReference(NamedReference::new(
                         elem,
                         SmolStr::new_static("source"),
@@ -482,7 +483,7 @@ fn maybe_center_in_parent(
     pos_prop: &'static str,
     size_prop: &'static str,
 ) {
-    if elem.borrow().is_binding_set(&pos_prop, false) {
+    if elem.borrow().is_binding_set(pos_prop, false) {
         return;
     }
 
@@ -506,7 +507,7 @@ fn adjust_image_clip_rect(elem: &ElementRc, builtin: &Rc<BuiltinElement>) {
 
     if builtin.native_class.properties.keys().any(|p| {
         elem.borrow().bindings.contains_key(p)
-            || elem.borrow().property_analysis.borrow().get(p).map_or(false, |a| a.is_used())
+            || elem.borrow().property_analysis.borrow().get(p).is_some_and(|a| a.is_used())
     }) {
         let source = NamedReference::new(elem, SmolStr::new_static("source"));
         let x = NamedReference::new(elem, SmolStr::new_static("source-clip-x"));
@@ -514,10 +515,7 @@ fn adjust_image_clip_rect(elem: &ElementRc, builtin: &Rc<BuiltinElement>) {
         let make_expr = |dim: &str, prop: NamedReference| Expression::BinaryExpression {
             lhs: Box::new(Expression::StructFieldAccess {
                 base: Box::new(Expression::FunctionCall {
-                    function: Box::new(Expression::BuiltinFunctionReference(
-                        BuiltinFunction::ImageSize,
-                        None,
-                    )),
+                    function: BuiltinFunction::ImageSize.into(),
                     arguments: vec![Expression::PropertyReference(source.clone())],
                     source_location: None,
                 }),

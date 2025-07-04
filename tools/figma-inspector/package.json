@@ -1,0 +1,47 @@
+{
+  "name": "slint.figma.plugin",
+  "private": true,
+  "version": "1.13.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite build --watch --mode dev",
+    "devcode": "vite build --watch --mode dev --config vite.config.code.ts",
+    "build": "vite build",
+    "buildcode": "vite build --config vite.config.code.ts",
+    "preview": "vite preview",
+    "hmr": "vite",
+    "zip": "cross-env MODE=zip vite build",
+    "check": "biome check",
+    "lint": "biome lint",
+    "lint:fix": "biome lint --fix",
+    "format": "biome format",
+    "format:fix": "biome format --write",
+    "spellcheck": "cspell --no-progress --gitignore --exclude 'archive/**' \"./**/*.{ts,tsx}\"",
+    "test": "vitest",
+    "type-check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "1.114.0",
+    "@types/jszip": "3.4.0",
+    "@types/node": "20.16.10",
+    "@types/react": "19.1.8",
+    "@types/react-dom": "19.1.6",
+    "@vitejs/plugin-react": "4.6.0",
+    "cross-env": "7.0.3",
+    "jszip": "3.10.1",
+    "shiki": "3.7.0",
+    "typescript": "5.8.3",
+    "vite": "7.0.0",
+    "vite-figma-plugin": "0.0.24",
+    "vite-plugin-singlefile": "2.2.0",
+    "vitest": "3.2.4"
+  },
+  "dependencies": {
+    "figma-kit": "1.0.0-beta.19",
+    "html-react-parser": "5.2.5",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-rnd": "10.5.2",
+    "zustand": "5.0.6"
+  }
+}

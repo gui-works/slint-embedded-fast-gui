@@ -26,6 +26,10 @@ export component ComboBox {
 
     accessible-role: combobox;
     accessible-enabled: root.enabled;
+    accessible-expandable: true;
+    accessible-expanded: base.popup-has-focus;
+    accessible-value <=> root.current-value;
+    accessible-action-expand => { base.show-popup(); }
 
     states [
         disabled when !root.enabled : {
@@ -77,6 +81,7 @@ export component ComboBox {
                 font-weight: FluentFontSettings.body.font-weight;
                 color: FluentPalette.control-foreground;
                 text: root.current-value;
+                accessible-role: none;
             }
 
             icon := Image {
@@ -84,6 +89,7 @@ export component ComboBox {
                 width: 12px;
                 source: Icons.dropdown;
                 y: 2px;
+                accessible-role: none;
 
                 animate colorize { duration: 150ms; }
             }
@@ -102,13 +108,10 @@ export component ComboBox {
         y: -4px;
         width: root.width;
         height: root.visible-items * FluentSizeSettings.item-height +  2 * root.popup-padding;
+        forward-focus: inner-fs;
 
-        FocusScope {
-            init => {
-                self.focus();
-                base.popup-has-focus = true;
-            }
-            changed has-focus => {
+        inner-fs := FocusScope {
+            focus-changed-event => {
                 base.popup-has-focus = self.has-focus;
             }
             key-pressed(event) => {

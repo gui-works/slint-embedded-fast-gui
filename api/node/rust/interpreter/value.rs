@@ -109,11 +109,20 @@ pub fn to_value(env: &Env, unknown: JsUnknown, typ: &Type) -> Result<Value> {
         Type::Color => {
             match unknown.get_type() {
                 Ok(ValueType::String) => {
-                    return Ok(unknown.coerce_to_string().and_then(|str| string_to_brush(str))?);
+                    return unknown.coerce_to_string().and_then(string_to_brush)
                 }
                 Ok(ValueType::Object) => {
-                    if let Ok(rgb_color) = unknown.coerce_to_object() {
-                        return brush_from_color(rgb_color);
+                    if let Ok(rgb_color_or_brush) = unknown.coerce_to_object() {
+                        if let Some(direct_brush) =
+                            rgb_color_or_brush.get("brush").ok().flatten().and_then(
+                                |maybe_slintbrush| {
+                                    env.get_value_external::<Brush>(&maybe_slintbrush).ok()
+                                },
+                            )
+                        {
+                            return Ok(Value::Brush(direct_brush.color().into()));
+                        }
+                        return brush_from_color(rgb_color_or_brush);
                     }
                 }
                 _ => {}
@@ -125,7 +134,7 @@ pub fn to_value(env: &Env, unknown: JsUnknown, typ: &Type) -> Result<Value> {
         Type::Brush => {
             match unknown.get_type() {
                 Ok(ValueType::String) => {
-                    return Ok(unknown.coerce_to_string().and_then(|str| string_to_brush(str))?);
+                    return unknown.coerce_to_string().and_then(string_to_brush);
                 }
                 Ok(ValueType::Object) => {
                     if let Ok(obj) = unknown.coerce_to_object() {
@@ -198,8 +207,7 @@ pub fn to_value(env: &Env, unknown: JsUnknown, typ: &Type) -> Result<Value> {
                     let expected_size: usize = (width as usize) * (height as usize) * BPP;
                     if actual_size != expected_size {
                         return Err(napi::Error::from_reason(format!(
-                            "data property does not have the correct size; expected {} (width) * {} (height) * {} = {}; got {}",
-                            width, height, BPP, actual_size, expected_size
+                            "data property does not have the correct size; expected {width} (width) * {height} (height) * {BPP} = {actual_size}; got {expected_size}"
                         )));
                     }
 
@@ -244,8 +252,7 @@ pub fn to_value(env: &Env, unknown: JsUnknown, typ: &Type) -> Result<Value> {
                     vec.push(to_value(
                         env,
                         array.get(i)?.ok_or(napi::Error::from_reason(format!(
-                            "Cannot access array element at index {}",
-                            i
+                            "Cannot access array element at index {i}"
                         )))?,
                         a,
                     )?);
@@ -255,7 +262,7 @@ pub fn to_value(env: &Env, unknown: JsUnknown, typ: &Type) -> Result<Value> {
                 )))))
             } else {
                 let rust_model =
-                    unknown.coerce_to_object().and_then(|obj| js_into_rust_model(env, &obj, &a))?;
+                    unknown.coerce_to_object().and_then(|obj| js_into_rust_model(env, &obj, a))?;
                 Ok(Value::Model(rust_model))
             }
         }
@@ -279,7 +286,7 @@ pub fn to_value(env: &Env, unknown: JsUnknown, typ: &Type) -> Result<Value> {
         | Type::InferredCallback
         | Type::Function { .. }
         | Type::Callback { .. }
-        | Type::ComponentFactory { .. }
+        | Type::ComponentFactory
         | Type::Easing
         | Type::PathData
         | Type::LayoutCache
@@ -294,7 +301,7 @@ fn string_to_brush(js_string: JsString) -> Result<Value> {
         .parse::<css_color_parser2::Color>()
         .map_err(|_| napi::Error::from_reason(format!("Could not convert {string} to Brush.")))?;
 
-    Ok(Value::Brush(Brush::from(Color::from_argb_u8((c.a * 255.) as u8, c.r, c.g, c.b)).into()))
+    Ok(Value::Brush(Brush::from(Color::from_argb_u8((c.a * 255.) as u8, c.r, c.g, c.b))))
 }
 
 fn brush_from_color(rgb_color: Object) -> Result<Value> {
@@ -308,10 +315,10 @@ fn brush_from_color(rgb_color: Object) -> Result<Value> {
         return Err(Error::from_reason("A channel of Color cannot be negative"));
     }
 
-    return Ok(Value::Brush(Brush::SolidColor(Color::from_argb_u8(
+    Ok(Value::Brush(Brush::SolidColor(Color::from_argb_u8(
         alpha as u8,
         red as u8,
         green as u8,
         blue as u8,
-    ))));
+    ))))
 }

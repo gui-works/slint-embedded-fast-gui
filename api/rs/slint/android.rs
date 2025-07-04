@@ -15,11 +15,11 @@
 //! # Example
 //!
 //! This is a basic example of an Android application.
-//! Do not forget the `#[no_mangle]`
+//! Do not forget the `#[unsafe(no_mangle)]`
 //!
 //! ```rust
 //! # #[cfg(target_os = "android")]
-//! #[no_mangle]
+//! #[unsafe(no_mangle)]
 //! fn android_main(app: slint::android::AndroidApp) {
 //!     slint::android::init(app).unwrap();
 //!
@@ -68,7 +68,7 @@
 //! ```sh
 //! cargo install cargo-apk
 //! ```
-//!  
+//!
 //! Build and run your application with the following command:
 //!
 //! ```sh
@@ -113,9 +113,14 @@ use crate::platform::SetPlatformError;
 ///
 /// See also [`init_with_event_listener`]
 pub fn init(app: android_activity::AndroidApp) -> Result<(), SetPlatformError> {
-    crate::platform::set_platform(Box::new(i_slint_backend_android_activity::AndroidPlatform::new(
-        app,
-    )))
+    #[cfg(not(target_os = "android"))]
+    unreachable!();
+    #[cfg(target_os = "android")]
+    {
+        crate::platform::set_platform(Box::new(
+            i_slint_backend_android_activity::AndroidPlatform::new(app),
+        ))
+    }
 }
 
 /// Similar to [`init()`], which allow to listen to android-activity's event
@@ -128,7 +133,7 @@ pub fn init(app: android_activity::AndroidApp) -> Result<(), SetPlatformError> {
 ///
 /// ```rust
 /// # #[cfg(target_os = "android")]
-/// #[no_mangle]
+/// #[unsafe(no_mangle)]
 /// fn android_main(app: slint::android_activity::AndroidApp) {
 ///     slint::android_init_with_event_listener(
 ///        app,
@@ -145,7 +150,14 @@ pub fn init_with_event_listener(
     app: android_activity::AndroidApp,
     listener: impl Fn(&android_activity::PollEvent<'_>) + 'static,
 ) -> Result<(), SetPlatformError> {
-    crate::platform::set_platform(Box::new(
-        i_slint_backend_android_activity::AndroidPlatform::new_with_event_listener(app, listener),
-    ))
+    #[cfg(not(target_os = "android"))]
+    unreachable!();
+    #[cfg(target_os = "android")]
+    {
+        crate::platform::set_platform(Box::new(
+            i_slint_backend_android_activity::AndroidPlatform::new_with_event_listener(
+                app, listener,
+            ),
+        ))
+    }
 }

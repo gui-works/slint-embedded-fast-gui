@@ -7,31 +7,42 @@
 
 extern crate alloc;
 
-use event_loop::CustomEvent;
-use i_slint_core::graphics::{RequestedGraphicsAPI, RequestedOpenGLVersion};
-use i_slint_core::platform::EventLoopProxy;
+use event_loop::{CustomEvent, EventLoopState};
+use i_slint_core::api::EventLoopError;
+use i_slint_core::graphics::RequestedGraphicsAPI;
+use i_slint_core::platform::{EventLoopProxy, PlatformError};
 use i_slint_core::window::WindowAdapter;
 use renderer::WinitCompatibleRenderer;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
-#[cfg(not(target_arch = "wasm32"))]
 use std::rc::Weak;
+use winit::event_loop::ActiveEventLoop;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod clipboard;
 mod drag_resize_window;
 mod winitwindowadapter;
-
-use i_slint_core::platform::PlatformError;
 use winitwindowadapter::*;
 pub(crate) mod event_loop;
+mod frame_throttle;
 
 /// Re-export of the winit crate.
 pub use winit;
 
 /// Internal type used by the winit backend for thread communication and window system updates.
+///
+/// See also [`EventLoopBuilder`]
 #[non_exhaustive]
 #[derive(Debug)]
-pub struct SlintUserEvent(CustomEvent);
+pub struct SlintEvent(CustomEvent);
+
+#[i_slint_core_macros::slint_doc]
+/// Convenience alias for the event loop builder used by Slint.
+///
+/// It can be used to configure the event loop with
+/// [`slint::BackendSelector::with_winit_event_loop_builder()`](slint:rust:slint/struct.BackendSelector.html#method.with_winit_event_loop_builder)
+pub type EventLoopBuilder = winit::event_loop::EventLoopBuilder<SlintEvent>;
 
 /// Returned by callbacks passed to [`Window::on_winit_window_event`](WinitWindowAccessor::on_winit_window_event)
 /// to determine if winit events should propagate to the Slint event loop.
@@ -43,9 +54,10 @@ pub enum WinitWindowEventResult {
 }
 
 mod renderer {
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     use i_slint_core::{graphics::RequestedGraphicsAPI, platform::PlatformError};
+    use winit::event_loop::ActiveEventLoop;
 
     pub trait WinitCompatibleRenderer {
         fn render(&self, window: &i_slint_core::api::Window) -> Result<(), PlatformError>;
@@ -59,14 +71,16 @@ mod renderer {
         // Got winit::Event::Resumed
         fn resume(
             &self,
+            active_event_loop: &ActiveEventLoop,
             window_attributes: winit::window::WindowAttributes,
             requested_graphics_api: Option<RequestedGraphicsAPI>,
-        ) -> Result<Rc<winit::window::Window>, PlatformError>;
-
-        fn is_suspended(&self) -> bool;
+        ) -> Result<Arc<winit::window::Window>, PlatformError>;
     }
 
-    #[cfg(feature = "renderer-femtovg")]
+    #[cfg(any(
+        all(feature = "renderer-femtovg", supports_opengl),
+        feature = "renderer-femtovg-wgpu"
+    ))]
     pub(crate) mod femtovg;
     #[cfg(enable_skia_renderer)]
     pub(crate) mod skia;
@@ -77,23 +91,13 @@ mod renderer {
 
 #[cfg(enable_accesskit)]
 mod accesskit;
+#[cfg(muda)]
+mod muda;
+#[cfg(not(use_winit_theme))]
+mod xdg_color_scheme;
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod wasm_input_helper;
-
-/// Create an open GL renderer for the HTML canvas element with the given `canvas_id`
-#[cfg(all(target_arch = "wasm32", feature = "renderer-femtovg"))]
-pub fn create_gl_window_with_canvas_id(
-    canvas_id: &str,
-) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-    let attrs = WinitWindowAdapter::window_attributes(canvas_id)?;
-    let adapter = WinitWindowAdapter::new(
-        renderer::femtovg::GlutinFemtoVGRenderer::new_suspended(),
-        attrs,
-        None,
-    )?;
-    Ok(adapter)
-}
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "renderer-femtovg")] {
@@ -107,14 +111,18 @@ cfg_if::cfg_if! {
     }
 }
 
-fn default_renderer_factory() -> Box<dyn WinitCompatibleRenderer> {
+fn default_renderer_factory(
+    shared_backend_data: &Rc<SharedBackendData>,
+) -> Box<dyn WinitCompatibleRenderer> {
     cfg_if::cfg_if! {
         if #[cfg(enable_skia_renderer)] {
-            renderer::skia::WinitSkiaRenderer::new_suspended()
-        } else if #[cfg(feature = "renderer-femtovg")] {
-            renderer::femtovg::GlutinFemtoVGRenderer::new_suspended()
+            renderer::skia::WinitSkiaRenderer::new_suspended(shared_backend_data)
+        } else if #[cfg(feature = "renderer-femtovg-wgpu")] {
+            renderer::femtovg::WGPUFemtoVGRenderer::new_suspended(shared_backend_data)
+        } else if #[cfg(all(feature = "renderer-femtovg", supports_opengl))] {
+            renderer::femtovg::GlutinFemtoVGRenderer::new_suspended(shared_backend_data)
         } else if #[cfg(feature = "renderer-software")] {
-            renderer::sw::WinitSoftwareRenderer::new_suspended()
+            renderer::sw::WinitSoftwareRenderer::new_suspended(shared_backend_data)
         } else {
             compile_error!("Please select a feature to build with the winit backend: `renderer-femtovg`, `renderer-skia`, `renderer-skia-opengl`, `renderer-skia-vulkan` or `renderer-software`");
         }
@@ -122,8 +130,10 @@ fn default_renderer_factory() -> Box<dyn WinitCompatibleRenderer> {
 }
 
 fn try_create_window_with_fallback_renderer(
+    shared_backend_data: &Rc<SharedBackendData>,
     attrs: winit::window::WindowAttributes,
-    _proxy: &winit::event_loop::EventLoopProxy<SlintUserEvent>,
+    _proxy: &winit::event_loop::EventLoopProxy<SlintEvent>,
+    #[cfg(all(muda, target_os = "macos"))] muda_enable_default_menu_bar: bool,
 ) -> Option<Rc<WinitWindowAdapter>> {
     [
         #[cfg(any(
@@ -132,7 +142,7 @@ fn try_create_window_with_fallback_renderer(
             feature = "renderer-skia-vulkan"
         ))]
         renderer::skia::WinitSkiaRenderer::new_suspended,
-        #[cfg(feature = "renderer-femtovg")]
+        #[cfg(all(feature = "renderer-femtovg", supports_opengl))]
         renderer::femtovg::GlutinFemtoVGRenderer::new_suspended,
         #[cfg(feature = "renderer-software")]
         renderer::sw::WinitSoftwareRenderer::new_suspended,
@@ -140,11 +150,14 @@ fn try_create_window_with_fallback_renderer(
     .into_iter()
     .find_map(|renderer_factory| {
         WinitWindowAdapter::new(
-            renderer_factory(),
+            shared_backend_data.clone(),
+            renderer_factory(&shared_backend_data),
             attrs.clone(),
             None,
-            #[cfg(enable_accesskit)]
+            #[cfg(any(enable_accesskit, muda))]
             _proxy.clone(),
+            #[cfg(all(muda, target_os = "macos"))]
+            muda_enable_default_menu_bar,
         )
         .ok()
     })
@@ -159,6 +172,72 @@ pub const HAS_NATIVE_STYLE: bool = false;
 #[doc(hidden)]
 pub mod native_widgets {}
 
+/// Use this trait to intercept events from winit.
+///
+/// It imitates [`winit::application::ApplicationHandler`] with two changes:
+///   - All functions are invoked before Slint sees them. Use the [`WinitWindowEventResult`] return value to
+///     optionally prevent Slint from seeing the event.
+///   - The [`Self::window_event()`] function has additional parameters to provide access to the Slint Window and
+///     Winit window, if applicable.
+#[allow(unused_variables)]
+pub trait CustomApplicationHandler {
+    /// Re-implement to intercept the [`ApplicationHandler::resumed()`](winit::application::ApplicationHandler::resumed()) event.
+    fn resumed(&mut self, _event_loop: &ActiveEventLoop) -> WinitWindowEventResult {
+        WinitWindowEventResult::Propagate
+    }
+
+    /// Re-implement to intercept the [`ApplicationHandler::window_event()`](winit::application::ApplicationHandler::window_event()) event.
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: winit::window::WindowId,
+        winit_window: Option<&winit::window::Window>,
+        slint_window: Option<&i_slint_core::api::Window>,
+        event: &winit::event::WindowEvent,
+    ) -> WinitWindowEventResult {
+        WinitWindowEventResult::Propagate
+    }
+
+    /// Re-implement to intercept the [`ApplicationHandler::new_events()`](winit::application::ApplicationHandler::new_events()) event.
+    fn new_events(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        cause: winit::event::StartCause,
+    ) -> WinitWindowEventResult {
+        WinitWindowEventResult::Propagate
+    }
+
+    /// Re-implement to intercept the [`ApplicationHandler::device_event()`](winit::application::ApplicationHandler::device_event()) event.
+    fn device_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        device_id: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    ) -> WinitWindowEventResult {
+        WinitWindowEventResult::Propagate
+    }
+
+    /// Re-implement to intercept the [`ApplicationHandler::about_to_wait()`](winit::application::ApplicationHandler::about_to_wait()) event.
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) -> WinitWindowEventResult {
+        WinitWindowEventResult::Propagate
+    }
+
+    /// Re-implement to intercept the [`ApplicationHandler::suspended()`](winit::application::ApplicationHandler::suspended()) event.
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) -> WinitWindowEventResult {
+        WinitWindowEventResult::Propagate
+    }
+
+    /// Re-implement to intercept the [`ApplicationHandler::exiting()`](winit::application::ApplicationHandler::exiting()) event.
+    fn exiting(&mut self, event_loop: &ActiveEventLoop) -> WinitWindowEventResult {
+        WinitWindowEventResult::Propagate
+    }
+
+    /// Re-implement to intercept the [`ApplicationHandler::memory_warning()`](winit::application::ApplicationHandler::memory_warning()) event.
+    fn memory_warning(&mut self, event_loop: &ActiveEventLoop) -> WinitWindowEventResult {
+        WinitWindowEventResult::Propagate
+    }
+}
+
 /// Use the BackendBuilder to configure the properties of the Winit Backend before creating it.
 /// Create the builder using [`Backend::builder()`], then configure it for example with [`Self::with_renderer_name`],
 /// and build the backend using [`Self::build`].
@@ -168,7 +247,12 @@ pub struct BackendBuilder {
     window_attributes_hook:
         Option<Box<dyn Fn(winit::window::WindowAttributes) -> winit::window::WindowAttributes>>,
     renderer_name: Option<String>,
-    event_loop_builder: Option<winit::event_loop::EventLoopBuilder<SlintUserEvent>>,
+    event_loop_builder: Option<EventLoopBuilder>,
+    #[cfg(all(muda, target_os = "macos"))]
+    muda_enable_default_menu_bar_bar: bool,
+    #[cfg(target_family = "wasm")]
+    spawn_event_loop: bool,
+    custom_application_handler: Option<Box<dyn CustomApplicationHandler>>,
 }
 
 impl BackendBuilder {
@@ -212,11 +296,41 @@ impl BackendBuilder {
     /// Configures this builder to use the specified event loop builder when creating the event
     /// loop during a subsequent call to [`Self::build`].
     #[must_use]
-    pub fn with_event_loop_builder(
-        mut self,
-        event_loop_builder: winit::event_loop::EventLoopBuilder<SlintUserEvent>,
-    ) -> Self {
+    pub fn with_event_loop_builder(mut self, event_loop_builder: EventLoopBuilder) -> Self {
         self.event_loop_builder = Some(event_loop_builder);
+        self
+    }
+
+    /// Configures this builder to enable or disable the default menu bar.
+    /// By default, the menu bar is provided by Slint. Set this to false
+    /// if you're providing your own menu bar.
+    /// Note that an application provided menu bar will be overriden by a `MenuBar`
+    /// declared in Slint code.
+    #[must_use]
+    #[cfg(all(muda, target_os = "macos"))]
+    pub fn with_default_menu_bar(mut self, enable: bool) -> Self {
+        self.muda_enable_default_menu_bar_bar = enable;
+        self
+    }
+
+    #[cfg(target_family = "wasm")]
+    /// Configures this builder to spawn the event loop using [`winit::platform::web::EventLoopExtWebSys::spawn()`]
+    /// run `run_event_loop()` is called.
+    pub fn with_spawn_event_loop(mut self, enable: bool) -> Self {
+        self.spawn_event_loop = enable;
+        self
+    }
+
+    /// Configures this builder to use the specified [`CustomApplicationHandler`].
+    ///
+    /// This allow application developer to intercept events from winit.
+    /// Similar to [`winit::application::ApplicationHandler`].
+    #[must_use]
+    pub fn with_custom_application_handler(
+        mut self,
+        handler: impl CustomApplicationHandler + 'static,
+    ) -> Self {
+        self.custom_application_handler = Some(Box::new(handler));
         self
     }
 
@@ -233,33 +347,52 @@ impl BackendBuilder {
     /// slint::platform::set_platform(Box::new(backend));
     /// ```
     pub fn build(self) -> Result<Backend, PlatformError> {
-        let event_loop_builder =
+        #[allow(unused_mut)]
+        let mut event_loop_builder =
             self.event_loop_builder.unwrap_or_else(winit::event_loop::EventLoop::with_user_event);
+
+        // Never use winit's menu bar. Either we provide one ourselves with muda, or
+        // the user provides one.
+        #[cfg(all(feature = "muda", target_os = "macos"))]
+        winit::platform::macos::EventLoopBuilderExtMacOS::with_default_menu(
+            &mut event_loop_builder,
+            false,
+        );
 
         // Initialize the winit event loop and propagate errors if for example `DISPLAY` or `WAYLAND_DISPLAY` isn't set.
 
-        let nre = crate::event_loop::NotRunningEventLoop::new(Some(event_loop_builder))?;
-
-        let proxy = nre.instance.create_proxy();
-
-        #[cfg(not(target_arch = "wasm32"))]
-        let clipboard = Rc::downgrade(&nre.clipboard);
-
-        crate::event_loop::MAYBE_LOOP_INSTANCE.with(|loop_instance| {
-            *loop_instance.borrow_mut() = Some(nre);
-        });
+        let shared_data = Rc::new(SharedBackendData::new(event_loop_builder)?);
 
         let renderer_factory_fn = match (
             self.renderer_name.as_deref(),
             self.requested_graphics_api.as_ref(),
         ) {
-            #[cfg(feature = "renderer-femtovg")]
-            (Some("gl"), maybe_graphics_api @ _) | (Some("femtovg"), maybe_graphics_api @ _) => {
+            #[cfg(any(
+                all(feature = "renderer-femtovg", supports_opengl),
+                feature = "renderer-femtovg-wgpu"
+            ))]
+            (Some("gl"), maybe_graphics_api) | (Some("femtovg"), maybe_graphics_api) => {
                 // If a graphics API was requested, double check that it's GL. FemtoVG doesn't support Metal, etc.
                 if let Some(api) = maybe_graphics_api {
-                    RequestedOpenGLVersion::try_from(api.clone())?;
+                    i_slint_core::graphics::RequestedOpenGLVersion::try_from(api.clone())?;
                 }
                 renderer::femtovg::GlutinFemtoVGRenderer::new_suspended
+            }
+            #[cfg(feature = "renderer-femtovg-wgpu")]
+            (Some("femtovg-wgpu"), maybe_graphics_api) => {
+                if !maybe_graphics_api.is_some_and(|_api| {
+                    #[cfg(feature = "unstable-wgpu-24")]
+                    if matches!(_api, RequestedGraphicsAPI::WGPU24(..)) {
+                        return true;
+                    }
+                    false
+                }) {
+                    return Err(
+                        "The FemtoVG WGPU renderer only supports the WGPU24 graphics API selection"
+                            .into(),
+                    );
+                }
+                renderer::femtovg::WGPUFemtoVGRenderer::new_suspended
             }
             #[cfg(enable_skia_renderer)]
             (Some("skia"), maybe_graphics_api) => {
@@ -269,7 +402,7 @@ impl BackendBuilder {
             (Some("skia-opengl"), maybe_graphics_api @ _) => {
                 // If a graphics API was requested, double check that it's GL. FemtoVG doesn't support Metal, etc.
                 if let Some(api) = maybe_graphics_api {
-                    RequestedOpenGLVersion::try_from(api.clone())?;
+                    i_slint_core::graphics::RequestedOpenGLVersion::try_from(api.clone())?;
                 }
                 renderer::skia::WinitSkiaRenderer::new_opengl_suspended
             }
@@ -285,21 +418,24 @@ impl BackendBuilder {
             (Some(renderer_name), _) => {
                 if self.allow_fallback {
                     eprintln!(
-                        "slint winit: unrecognized renderer {}, falling back to {}",
-                        renderer_name, DEFAULT_RENDERER_NAME
+                        "slint winit: unrecognized renderer {renderer_name}, falling back to {DEFAULT_RENDERER_NAME}"
                     );
                     default_renderer_factory
                 } else {
                     return Err(PlatformError::NoPlatform);
                 }
             }
+            #[cfg(feature = "unstable-wgpu-24")]
+            (None, Some(RequestedGraphicsAPI::WGPU24(..))) => {
+                renderer::femtovg::WGPUFemtoVGRenderer::new_suspended
+            }
             (None, Some(_requested_graphics_api)) => {
                 cfg_if::cfg_if! {
                     if #[cfg(enable_skia_renderer)] {
                         renderer::skia::WinitSkiaRenderer::factory_for_graphics_api(Some(_requested_graphics_api))?
-                    } else if #[cfg(feature = "renderer-femtovg")] {
+                    } else if #[cfg(all(feature = "renderer-femtovg", supports_opengl))] {
                         // If a graphics API was requested, double check that it's GL. FemtoVG doesn't support Metal, etc.
-                        RequestedOpenGLVersion::try_from(_requested_graphics_api.clone())?;
+                        i_slint_core::graphics::RequestedOpenGLVersion::try_from(_requested_graphics_api.clone())?;
                         renderer::femtovg::GlutinFemtoVGRenderer::new_suspended
                     } else {
                         return Err(format!("Graphics API use requested by the compile-time enabled renderers don't support that").into())
@@ -313,10 +449,134 @@ impl BackendBuilder {
             renderer_factory_fn,
             event_loop_state: Default::default(),
             window_attributes_hook: self.window_attributes_hook,
-            #[cfg(not(target_arch = "wasm32"))]
-            clipboard: clipboard.into(),
-            proxy,
+            shared_data,
+            #[cfg(all(muda, target_os = "macos"))]
+            muda_enable_default_menu_bar_bar: self.muda_enable_default_menu_bar_bar,
+            #[cfg(target_family = "wasm")]
+            spawn_event_loop: self.spawn_event_loop,
+            custom_application_handler: self.custom_application_handler.into(),
         })
+    }
+}
+
+pub(crate) struct SharedBackendData {
+    #[cfg(enable_skia_renderer)]
+    skia_context: i_slint_renderer_skia::SkiaSharedContext,
+    active_windows: RefCell<HashMap<winit::window::WindowId, Weak<WinitWindowAdapter>>>,
+    /// List of visible windows that have been created when without the event loop and
+    /// need to be mapped to a winit Window as soon as the event loop becomes active.
+    inactive_windows: RefCell<Vec<Weak<WinitWindowAdapter>>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    clipboard: std::cell::RefCell<clipboard::ClipboardPair>,
+    not_running_event_loop: RefCell<Option<winit::event_loop::EventLoop<SlintEvent>>>,
+    event_loop_proxy: winit::event_loop::EventLoopProxy<SlintEvent>,
+    is_wayland: bool,
+}
+
+impl SharedBackendData {
+    fn new(mut builder: EventLoopBuilder) -> Result<Self, PlatformError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        use raw_window_handle::HasDisplayHandle;
+
+        #[cfg(all(unix, not(target_vendor = "apple")))]
+        {
+            #[cfg(feature = "wayland")]
+            {
+                use winit::platform::wayland::EventLoopBuilderExtWayland;
+                builder.with_any_thread(true);
+            }
+            #[cfg(feature = "x11")]
+            {
+                use winit::platform::x11::EventLoopBuilderExtX11;
+                builder.with_any_thread(true);
+
+                // Under WSL, the compositor sometimes crashes. Since we cannot reconnect after the compositor
+                // was restarted, the application panics. This does not happen when using XWayland. Therefore,
+                // when running under WSL, try to connect to X11 instead.
+                #[cfg(feature = "wayland")]
+                if std::fs::metadata("/proc/sys/fs/binfmt_misc/WSLInterop").is_ok()
+                    || std::fs::metadata("/run/WSL").is_ok()
+                {
+                    builder.with_x11();
+                }
+            }
+        }
+        #[cfg(target_family = "windows")]
+        {
+            use winit::platform::windows::EventLoopBuilderExtWindows;
+            builder.with_any_thread(true);
+        }
+
+        let event_loop =
+            builder.build().map_err(|e| format!("Error initializing winit event loop: {e}"))?;
+
+        cfg_if::cfg_if! {
+            if #[cfg(all(unix, not(target_vendor = "apple"), feature = "wayland"))] {
+                use winit::platform::wayland::EventLoopExtWayland;
+                let is_wayland = event_loop.is_wayland();
+            } else {
+                let is_wayland = false;
+            }
+        }
+
+        let event_loop_proxy = event_loop.create_proxy();
+        #[cfg(not(target_arch = "wasm32"))]
+        let clipboard = crate::clipboard::create_clipboard(
+            &event_loop
+                .display_handle()
+                .map_err(|display_err| PlatformError::OtherError(display_err.into()))?,
+        );
+        Ok(Self {
+            #[cfg(enable_skia_renderer)]
+            skia_context: i_slint_renderer_skia::SkiaSharedContext::default(),
+            active_windows: Default::default(),
+            inactive_windows: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            clipboard: RefCell::new(clipboard),
+            not_running_event_loop: RefCell::new(Some(event_loop)),
+            event_loop_proxy,
+            is_wayland,
+        })
+    }
+
+    pub fn register_window(&self, id: winit::window::WindowId, window: Rc<WinitWindowAdapter>) {
+        self.active_windows.borrow_mut().insert(id, Rc::downgrade(&window));
+    }
+
+    pub fn register_inactive_window(&self, window: Rc<WinitWindowAdapter>) {
+        self.inactive_windows.borrow_mut().push(Rc::downgrade(&window));
+    }
+
+    pub fn unregister_window(&self, id: Option<winit::window::WindowId>) {
+        if let Some(id) = id {
+            self.active_windows.borrow_mut().remove(&id);
+        } else {
+            // Use this opportunity of a Window being removed to tidy up.
+            self.inactive_windows
+                .borrow_mut()
+                .retain(|inactive_weak_window| inactive_weak_window.strong_count() > 0)
+        }
+    }
+
+    pub fn create_inactive_windows(
+        &self,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+    ) -> Result<(), PlatformError> {
+        let mut inactive_windows = self.inactive_windows.take();
+        let mut result = Ok(());
+        while let Some(window_weak) = inactive_windows.pop() {
+            if let Some(err) = window_weak.upgrade().and_then(|w| w.ensure_window(event_loop).err())
+            {
+                result = Err(err);
+                break;
+            }
+        }
+        self.inactive_windows.borrow_mut().extend(inactive_windows);
+        result
+    }
+
+    pub fn window_by_id(&self, id: winit::window::WindowId) -> Option<Rc<WinitWindowAdapter>> {
+        self.active_windows.borrow().get(&id).and_then(|weakref| weakref.upgrade())
     }
 }
 
@@ -331,9 +591,10 @@ impl BackendBuilder {
 /// ```
 pub struct Backend {
     requested_graphics_api: Option<RequestedGraphicsAPI>,
-    renderer_factory_fn: fn() -> Box<dyn WinitCompatibleRenderer>,
-    event_loop_state: std::cell::RefCell<Option<crate::event_loop::EventLoopState>>,
-    proxy: winit::event_loop::EventLoopProxy<SlintUserEvent>,
+    renderer_factory_fn: fn(&Rc<SharedBackendData>) -> Box<dyn WinitCompatibleRenderer>,
+    event_loop_state: RefCell<Option<crate::event_loop::EventLoopState>>,
+    shared_data: Rc<SharedBackendData>,
+    custom_application_handler: RefCell<Option<Box<dyn crate::CustomApplicationHandler>>>,
 
     /// This hook is called before a Window is created.
     ///
@@ -351,8 +612,11 @@ pub struct Backend {
     pub window_attributes_hook:
         Option<Box<dyn Fn(winit::window::WindowAttributes) -> winit::window::WindowAttributes>>,
 
-    #[cfg(not(target_arch = "wasm32"))]
-    clipboard: Weak<std::cell::RefCell<clipboard::ClipboardPair>>,
+    #[cfg(all(muda, target_os = "macos"))]
+    muda_enable_default_menu_bar_bar: bool,
+
+    #[cfg(target_family = "wasm")]
+    spawn_event_loop: bool,
 }
 
 impl Backend {
@@ -387,80 +651,70 @@ impl Backend {
             window_attributes_hook: None,
             renderer_name: None,
             event_loop_builder: None,
+            #[cfg(all(muda, target_os = "macos"))]
+            muda_enable_default_menu_bar_bar: true,
+            #[cfg(target_family = "wasm")]
+            spawn_event_loop: false,
+            custom_application_handler: None,
         }
     }
 }
 
-fn send_event_via_global_event_loop_proxy(
-    event: SlintUserEvent,
-) -> Result<(), i_slint_core::api::EventLoopError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    crate::event_loop::GLOBAL_PROXY
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap()
-        .send_event(event)?;
-    #[cfg(target_arch = "wasm32")]
-    {
-        crate::event_loop::GLOBAL_PROXY.with(|global_proxy| {
-            let mut maybe_proxy = global_proxy.borrow_mut();
-            let proxy = maybe_proxy.get_or_insert_with(Default::default);
-            // Calling send_event is usually done by winit at the bottom of the stack,
-            // in event handlers, and thus winit might decide to process the event
-            // immediately within that stack.
-            // To prevent re-entrancy issues that might happen by getting the application
-            // event processed on top of the current stack, set winit in Poll mode so that
-            // events are queued and process on top of a clean stack during a requested animation
-            // frame a few moments later.
-            // This also allows batching multiple post_event calls and redraw their state changes
-            // all at once.
-            proxy.send_event(SlintUserEvent(CustomEvent::WakeEventLoopWorkaround))?;
-            proxy.send_event(event)?;
-            Ok(())
-        })?
-    }
-    Ok(())
-}
-
 impl i_slint_core::platform::Platform for Backend {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        let mut attrs = WinitWindowAdapter::window_attributes(
-            #[cfg(target_arch = "wasm32")]
-            "canvas".into(),
-        )?;
+        let mut attrs = WinitWindowAdapter::window_attributes()?;
 
         if let Some(hook) = &self.window_attributes_hook {
             attrs = hook(attrs);
         }
 
         let adapter = WinitWindowAdapter::new(
-            (self.renderer_factory_fn)(),
+            self.shared_data.clone(),
+            (self.renderer_factory_fn)(&self.shared_data),
             attrs.clone(),
             self.requested_graphics_api.clone(),
-            #[cfg(enable_accesskit)]
-            self.proxy.clone(),
+            #[cfg(any(enable_accesskit, muda))]
+            self.shared_data.event_loop_proxy.clone(),
+            #[cfg(all(muda, target_os = "macos"))]
+            self.muda_enable_default_menu_bar_bar,
         )
         .or_else(|e| {
-            try_create_window_with_fallback_renderer(attrs, &self.proxy)
-                .ok_or_else(|| format!("Winit backend failed to find a suitable renderer: {e}"))
+            try_create_window_with_fallback_renderer(
+                &self.shared_data,
+                attrs,
+                &self.shared_data.event_loop_proxy.clone(),
+                #[cfg(all(muda, target_os = "macos"))]
+                self.muda_enable_default_menu_bar_bar,
+            )
+            .ok_or_else(|| format!("Winit backend failed to find a suitable renderer: {e}"))
         })?;
         Ok(adapter)
     }
 
     fn run_event_loop(&self) -> Result<(), PlatformError> {
-        let loop_state = self.event_loop_state.borrow_mut().take().unwrap_or_default();
+        let loop_state = self.event_loop_state.borrow_mut().take().unwrap_or_else(|| {
+            EventLoopState::new(self.shared_data.clone(), self.custom_application_handler.take())
+        });
+        #[cfg(target_family = "wasm")]
+        {
+            if self.spawn_event_loop {
+                return loop_state.spawn();
+            }
+        }
         let new_state = loop_state.run()?;
         *self.event_loop_state.borrow_mut() = Some(new_state);
         Ok(())
     }
 
-    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))]
+    #[cfg(all(not(target_arch = "wasm32"), not(ios_and_friends)))]
     fn process_events(
         &self,
         timeout: core::time::Duration,
         _: i_slint_core::InternalToken,
     ) -> Result<core::ops::ControlFlow<()>, PlatformError> {
-        let loop_state = self.event_loop_state.borrow_mut().take().unwrap_or_default();
+        let loop_state = self.event_loop_state.borrow_mut().take().unwrap_or_else(|| {
+            EventLoopState::new(self.shared_data.clone(), self.custom_application_handler.take())
+        });
         let (new_state, status) = loop_state.pump_events(Some(timeout))?;
         *self.event_loop_state.borrow_mut() = Some(new_state);
         match status {
@@ -478,21 +732,38 @@ impl i_slint_core::platform::Platform for Backend {
     }
 
     fn new_event_loop_proxy(&self) -> Option<Box<dyn EventLoopProxy>> {
-        struct Proxy;
+        struct Proxy(winit::event_loop::EventLoopProxy<SlintEvent>);
         impl EventLoopProxy for Proxy {
-            fn quit_event_loop(&self) -> Result<(), i_slint_core::api::EventLoopError> {
-                send_event_via_global_event_loop_proxy(SlintUserEvent(CustomEvent::Exit))
+            fn quit_event_loop(&self) -> Result<(), EventLoopError> {
+                self.0
+                    .send_event(SlintEvent(CustomEvent::Exit))
+                    .map_err(|_| EventLoopError::EventLoopTerminated)
             }
 
             fn invoke_from_event_loop(
                 &self,
                 event: Box<dyn FnOnce() + Send>,
-            ) -> Result<(), i_slint_core::api::EventLoopError> {
-                let e = SlintUserEvent(CustomEvent::UserEvent(event));
-                send_event_via_global_event_loop_proxy(e)
+            ) -> Result<(), EventLoopError> {
+                // Calling send_event is usually done by winit at the bottom of the stack,
+                // in event handlers, and thus winit might decide to process the event
+                // immediately within that stack.
+                // To prevent re-entrancy issues that might happen by getting the application
+                // event processed on top of the current stack, set winit in Poll mode so that
+                // events are queued and process on top of a clean stack during a requested animation
+                // frame a few moments later.
+                // This also allows batching multiple post_event calls and redraw their state changes
+                // all at once.
+                #[cfg(target_arch = "wasm32")]
+                self.0
+                    .send_event(SlintEvent(CustomEvent::WakeEventLoopWorkaround))
+                    .map_err(|_| EventLoopError::EventLoopTerminated)?;
+
+                self.0
+                    .send_event(SlintEvent(CustomEvent::UserEvent(event)))
+                    .map_err(|_| EventLoopError::EventLoopTerminated)
             }
         }
-        Some(Box::new(Proxy))
+        Some(Box::new(Proxy(self.shared_data.event_loop_proxy.clone())))
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -502,8 +773,7 @@ impl i_slint_core::platform::Platform for Backend {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn set_clipboard_text(&self, text: &str, clipboard: i_slint_core::platform::Clipboard) {
-        let Some(clipboard_pair) = self.clipboard.upgrade() else { return };
-        let mut pair = clipboard_pair.borrow_mut();
+        let mut pair = self.shared_data.clipboard.borrow_mut();
         if let Some(clipboard) = clipboard::select_clipboard(&mut pair, clipboard) {
             clipboard.set_contents(text.into()).ok();
         }
@@ -516,16 +786,9 @@ impl i_slint_core::platform::Platform for Backend {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn clipboard_text(&self, clipboard: i_slint_core::platform::Clipboard) -> Option<String> {
-        let clipboard_pair = self.clipboard.upgrade()?;
-        let mut pair = clipboard_pair.borrow_mut();
+        let mut pair = self.shared_data.clipboard.borrow_mut();
         clipboard::select_clipboard(&mut pair, clipboard).and_then(|c| c.get_contents().ok())
     }
-}
-
-/// Spawn the event loop, using [`winit::platform::web::EventLoopExtWebSys::spawn()`]
-#[cfg(target_arch = "wasm32")]
-pub fn spawn_event_loop() -> Result<(), PlatformError> {
-    crate::event_loop::spawn()
 }
 
 mod private {
@@ -534,7 +797,17 @@ mod private {
 
 #[i_slint_core_macros::slint_doc]
 /// This helper trait can be used to obtain access to the [`winit::window::Window`] for a given
-/// [`slint::Window`](slint:rust:slint/struct.window).")]
+/// [`slint::Window`](slint:rust:slint/struct.window).
+///
+/// Note that the association of a Slint window with a winit window relies on two factors:
+///
+/// - The winit backend must be in use. You can ensure this programmatically by calling [`slint::BackendSelector::backend_name()`](slint:rust:slint/struct.BackendSelector#method.backend_name)
+///   with "winit" as argument.
+/// - The winit window must've been created. Windowing systems, and by extension winit, require that windows can only be properly
+///   created when certain conditions of the event loop are met. For example, on Android the application can't be suspended. Therefore,
+///   functions like [`Self::has_winit_window()`] or [`Self::with_winit_window()`] will only succeed when the event loop is active.
+///   This is typically the case when callbacks are invoked from the event loop, such as through timers, user input events, or when window
+///   receives events (see also [`Self::on_winit_window_event()`]).
 pub trait WinitWindowAccessor: private::WinitWindowAccessorSealed {
     /// Returns true if a [`winit::window::Window`] exists for this window. This is the case if the window is
     /// backed by this winit backend.
@@ -563,7 +836,7 @@ impl WinitWindowAccessor for i_slint_core::api::Window {
             .window_adapter()
             .internal(i_slint_core::InternalToken)
             .and_then(|wa| wa.as_any().downcast_ref::<WinitWindowAdapter>())
-            .map_or(false, |adapter| adapter.winit_window().is_some())
+            .is_some_and(|adapter| adapter.winit_window().is_some())
     }
 
     fn with_winit_window<T>(
@@ -582,26 +855,19 @@ impl WinitWindowAccessor for i_slint_core::api::Window {
         mut callback: impl FnMut(&i_slint_core::api::Window, &winit::event::WindowEvent) -> WinitWindowEventResult
             + 'static,
     ) {
-        i_slint_core::window::WindowInner::from_pub(&self)
+        if let Some(adapter) = i_slint_core::window::WindowInner::from_pub(self)
             .window_adapter()
             .internal(i_slint_core::InternalToken)
             .and_then(|wa| wa.as_any().downcast_ref::<WinitWindowAdapter>())
-            .map(|adapter| {
-                adapter
-                    .window_event_filter
-                    .set(Some(Box::new(move |window, event| callback(window, event))));
-            });
+        {
+            adapter
+                .window_event_filter
+                .set(Some(Box::new(move |window, event| callback(window, event))));
+        }
     }
 }
 
 impl private::WinitWindowAccessorSealed for i_slint_core::api::Window {}
-
-/// Creates a non Slint aware window with winit
-pub fn create_winit_window(
-    window_attributes: winit::window::WindowAttributes,
-) -> Result<winit::window::Window, winit::error::OsError> {
-    event_loop::with_window_target(|eli| Ok(eli.create_window(window_attributes))).unwrap()
-}
 
 #[cfg(test)]
 mod testui {
@@ -613,17 +879,27 @@ mod testui {
 }
 
 // Sorry, can't test with rust test harness and multiple threads.
-#[cfg(not(any(target_arch = "wasm32", target_os = "macos", target_os = "ios")))]
+#[cfg(not(any(target_arch = "wasm32", target_vendor = "apple")))]
 #[test]
 fn test_window_accessor_and_rwh() {
     slint::platform::set_platform(Box::new(crate::Backend::new().unwrap())).unwrap();
 
     use testui::*;
     let app = App::new().unwrap();
-    let slint_window = app.window();
-    assert!(slint_window.has_winit_window());
-    let handle = slint_window.window_handle();
-    use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
-    assert!(handle.window_handle().is_ok());
-    assert!(handle.display_handle().is_ok());
+    app.show().unwrap();
+
+    let app_weak = app.as_weak();
+    app_weak
+        .upgrade_in_event_loop(|app| {
+            let slint_window = app.window();
+            assert!(slint_window.has_winit_window());
+            let handle = slint_window.window_handle();
+            use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+            assert!(handle.window_handle().is_ok());
+            assert!(handle.display_handle().is_ok());
+            slint::quit_event_loop().unwrap();
+        })
+        .unwrap();
+
+    slint::run_event_loop().unwrap();
 }

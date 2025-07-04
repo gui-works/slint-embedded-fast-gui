@@ -69,14 +69,14 @@ fn main() -> std::io::Result<()> {
             .escape_default()
             .to_string();
 
-        reference_path = format!("\"{}\"", reference_path);
+        reference_path = format!("\"{reference_path}\"");
 
         println!("cargo:rerun-if-changed={}", testcase.absolute_path.display());
         let mut module_name = testcase.identifier();
         if module_name.starts_with(|c: char| !c.is_ascii_alphabetic()) {
             module_name.insert(0, '_');
         }
-        writeln!(generated_file, "#[path=\"{0}.rs\"] mod r#{0};", module_name)?;
+        writeln!(generated_file, "#[path=\"{module_name}.rs\"] mod r#{module_name};")?;
         let source = std::fs::read_to_string(&testcase.absolute_path)?;
 
         let needle = "SLINT_SCALE_FACTOR=";
@@ -102,8 +102,19 @@ fn main() -> std::io::Result<()> {
         });
         let skip_clipping = source.contains("SKIP_CLIPPING");
 
+        let needle = "SIZE=";
+        let (size_w, size_h) = source.find(needle).map_or((64, 64), |p| {
+            source[p + needle.len()..]
+                .find(char::is_whitespace)
+                .and_then(|end| source[p + needle.len()..][..end].split_once('x'))
+                .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
+                .unwrap_or_else(|| {
+                    panic!("Cannot parse {needle} for {}", testcase.relative_path.display())
+                })
+        });
+
         let mut output = BufWriter::new(std::fs::File::create(
-            Path::new(&std::env::var_os("OUT_DIR").unwrap()).join(format!("{}.rs", module_name)),
+            Path::new(&std::env::var_os("OUT_DIR").unwrap()).join(format!("{module_name}.rs")),
         )?);
 
         generate_source(
@@ -122,7 +133,7 @@ fn main() -> std::io::Result<()> {
     use crate::testing;
 
     let window = testing::init_swr();
-    window.set_size(slint::PhysicalSize::new(64, 64));
+    window.set_size(slint::PhysicalSize::new({size_w}, {size_h}));
     let screenshot = {reference_path};
     let options = testing::TestCaseOptions {{ rotation_threshold: {rotation_threshold}f32, skip_clipping: {skip_clipping} }};
 

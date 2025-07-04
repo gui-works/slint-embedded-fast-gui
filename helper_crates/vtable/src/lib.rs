@@ -24,8 +24,6 @@ use vtable::*;
 struct AnimalVTable {
     /// pointer to a function that makes a noise.  The `VRef<AnimalVTable>` is the type of
     /// the self object.
-    ///
-    /// Note: the #[vtable] macro will automatically add `extern "C"` if that is missing.
     make_noise: fn(VRef<AnimalVTable>, i32) -> i32,
 
     /// if there is a 'drop' member, it is considered as the destructor.
@@ -227,15 +225,15 @@ pub struct VRef<'a, T: ?Sized + VTableMeta> {
 }
 
 // Need to implement manually otherwise it is not implemented if T does not implement Copy / Clone
-impl<'a, T: ?Sized + VTableMeta> Copy for VRef<'a, T> {}
+impl<T: ?Sized + VTableMeta> Copy for VRef<'_, T> {}
 
-impl<'a, T: ?Sized + VTableMeta> Clone for VRef<'a, T> {
+impl<T: ?Sized + VTableMeta> Clone for VRef<'_, T> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<'a, T: ?Sized + VTableMeta> Deref for VRef<'a, T> {
+impl<T: ?Sized + VTableMeta> Deref for VRef<'_, T> {
     type Target = T::Target;
     fn deref(&self) -> &Self::Target {
         unsafe { &*self.inner.deref::<T>() }
@@ -319,14 +317,14 @@ pub struct VRefMut<'a, T: ?Sized + VTableMeta> {
     phantom: PhantomData<&'a mut T::Target>,
 }
 
-impl<'a, T: ?Sized + VTableMeta> Deref for VRefMut<'a, T> {
+impl<T: ?Sized + VTableMeta> Deref for VRefMut<'_, T> {
     type Target = T::Target;
     fn deref(&self) -> &Self::Target {
         unsafe { &*self.inner.deref::<T>() }
     }
 }
 
-impl<'a, T: ?Sized + VTableMeta> DerefMut for VRefMut<'a, T> {
+impl<T: ?Sized + VTableMeta> DerefMut for VRefMut<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { &mut *(self.inner.deref_mut::<T>() as *mut _) }
     }
@@ -526,7 +524,7 @@ impl<Base, T: ?Sized + VTableMeta> VOffset<Base, T, AllowPin> {
     /// Apply this offset to a reference to the base to obtain a `Pin<VRef<'a, T>>` with the same
     /// lifetime as the base lifetime
     #[inline]
-    pub fn apply_pin(self, base: Pin<&Base>) -> Pin<VRef<T>> {
+    pub fn apply_pin(self, base: Pin<&Base>) -> Pin<VRef<'_, T>> {
         let ptr = base.get_ref() as *const Base as *mut u8;
         unsafe {
             Pin::new_unchecked(VRef::from_raw(

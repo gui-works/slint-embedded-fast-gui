@@ -1,11 +1,12 @@
 ---
 <!-- Copyright © SixtyFPS GmbH <info@slint.dev> ; SPDX-License-Identifier: MIT -->
 // cSpell: ignore Toradex Vivante espflash pico armhf armhf THUMBV EABIHF eabihf eabi bootsel udisksctl picotool
-title: Embedded 
+title: Embedded
 description: Embedded Platforms on which Slint has been tested
 ---
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
+import ReleaseLink from '/src/components/ReleaseLink.astro';
 
 Slint runs on many embedded platforms.
 
@@ -17,13 +18,13 @@ we recommend using a recent desktop operating system and compiler version.
 Slint runs on a variety of embedded Linux platforms. Generally speaking, Slint requires a modern Linux userspace
 with working OpenGL ES 2.0 (or newer) or Vulkan drivers. We've had success running Slint on
 
--   Yocto based distributions. 
+-   Yocto based distributions.
 -   BuildRoot based distributions.
 -   Torizon.
 
 <Tabs>
 <TabItem label="Yocto Linux">
-For C++ applications see [meta-slint](https://github.com/slint-ui/meta-slint) for recipes. 
+For C++ applications see [meta-slint](https://github.com/slint-ui/meta-slint) for recipes.
 
 Rust application work out of the box with Yocto's Rust support.
 </TabItem>
@@ -98,6 +99,9 @@ The main.rs will look something like this
 #![cfg_attr(not(feature = "simulator"), no_main)]
 slint::include_modules!();
 
+#[allow(unused_imports)]
+use mcu_board_support::prelude::*;
+
 #[mcu_board_support::entry]
 fn main() -> ! {
     mcu_board_support::init();
@@ -129,6 +133,8 @@ In your build.rs, you must include a call to `slint_build::print_rustc_flags().u
 <TabItem label="C++">
 To use Slint with your C++ application, you can follow the instructions on the [Espressif Documentation site](https://components.espressif.com/components/slint/slint)
 </TabItem>
+
+{/*
 <TabItem label="Rust">
 #### Prerequisites
 
@@ -138,16 +144,6 @@ To use Slint with your C++ application, you can follow the instructions on the [
 When flashing, with `espflash`, you will be prompted to select a USB port. If this port is always the same, then you can also pass it as a parameter on the command line to avoid the prompt. For example if
 `/dev/ttyUSB1` is the device file for your port, the command line changes to `espflash --monitor /dev/ttyUSB1 path/to/binary/to/flash_and_monitor`.
 
-#### ESP32-S2-Kaluga-1
-
-To compile and run the Slint Printer demo:
-
-```sh
-CARGO_PROFILE_RELEASE_OPT_LEVEL=s cargo +esp run -p printerdemo_mcu --target xtensa-esp32s2-none-elf --no-default-features --features=mcu-board-support/esp32-s2-kaluga-1 --release --config examples/mcu-board-support/esp32_s2_kaluga_1/cargo-config.toml
-```
-
-The device needs to be connected with the two USB cables (one for power, one for data)
-
 #### ESP32-S3-Box
 
 To compile and run the Slint Printer demo:
@@ -156,6 +152,7 @@ To compile and run the Slint Printer demo:
 CARGO_PROFILE_RELEASE_OPT_LEVEL=s cargo +esp run -p printerdemo_mcu --target xtensa-esp32s3-none-elf --no-default-features --features=mcu-board-support/esp32-s3-box --release --config examples/mcu-board-support/esp32_s3_box/cargo-config.toml
 ```
 </TabItem>
+*/}
 </Tabs>
 
 ### ST (STM32)
@@ -163,14 +160,14 @@ CARGO_PROFILE_RELEASE_OPT_LEVEL=s cargo +esp run -p printerdemo_mcu --target xte
 <Tabs syncKey="dev-language">
 <TabItem label="C++">
 #### STM32H735G-DK
-You can start with the template [slint-cpp-template-stm32h735g-dk.zip](https://github.com/slint-ui/slint/releases/download/%7Bdownload_version%7D/slint-cpp-template-stm32h735g-dk.zip)
+You can start with the template <ReleaseLink id="slint-cpp-template-stm32h735g-dk.zip" />
 
 #### STM32H747I-DISCO
-You can start with the template [slint-cpp-template-stm32h747i-disco.zip](https://github.com/slint-ui/slint/releases/download/%7Bdownload_version%7D/slint-cpp-template-stm32h747i-disco.zip)
+You can start with the template <ReleaseLink id="slint-cpp-template-stm32h747i-disco.zip" />
 
 </TabItem>
 <TabItem label="Rust">
-Follow the steps below to run the Slint Printer Demo 
+Follow the steps below to run the Slint Printer Demo
 
 #### STM32H735G-DK
 
@@ -188,29 +185,59 @@ Only Rust programs are currently supported on the Raspberry Pi Pico.
 
 #### On the Raspberry Pi Pico
 
+Ensure the right target is set:
+
+```sh
+rustup target add thumbv6m-none-eabi
+```
+
 Build the Slint Printer demo with:
 
 ```sh
 cargo build -p printerdemo_mcu --no-default-features --features=mcu-board-support/pico-st7789 --target=thumbv6m-none-eabi --release
 ```
 
-The resulting file can be flashed conveniently with [elf2uf2-rs](https://github.com/jonil/elf2uf2-rs). Install it using `cargo install`:
+The resulting file can be flashed with [elf2uf2-rs](https://github.com/jonil/elf2uf2-rs). Install it using:
 
 ```sh
 cargo install elf2uf2-rs
 ```
 
-Then upload the demo to the Raspberry Pi Pico: push the "bootsel" white button on the device while connecting the
-micro-usb cable to the device, this connect some storage where you can store the binary.
+<Tabs syncKey="dev-platform">
+<TabItem label="macOS" icon="apple">
 
-Or from the command on linux: (connect the device while pressing the "bootsel" button.
+
+Now power off the Pico and connect it while holding down the "bootsel" button. The device will show up as a storage device
+with the name `RPI-RP2`.
+
+
+Then flash the demo to the Pico with:
 
 ```sh
-# If you're on Linux: mount the device
-udisksctl mount -b /dev/sda1
-# upload
 elf2uf2-rs -d target/thumbv6m-none-eabi/release/printerdemo_mcu
 ```
+
+When the flashing completes the Pico will reboot and show the Slint Printer demo. The Mac will
+warn the drive was unmounted unexpectedly. This is expected and can be ignored.
+
+</TabItem>
+<TabItem label="Linux" icon="linux">
+
+Now power off the Pico and connect it while holding down the "bootsel" button. The device will show up as a storage device.
+
+Mount the device:
+```sh
+udisksctl mount -b /dev/sda1
+```
+
+Then flash the demo to the Pico with:
+```sh
+elf2uf2-rs -d target/thumbv6m-none-eabi/release/printerdemo_mcu
+```
+
+</TabItem>
+</Tabs>
+
 
 #### On the Raspberry Pi Pico2
 

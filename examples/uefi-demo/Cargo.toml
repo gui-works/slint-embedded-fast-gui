@@ -3,7 +3,7 @@
 
 [package]
 name = "uefi-demo"
-version = "1.9.2"
+version = "1.13.0"
 edition = "2021"
 license = "MIT"
 build = "build.rs"
@@ -14,16 +14,10 @@ path = "main.rs"
 name = "uefi-demo"
 
 [target.'cfg(target_os = "uefi")'.dependencies]
-uefi = { version = "0.32", features = ["panic_handler", "global_allocator"] }
+uefi = { version = "0.33", features = ["panic_handler", "global_allocator"] }
 minipng = "=0.1.1"
 
-slint = { path = "../../api/rs/slint", default-features = false, features = [
-    "compat-1-2",
-    "renderer-software",
-    "libm",
-    "log",
-    "unsafe-single-threaded",
-] }
+slint = { path = "../../api/rs/slint", default-features = false, features = ["compat-1-2", "renderer-software", "libm", "log", "unsafe-single-threaded"] }
 log = "0.4.21"
 
 [build-dependencies]

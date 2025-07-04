@@ -14,7 +14,7 @@ export struct ComponentItem {
 
 /// A `category` with a lost of `ComponentItem`s that belong into it.
 ///
-/// Fiel url is either an empty string or a URL to some document
+/// File url is either an empty string or a URL to some document
 export struct ComponentListItem {
     category: string,
     file_url: string,
@@ -101,6 +101,7 @@ export struct ColorData {
     b: int,
     a: int,
     text: string,
+    short-text: string,
 }
 
 export enum PropertyValueKind {
@@ -114,21 +115,45 @@ export enum PropertyValueKind {
     string,
 }
 
+export enum BrushKind {
+    solid,
+    linear,
+    radial,
+}
+
+export struct GradientStop {
+    position: float, // between 0 and 1!
+    color: color,
+}
+
 /// Data about the property value for use in "simple" mode
 export struct PropertyValue {
+    display-string: string, // ALLWAYS, its a string description of what is there
     value-bool: bool, // boolean
     is-translatable: bool, // string
-    kind: PropertyValueKind,
+    kind: PropertyValueKind, // Defines what to display this as
+    value-kind: PropertyValueKind, // If kind == code, then this is the real kind of data
+    brush-kind: BrushKind, // brush
+    gradient-stops: [GradientStop], // brush
     value-brush: brush, // brush, color
-    value-float: float, // float
+    value-float: float, // float, brush (angle)
     value-int: int, // integer, enum/float (current index into visual_items)
     default-selection: int, // enum/float (default index into visual_items)
-    value-string: string, // enum (name), string, brush (color value)
+    value-string: string, // enum (name), string, brush (palette name or empty)
     visual-items: [string], // enum (enum members), float (units)
     tr-context: string, // string
     tr-plural: string, // string
     tr-plural-expression: string, // string
     code: string, // ALWAYS, empty if property is not explicitly defined
+    accessor-path: string, // set for struct members and such
+    was-edited: bool, // Used by preview dataonly!
+    edited-value: string, // Used in preview dataonly!
+}
+
+export struct PropertyValueTable {
+    is-array: bool,
+    headers: [string],
+    values: [[PropertyValue]],
 }
 
 /// Important Ranges in the property definition
@@ -158,10 +183,30 @@ export struct PropertyInformation {
     display-priority: int,
 }
 
-/// Information on one Property
+/// Grouping for properties
 export struct PropertyGroup {
     group-name: string,
     properties: [PropertyInformation],
+}
+
+export enum PreviewDataKind {
+    Value,
+    Json,
+    Table,
+}
+
+export struct PreviewData {
+    name: string,
+    has-getter: bool,
+    has-setter: bool,
+    kind: PreviewDataKind,
+}
+
+/// Information on exported components and their properties
+export struct PropertyContainer {
+    container-name: string,
+    container-id: string,
+    properties: [PreviewData],
 }
 
 /// Information on an Element a Property belongs to
@@ -173,6 +218,25 @@ export struct ElementInformation {
     range: Range,
 }
 
+export struct PaletteEntry {
+    name: string,
+    value: PropertyValue,
+}
+
+export enum LogMessageLevel {
+    Debug,
+    Warning,
+    Error,
+}
+
+export struct LogMessage {
+    file: string,
+    line: int,
+    column: int,
+    message: string,
+    level: LogMessageLevel,
+}
+
 export global Api {
     // # Properties
     // ## General preview state:
@@ -182,6 +246,8 @@ export global Api {
     in property <bool> show-preview-ui: true;
     // std-widgets are used (=> show style dropdown)
     in-out property <bool> uses-widgets;
+    in-out property <bool> always-on-top;
+    in property <bool> focus-previewed-element;
 
     // ## Component Data for ComponentList:
     // All the components
@@ -202,15 +268,22 @@ export global Api {
     // control, but command on macOS
     in-out property <string> control-key-name: "control";
 
+    // ## Log Output
+    in-out property <[LogMessage]> log-output;
+
     // ## Drawing Area
     // Borders around things
     in property <[Selection]> selections;
     in-out property <DropMark> drop-mark;
     // The actual preview
-    in property <component-factory> preview-area;
+    in-out property <component-factory> preview-area;
 
     // set to true to resize
     in property <bool> resize-to-preferred-size: false;
+
+    // ## Palette data:
+    in-out property <[PaletteEntry]> palettes;
+    in-out property <[color]> recent-colors;
 
     // ## Property Editor
     in-out property <ElementInformation> current-element;
@@ -282,7 +355,7 @@ export global Api {
                     }
                 },
                 {
-                    name: "color",
+                    name: "brush",
                     type-name: "brush",
                     value: {
                         kind: PropertyValueKind.brush,
@@ -290,6 +363,24 @@ export global Api {
                         value-string: "#00ff00"
                     },
                 },
+                {
+                    name: "text-between",
+                    type-name: "string",
+                    value: {
+                        is-translatable: true,
+                        kind: PropertyValueKind.string,
+                    }
+                },
+                {
+                    name: "color",
+                    type-name: "color",
+                    value: {
+                        kind: PropertyValueKind.color,
+                        value-brush: Colors.green,
+                        value-string: "#00ff00"
+                    },
+                },
+
                 {
                     name: "a-really-long-named-attribute",
                     type-name: "float",
@@ -384,6 +475,10 @@ export global Api {
 
     ];
 
+    // ## preview data
+
+    in-out property <[PropertyContainer]> preview-data;
+
     // # Callbacks
 
     // ## Custom conversion functions:
@@ -397,7 +492,7 @@ export global Api {
 
     // ## Component life-cycle:
 
-    // Create a new componnet
+    // Create a new component
     callback add-new-component();
 
     // Add an existing component
@@ -426,7 +521,7 @@ export global Api {
 
     // ## Change Editor:
 
-    // Show a conponent in the editor
+    // Show a component in the editor
     callback show-component(name: string, url: string);
     // Show a position consisting of `line` and `column` in a `file` in the editor
     callback show-document(file: string, line: int, column: int);
@@ -440,11 +535,45 @@ export global Api {
 
     // ## Property Editor
     pure callback test-code-binding(element-url: string, element-version: int, element-offset: int, property-name: string, property-value: string) -> bool;
-    pure callback test-string-binding(element-url: string, element-version: int, element-offset: int, property-name: string, value: string, is_translatable: bool, tr_context: string, tr_plural: string, tr_plural_expression: string) -> bool;
-    callback set-code-binding(element-url: string, element-version: int, element-offset: int, property-name: string, property-value: string);
-    callback set-color-binding(element-url: string, element-version: int, element-offset: int, property-name: string, property-value: color);
-    callback set-string-binding(element-url: string, element-version: int, element-offset: int, property-name: string, value: string, is_translatable: bool, tr_context: string, tr_plural: string, tr_plural_exprression: string);
+    pure callback set-code-binding(element-url: string, element-version: int, element-offset: int, property-name: string, property-value: string);
+    pure callback set-color-binding(element-url: string, element-version: int, element-offset: int, property-name: string, property-value: color);
+
+    pure callback string-to-code(value: string, is_translatable: bool, tr_context: string, tr_plural: string, tr_plural_expression: string) -> string;
+
+    pure callback as-slint-brush(kind: BrushKind, angle: float, color: color, stops: [GradientStop]) -> string;
+
+    // ## preview data
+    pure callback get-property-value(component: string, name: string) -> PropertyValue;
+    pure callback get-property-value-table(component: string, name: string) -> PropertyValueTable;
+    pure callback set-property-value-table(component: string, name: string, table: [[PropertyValue]], is-array: bool) -> string;
+
+    pure callback insert-row-into-value-table(table: PropertyValueTable, insert-before: int);
+    pure callback remove-row-from-value-table(table: PropertyValueTable, remove-row: int);
+
+    pure callback set-json-preview-data(component: string, name: string, json-value: string, send-telemetry: bool) -> string;
+
+    pure callback as-json-brush(kind: BrushKind, angle: float, color: color, stops: [GradientStop]) -> string;
+
+    pure callback add-gradient-stop(stops: [GradientStop], value: GradientStop) -> int;
+    pure callback remove-gradient-stop(stops: [GradientStop], row: int);
+    // returns the new index of the gradient stop in the sorted list of GradientStops
+    pure callback move-gradient-stop(stops: [GradientStop], row: int, new_position: float) -> int;
+    pure callback suggest-gradient-stop-at-row(stops: [GradientStop], row: int) -> GradientStop;
+    pure callback suggest-gradient-stop-at-position(stops: [GradientStop], position: float) -> GradientStop;
+    pure callback clone-gradient-stops(stops: [GradientStop]) -> [GradientStop];
+
+    pure callback create-brush(kind: BrushKind, angle: float, color: color, stops: [GradientStop]) -> brush;
 
     // Get the property declaration/definition ranges
     callback property-declaration-ranges(property-name: string) -> PropertyDeclaration;
+
+    // Palettes:
+    pure callback filter-palettes(palettes: [PaletteEntry], pattern: string) -> [PaletteEntry];
+    callback add-recent-color(color);
+    pure callback is-css-color(code: string) -> bool;
+
+    // Console / LogMessages
+    pure callback filter-log-messages(messages: [LogMessage], pattern: string) -> [LogMessage];
+    callback clear-log-messages();
+    in-out property <bool> auto-clear-console: true;
 }

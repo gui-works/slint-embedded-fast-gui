@@ -10,8 +10,9 @@
 
 pub type FieldOffset<T, U> = const_field_offset::FieldOffset<T, U, const_field_offset::AllowPin>;
 use crate::items::PropertyAnimation;
+use alloc::boxed::Box;
 use alloc::rc::Rc;
-#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
 use core::convert::{TryFrom, TryInto};
 use core::pin::Pin;
 
@@ -49,6 +50,7 @@ macro_rules! declare_ValueType_2 {
             crate::api::LogicalPosition,
             crate::items::FontMetrics,
             crate::items::MenuEntry,
+            crate::items::DropEvent,
             crate::model::ModelRc<crate::items::MenuEntry>,
             $(crate::items::$Name,)*
         ];

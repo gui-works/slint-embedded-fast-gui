@@ -25,6 +25,10 @@ export component ComboBox {
     forward-focus: base;
     accessible-role: combobox;
     accessible-enabled: root.enabled;
+    accessible-expandable: true;
+    accessible-expanded: base.popup-has-focus;
+    accessible-value <=> root.current-value;
+    accessible-action-expand => { base.show-popup(); }
 
     states [
         disabled when !root.enabled : {
@@ -74,6 +78,7 @@ export component ComboBox {
             // font-family: MaterialFontSettings.body-large.font;
             font-size: MaterialFontSettings.body-large.font-size;
             font-weight: MaterialFontSettings.body-large.font-weight;
+            accessible-role: none;
         }
 
         icon := Image {
@@ -82,6 +87,7 @@ export component ComboBox {
             y: (parent.height - self.height) / 2;
             source: Icons.expand-more;
             colorize: MaterialPalette.control-foreground;
+            accessible-role: none;
         }
     }
 
@@ -90,6 +96,7 @@ export component ComboBox {
         y: root.height;
         width: root.width;
         height: root.visible-items * MaterialSizeSettings.item-height;
+        forward-focus: inner-fs;
 
         popup-container := Rectangle {
             background: MaterialPalette.alternate-background;
@@ -99,12 +106,8 @@ export component ComboBox {
             border-radius: 4px;
         }
 
-        FocusScope {
-            init => {
-                self.focus();
-                base.popup-has-focus = true;
-            }
-            changed has-focus => {
+        inner-fs := FocusScope {
+            focus-changed-event => {
                 base.popup-has-focus = self.has-focus;
             }
             key-pressed(event) => {

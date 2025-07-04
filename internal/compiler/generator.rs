@@ -24,6 +24,8 @@ pub mod cpp;
 
 #[cfg(feature = "rust")]
 pub mod rust;
+#[cfg(feature = "rust")]
+pub mod rust_live_reload;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum OutputFormat {
@@ -58,7 +60,7 @@ impl std::str::FromStr for OutputFormat {
             #[cfg(feature = "rust")]
             "rust" => Ok(Self::Rust),
             "llr" => Ok(Self::Llr),
-            _ => Err(format!("Unknown output format {}", s)),
+            _ => Err(format!("Unknown output format {s}")),
         }
     }
 }
@@ -76,12 +78,12 @@ pub fn generate(
         #[cfg(feature = "cpp")]
         OutputFormat::Cpp(config) => {
             let output = cpp::generate(doc, config, compiler_config)?;
-            write!(destination, "{}", output)?;
+            write!(destination, "{output}")?;
         }
         #[cfg(feature = "rust")]
         OutputFormat::Rust => {
             let output = rust::generate(doc, compiler_config)?;
-            write!(destination, "{}", output)?;
+            write!(destination, "{output}")?;
         }
         OutputFormat::Interpreter => {
             return Err(std::io::Error::new(
@@ -109,13 +111,6 @@ pub trait ItemTreeBuilder {
         &mut self,
         item: &crate::object_tree::ElementRc,
         repeater_count: u32,
-        parent_index: u32,
-        component_state: &Self::SubComponentState,
-    );
-    fn push_component_placeholder_item(
-        &mut self,
-        item: &crate::object_tree::ElementRc,
-        container_count: u32, // Must start at repeater.len()!
         parent_index: u32,
         component_state: &Self::SubComponentState,
     );
@@ -164,17 +159,7 @@ pub fn build_item_tree<T: ItemTreeBuilder>(
         build_item_tree::<T>(sub_component, &sub_compo_state, builder);
     } else {
         let mut repeater_count = 0;
-        let mut container_count =
-            repeater_count_in_sub_component(&root_component.root_element) as u32;
-        visit_item(
-            initial_state,
-            &root_component.root_element,
-            1,
-            &mut repeater_count,
-            &mut container_count,
-            0,
-            builder,
-        );
+        visit_item(initial_state, &root_component.root_element, 1, &mut repeater_count, 0, builder);
 
         visit_children(
             initial_state,
@@ -186,7 +171,6 @@ pub fn build_item_tree<T: ItemTreeBuilder>(
             1,
             1,
             &mut repeater_count,
-            &mut container_count,
             builder,
         );
     }
@@ -205,15 +189,6 @@ pub fn build_item_tree<T: ItemTreeBuilder>(
         count
     }
 
-    // Number of repeaters in this sub component
-    fn repeater_count_in_sub_component(e: &ElementRc) -> usize {
-        let mut count = if e.borrow().repeated.is_some() { 0 } else { 1 };
-        for i in &e.borrow().children {
-            count += repeater_count_in_sub_component(i);
-        }
-        count
-    }
-
     fn visit_children<T: ItemTreeBuilder>(
         state: &T::SubComponentState,
         children: &[ElementRc],
@@ -224,7 +199,6 @@ pub fn build_item_tree<T: ItemTreeBuilder>(
         children_offset: u32,
         relative_children_offset: u32,
         repeater_count: &mut u32,
-        container_count: &mut u32,
         builder: &mut T,
     ) {
         debug_assert_eq!(
@@ -263,7 +237,6 @@ pub fn build_item_tree<T: ItemTreeBuilder>(
                     children_offset,
                     relative_children_offset,
                     repeater_count,
-                    container_count,
                     builder,
                 );
                 return;
@@ -283,21 +256,12 @@ pub fn build_item_tree<T: ItemTreeBuilder>(
                     &sub_component.root_element,
                     offset,
                     repeater_count,
-                    container_count,
                     parent_index,
                     builder,
                 );
                 sub_component_states.push_back(sub_component_state);
             } else {
-                visit_item(
-                    state,
-                    child,
-                    offset,
-                    repeater_count,
-                    container_count,
-                    parent_index,
-                    builder,
-                );
+                visit_item(state, child, offset, repeater_count, parent_index, builder);
             }
             offset += item_sub_tree_size(child) as u32;
         }
@@ -321,7 +285,6 @@ pub fn build_item_tree<T: ItemTreeBuilder>(
                     offset,
                     1,
                     repeater_count,
-                    container_count,
                     builder,
                 );
             } else {
@@ -335,7 +298,6 @@ pub fn build_item_tree<T: ItemTreeBuilder>(
                     offset,
                     relative_offset,
                     repeater_count,
-                    container_count,
                     builder,
                 );
             }
@@ -353,18 +315,10 @@ pub fn build_item_tree<T: ItemTreeBuilder>(
         item: &ElementRc,
         children_offset: u32,
         repeater_count: &mut u32,
-        container_count: &mut u32,
         parent_index: u32,
         builder: &mut T,
     ) {
-        if item.borrow().is_component_placeholder {
-            builder.push_component_placeholder_item(
-                item,
-                *container_count,
-                parent_index,
-                component_state,
-            );
-        } else if item.borrow().repeated.is_some() {
+        if item.borrow().repeated.is_some() {
             builder.push_repeated_item(item, *repeater_count, parent_index, component_state);
             *repeater_count += 1;
         } else {
@@ -410,7 +364,7 @@ pub fn handle_property_bindings_init(
             return;
         }
         processed.insert(nr);
-        if binding_expression.analysis.as_ref().map_or(false, |a| a.is_const) {
+        if binding_expression.analysis.as_ref().is_some_and(|a| a.is_const) {
             // We must first handle all dependent properties in case it is a constant property
 
             binding_expression.expression.visit_recursive(&mut |e| {
@@ -456,7 +410,7 @@ pub fn for_each_const_properties(
     mut f: impl FnMut(&ElementRc, &SmolStr),
 ) {
     crate::object_tree::recurse_elem(&component.root_element, &(), &mut |elem: &ElementRc, ()| {
-        if elem.borrow().repeated.is_some() || elem.borrow().is_component_placeholder {
+        if elem.borrow().repeated.is_some() {
             return;
         }
         let mut e = elem.clone();
@@ -468,7 +422,7 @@ pub fn for_each_const_properties(
                     .iter()
                     .filter(|(_, x)| {
                         x.property_type.is_property_type() &&
-                            !matches!( &x.property_type, crate::langtype::Type::Struct(s) if s.name.as_ref().map_or(false, |name| name.ends_with("::StateInfo")))
+                            !matches!( &x.property_type, crate::langtype::Type::Struct(s) if s.name.as_ref().is_some_and(|name| name.ends_with("::StateInfo")))
                     })
                     .map(|(k, _)| k.clone()),
             );

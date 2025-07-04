@@ -22,7 +22,7 @@ pub trait LexingRule {
     fn lex(&self, text: &str, state: &mut LexState) -> usize;
 }
 
-impl<'a> LexingRule for &'a str {
+impl LexingRule for &str {
     #[inline]
     fn lex(&self, text: &str, _: &mut LexState) -> usize {
         if text.starts_with(*self) {
@@ -198,6 +198,17 @@ pub fn lex(mut source: &str) -> Vec<crate::parser::Token> {
     let mut result = vec![];
     let mut offset = 0;
     let mut state = LexState::default();
+    if source.starts_with("\u{FEFF}") {
+        // Skip BOM
+        result.push(crate::parser::Token {
+            kind: SyntaxKind::Whitespace,
+            text: source[..3].into(),
+            offset: 0,
+            ..Default::default()
+        });
+        source = &source[3..];
+        offset += 3;
+    }
     while !source.is_empty() {
         if let Some((len, kind)) = crate::parser::lex_next_token(source, &mut state) {
             result.push(crate::parser::Token {
@@ -419,7 +430,7 @@ fn test_locate_rust_macro() {
 /// within the program.
 ///
 /// Note that the slint compiler considers Start-of-Text and End-of-Text as whitespace and will treat them
-/// accodingly.
+/// accordingly.
 pub fn extract_rust_macro(rust_source: String) -> Option<String> {
     let core::ops::Range { start, end } = locate_slint_macro(&rust_source).next()?;
     let mut bytes = rust_source.into_bytes();

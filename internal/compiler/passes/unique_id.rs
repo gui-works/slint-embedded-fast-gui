@@ -33,7 +33,7 @@ fn assign_unique_id_in_component(component: &Rc<Component>, count: &mut u32) {
         elem_mut.id = format_smolstr!("{}-{}", old_id, count);
 
         let enclosing = elem_mut.enclosing_component.upgrade().unwrap();
-        if Rc::ptr_eq(&elem, &enclosing.root_element) {
+        if Rc::ptr_eq(elem, &enclosing.root_element) {
             for o in enclosing.optimized_elements.borrow().iter() {
                 *count += 1;
                 let mut elem_mut = o.borrow_mut();
@@ -79,7 +79,7 @@ fn check_unique_id_in_component(component: &Rc<Component>, diag: &mut BuildDiagn
         if !id.is_empty() {
             if let Some(other_loc) = seen_ids.get_mut(id) {
                 debug_assert!(!Rc::ptr_eq(&other_loc.element, elem));
-                let message = format!("duplicated element id '{}'", id);
+                let message = format!("duplicated element id '{id}'");
                 if !other_loc.error_reported {
                     diag.push_error(message.clone(), &*other_loc.element.borrow());
                     other_loc.error_reported = true;

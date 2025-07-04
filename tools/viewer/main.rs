@@ -5,18 +5,22 @@
 
 use clap::Parser;
 use i_slint_compiler::ComponentSelection;
-use i_slint_core::model::{Model, ModelRc};
-use i_slint_core::SharedVector;
 use itertools::Itertools;
 use slint_interpreter::{
-    ComponentDefinition, ComponentHandle, ComponentInstance, SharedString, Value,
+    json::JsonExt, ComponentDefinition, ComponentHandle, ComponentInstance, Value,
 };
-use smol_str::ToSmolStr;
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter};
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
+
+#[cfg(not(any(target_os = "windows", all(target_arch = "aarch64", target_os = "linux"))))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(not(any(target_os = "windows", all(target_arch = "aarch64", target_os = "linux"))))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
 struct Error(Box<dyn std::error::Error>);
 impl std::fmt::Debug for Error {
@@ -95,33 +99,6 @@ struct Cli {
     translation_dir: Option<std::path::PathBuf>,
 }
 
-fn to_json(val: slint_interpreter::Value) -> Option<serde_json::Value> {
-    match val {
-        slint_interpreter::Value::Number(x) => Some(x.into()),
-        slint_interpreter::Value::String(x) => Some(x.as_str().into()),
-        slint_interpreter::Value::Bool(x) => Some(x.into()),
-        slint_interpreter::Value::Model(model) => {
-            let mut res = Vec::with_capacity(model.row_count());
-            for i in 0..model.row_count() {
-                res.push(to_json(model.row_data(i).unwrap())?);
-            }
-            Some(serde_json::Value::Array(res))
-        }
-        slint_interpreter::Value::Struct(st) => {
-            let mut obj = serde_json::Map::new();
-            for (k, v) in st.iter() {
-                obj.insert(k.into(), to_json(v.clone())?);
-            }
-            Some(obj.into())
-        }
-        slint_interpreter::Value::EnumerationValue(_class, value) => Some(value.as_str().into()),
-        slint_interpreter::Value::Image(image) => {
-            image.path().and_then(|path| path.to_str()).map(|path| path.into())
-        }
-        _ => None,
-    }
-}
-
 thread_local! {static CURRENT_INSTANCE: std::cell::RefCell<Option<ComponentInstance>> = Default::default();}
 static EXIT_CODE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
@@ -182,8 +159,13 @@ fn main() -> Result<()> {
     if let Some(data_path) = args.save_data {
         let mut obj = serde_json::Map::new();
         for (name, _) in c.properties() {
-            if let Some(v) = to_json(component.get_property(&name).unwrap()) {
-                obj.insert(name.into(), v);
+            match component.get_property(&name).unwrap().to_json() {
+                Ok(v) => {
+                    obj.insert(name, v);
+                }
+                Err(e) => {
+                    eprintln!("Failed to turn property {name} into JSON: {e}");
+                }
             }
         }
         if data_path == std::path::Path::new("-") {
@@ -221,7 +203,7 @@ fn init_compiler(
             watch_with_retry(data_path, &watcher);
         }
         compiler.set_file_loader(move |path| {
-            watch_with_retry(&path.into(), &watcher);
+            watch_with_retry(path, &watcher);
             Box::pin(async { None })
         })
     }
@@ -235,7 +217,7 @@ fn init_compiler(
     compiler
 }
 
-fn watch_with_retry(path: &PathBuf, watcher: &Arc<Mutex<notify::RecommendedWatcher>>) {
+fn watch_with_retry(path: &Path, watcher: &Arc<Mutex<notify::RecommendedWatcher>>) {
     notify::Watcher::watch(
         &mut *watcher.lock().unwrap(),
         path,
@@ -243,7 +225,7 @@ fn watch_with_retry(path: &PathBuf, watcher: &Arc<Mutex<notify::RecommendedWatch
     )
     .unwrap_or_else(|err| match err.kind {
         notify::ErrorKind::PathNotFound | notify::ErrorKind::Generic(_) => {
-            let path = path.clone();
+            let path = path.to_path_buf();
             let watcher = watcher.clone();
             static RETRY_DURATION: u64 = 100;
             i_slint_core::timers::Timer::single_shot(
@@ -361,78 +343,17 @@ fn load_data(
     let types = c.properties_and_callbacks().collect::<HashMap<_, _>>();
     let obj = json.as_object().ok_or("The data is not a JSON object")?;
     for (name, v) in obj {
-        fn from_json(
-            t: &i_slint_compiler::langtype::Type,
-            v: &serde_json::Value,
-        ) -> slint_interpreter::Value {
-            match v {
-                serde_json::Value::Null => slint_interpreter::Value::Void,
-                serde_json::Value::Bool(b) => (*b).into(),
-                serde_json::Value::Number(n) => {
-                    slint_interpreter::Value::Number(n.as_f64().unwrap_or(f64::NAN))
-                }
-                serde_json::Value::String(s) => match t {
-                    i_slint_compiler::langtype::Type::Enumeration(e) => {
-                        let s = s.to_smolstr();
-                        if e.values.contains(&s) {
-                            slint_interpreter::Value::EnumerationValue(e.name.to_string(), s.into())
-                        } else {
-                            eprintln!("Warning: Unexpected value for enum '{}': {}", e.name, s);
-                            slint_interpreter::Value::Void
-                        }
-                    }
-                    i_slint_compiler::langtype::Type::String => {
-                        SharedString::from(s.as_str()).into()
-                    }
-                    i_slint_compiler::langtype::Type::Image => {
-                        match slint_interpreter::Image::load_from_path(std::path::Path::new(s)) {
-                            Ok(image) => image.into(),
-                            Err(_) => {
-                                eprintln!("Warning: Failed to load image from path: {}", s);
-                                slint_interpreter::Value::Void
-                            }
-                        }
-                    }
-                    _ => slint_interpreter::Value::Void,
-                },
-                serde_json::Value::Array(array) => match t {
-                    i_slint_compiler::langtype::Type::Array(it) => slint_interpreter::Value::Model(
-                        ModelRc::new(i_slint_core::model::SharedVectorModel::from(
-                            array.iter().map(|v| from_json(it, v)).collect::<SharedVector<Value>>(),
-                        )),
-                    ),
-                    _ => slint_interpreter::Value::Void,
-                },
-                serde_json::Value::Object(obj) => match t {
-                    i_slint_compiler::langtype::Type::Struct(s) => obj
-                        .iter()
-                        .filter_map(|(k, v)| {
-                            let k = k.to_smolstr();
-                            match s.fields.get(&k) {
-                                Some(t) => Some((k.to_string(), from_json(t, v))),
-                                None => {
-                                    eprintln!("Warning: ignoring unknown property: {}", k);
-                                    None
-                                }
-                            }
-                        })
-                        .collect::<slint_interpreter::Struct>()
-                        .into(),
-                    _ => slint_interpreter::Value::Void,
-                },
-            }
-        }
-
         match types.get(name.as_str()) {
-            Some(t) => {
-                match instance.set_property(name, from_json(t, v)) {
+            Some((t, _)) => match slint_interpreter::Value::from_json(t, v) {
+                Ok(v) => match instance.set_property(name, v) {
                     Ok(()) => (),
                     Err(e) => {
-                        eprintln!("Warning: cannot set property '{}' from data file: {:?}", name, e)
+                        eprintln!("Warning: cannot set property '{name}' from data file: {e}")
                     }
-                };
-            }
-            None => eprintln!("Warning: ignoring unknown property: {}", name),
+                },
+                Err(e) => eprintln!("Warning: cannot set property '{name}' from data file: {e}"),
+            },
+            None => eprintln!("Warning: ignoring unknown property: {name}"),
         }
     }
     Ok(())
@@ -446,13 +367,13 @@ fn install_callbacks(instance: &ComponentInstance, callbacks: &[String]) {
             match instance.set_callback(callback, move |args| {
                 match execute_cmd(&cmd, args) {
                     Ok(()) => (),
-                    Err(e) => eprintln!("Error: {:?}", e),
+                    Err(e) => eprintln!("Error: {e:?}"),
                 }
                 Value::Void
             }) {
                 Ok(()) => (),
                 Err(e) => {
-                    eprintln!("Warning: cannot set callback handler for '{}': {}", callback, e)
+                    eprintln!("Warning: cannot set callback handler for '{callback}': {e}")
                 }
             }
         }
@@ -476,11 +397,18 @@ fn execute_cmd(cmd: &str, callback_args: &[Value]) -> Result<()> {
                 Value::Struct(st) => {
                     let mut obj = serde_json::Map::new();
                     for (k, v) in st.iter() {
-                        obj.insert(k.into(), to_json(v.clone()).unwrap());
+                        match v.to_json() {
+                            Ok(v) => {
+                                obj.insert(k.into(), v);
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to convert field {k} to JSON: {e}");
+                            }
+                        }
                     }
                     serde_json::to_string_pretty(&obj)?
                 }
-                _ => return Err(format!("Cannot convert argument to string: {:?}", v).into()),
+                _ => return Err(format!("Cannot convert argument to string: {v:?}").into()),
             })
         })
         .collect::<Result<Vec<String>>>()?;

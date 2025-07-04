@@ -85,6 +85,7 @@ export component TextEdit {
     accessible-enabled: root.enabled;
     accessible-value <=> text;
     accessible-placeholder-text: text == "" ? placeholder-text : "";
+    accessible-read-only: root.read-only;
 
     public function set-selection-offsets(start: int, end: int) {
         text-input.set-selection-offsets(start, end);
@@ -138,47 +139,71 @@ export component TextEdit {
         border-width: 1px;
     }
 
-    scroll-view := ScrollView {
-        x: 8px;
-        y: 8px;
-        width: parent.width - 16px;
-        height: parent.height - 16px;
-        viewport-width: root.wrap == TextWrap.no-wrap ? max(self.visible-width, text-input.preferred-width) : self.visible-width;
-        viewport-height: max(self.visible-height, text-input.preferred-height);
-
-        text-input := TextInput {
-            enabled: true;
-            color: CupertinoPalette.foreground;
-            font-size: CupertinoFontSettings.body.font-size;
-            font-weight: CupertinoFontSettings.body.font-weight;
-            selection-background-color: CupertinoPalette.selection-background;
-            selection-foreground-color: self.color;
-            single-line: false;
-            wrap: word-wrap;
-
-            edited => {
-                root.edited(self.text);
+    ContextMenuArea {
+        Menu {
+            MenuItem {
+                title: @tr("Cut");
+                activated => { text-input.cut(); }
             }
-            
-            key-pressed(event) => {
-                root.key-pressed(event)
+            MenuItem {
+                title: @tr("Copy");
+                activated => { text-input.copy(); }
             }
-
-            key-released(event) => {
-                root.key-released(event)
+            MenuItem {
+                title: @tr("Paste");
+                activated => { text-input.paste(); }
             }
+            MenuItem {
+                title: @tr("Select All");
+                activated => { text-input.select-all(); }
+            }
+        }
 
-            cursor-position-changed(cpos) => {
-                if (cpos.x + root.viewport-x < 12px) {
-                    root.viewport-x = min(0px, max(parent.visible-width - self.width,  - cpos.x + 12px));
-                } else if (cpos.x + root.viewport-x > parent.visible-width - 12px) {
-                    root.viewport-x = min(0px, max(parent.visible-width - self.width,  parent.visible-width - cpos.x - 12px));
+        scroll-view := ScrollView {
+            x: 8px;
+            y: 8px;
+            width: parent.width - 16px;
+            height: parent.height - 16px;
+            viewport-width: root.wrap == TextWrap.no-wrap ? max(self.visible-width, text-input.preferred-width) : self.visible-width;
+            viewport-height: max(self.visible-height, text-input.preferred-height);
+
+            text-input := TextInput {
+                enabled: true;
+                color: CupertinoPalette.foreground;
+                font-size: CupertinoFontSettings.body.font-size;
+                font-weight: CupertinoFontSettings.body.font-weight;
+                selection-background-color: CupertinoPalette.selection-background;
+                selection-foreground-color: self.color;
+                single-line: false;
+                wrap: word-wrap;
+                page-height: scroll-view.visible-height;
+                // Disable TextInput's built-in accessibility support as the widget takes care of that.
+                accessible-role: none;
+
+                edited => {
+                    root.edited(self.text);
                 }
-                if (cpos.y + root.viewport-y < 12px) {
-                    root.viewport-y = min(0px, max(parent.visible-height - self.height,  - cpos.y + 12px));
-                } else if (cpos.y + root.viewport-y > parent.visible-height - 12px - 20px) {
-                    // FIXME: font-height hardcoded to 20px
-                    root.viewport-y = min(0px, max(parent.visible-height - self.height,  parent.visible-height - cpos.y - 12px - 20px));
+
+                key-pressed(event) => {
+                    root.key-pressed(event)
+                }
+
+                key-released(event) => {
+                    root.key-released(event)
+                }
+
+                cursor-position-changed(cpos) => {
+                    if (cpos.x + root.viewport-x < 12px) {
+                        root.viewport-x = min(0px, max(parent.visible-width - self.width,  - cpos.x + 12px));
+                    } else if (cpos.x + root.viewport-x > parent.visible-width - 12px) {
+                        root.viewport-x = min(0px, max(parent.visible-width - self.width,  parent.visible-width - cpos.x - 12px));
+                    }
+                    if (cpos.y + root.viewport-y < 12px) {
+                        root.viewport-y = min(0px, max(parent.visible-height - self.height,  - cpos.y + 12px));
+                    } else if (cpos.y + root.viewport-y > parent.visible-height - 12px - 20px) {
+                        // FIXME: font-height hardcoded to 20px
+                        root.viewport-y = min(0px, max(parent.visible-height - self.height,  parent.visible-height - cpos.y - 12px - 20px));
+                    }
                 }
             }
         }
@@ -196,7 +221,7 @@ export component TextEdit {
         font-family: text-input.font-family;
         color: CupertinoPalette.foreground-secondary;
         overflow: elide;
-        // the label is set on the TextEdit itself
+        // `accessible-placeholder-text` is set on TextEdit already
         accessible-role: none;
     }
 }

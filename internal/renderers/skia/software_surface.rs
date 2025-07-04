@@ -9,8 +9,9 @@ use i_slint_core::lengths::ScaleFactor;
 use std::cell::RefCell;
 use std::num::NonZeroU32;
 use std::rc::Rc;
+use std::sync::Arc;
 
-use crate::PhysicalRect;
+use crate::{PhysicalRect, SkiaSharedContext};
 
 pub trait RenderBuffer {
     fn with_buffer(
@@ -31,11 +32,11 @@ pub trait RenderBuffer {
 }
 
 struct SoftbufferRenderBuffer {
-    _context: softbuffer::Context<Rc<dyn raw_window_handle::HasDisplayHandle>>,
+    _context: softbuffer::Context<Arc<dyn raw_window_handle::HasDisplayHandle>>,
     surface: RefCell<
         softbuffer::Surface<
-            Rc<dyn raw_window_handle::HasDisplayHandle>,
-            Rc<dyn raw_window_handle::HasWindowHandle>,
+            Arc<dyn raw_window_handle::HasDisplayHandle>,
+            Arc<dyn raw_window_handle::HasWindowHandle>,
         >,
     >,
 }
@@ -86,16 +87,13 @@ impl RenderBuffer for SoftbufferRenderBuffer {
             let damage_rects = dirty_region
                 .iter()
                 .map(|logical| {
-                    let physical_rect: PhysicalRect = logical.to_rect() * scale_factor;
+                    let physical_rect: PhysicalRect =
+                        (logical.to_rect() * scale_factor).round_out();
                     softbuffer::Rect {
                         x: physical_rect.min_x().ceil() as _,
                         y: physical_rect.min_y().ceil() as _,
-                        width: ((physical_rect.width().round() as i32).max(1) as u32)
-                            .try_into()
-                            .unwrap(),
-                        height: ((physical_rect.height().round() as i32).max(1) as u32)
-                            .try_into()
-                            .unwrap(),
+                        width: ((physical_rect.width() as i32).max(1) as u32).try_into().unwrap(),
+                        height: ((physical_rect.height() as i32).max(1) as u32).try_into().unwrap(),
                     }
                 })
                 .collect::<Vec<_>>();
@@ -116,8 +114,9 @@ pub struct SoftwareSurface {
 
 impl super::Surface for SoftwareSurface {
     fn new(
-        window_handle: Rc<dyn raw_window_handle::HasWindowHandle>,
-        display_handle: Rc<dyn raw_window_handle::HasDisplayHandle>,
+        _shared_context: &SkiaSharedContext,
+        window_handle: Arc<dyn raw_window_handle::HasWindowHandle>,
+        display_handle: Arc<dyn raw_window_handle::HasDisplayHandle>,
         _size: PhysicalWindowSize,
         _requested_graphics_api: Option<RequestedGraphicsAPI>,
     ) -> Result<Self, i_slint_core::platform::PlatformError> {
@@ -126,7 +125,7 @@ impl super::Surface for SoftwareSurface {
 
         let surface =
             softbuffer::Surface::new(&_context, window_handle).map_err(|softbuffer_error| {
-                format!("Error creating softbuffer surface: {}", softbuffer_error)
+                format!("Error creating softbuffer surface: {softbuffer_error}")
             })?;
 
         let surface_access =
@@ -173,7 +172,7 @@ impl super::Surface for SoftwareSurface {
                     None,
                 )
                 .ok_or_else(|| {
-                    format!("Error wrapping target buffer for rendering into with Skia")
+                    "Error wrapping target buffer for rendering into with Skia".to_string()
                 })?;
 
                 let dirty_region = callback(surface_borrow.canvas(), None, age);
@@ -190,10 +189,34 @@ impl super::Surface for SoftwareSurface {
     fn bits_per_pixel(&self) -> Result<u8, i_slint_core::platform::PlatformError> {
         Ok(24)
     }
+
+    fn use_partial_rendering(&self) -> bool {
+        true
+    }
 }
 
 impl<T: RenderBuffer + 'static> From<T> for SoftwareSurface {
     fn from(render_buffer: T) -> Self {
         Self { render_buffer: Box::new(render_buffer) }
+    }
+}
+
+impl<T: RenderBuffer + 'static> RenderBuffer for Rc<T> {
+    fn with_buffer(
+        &self,
+        window: &Window,
+        size: PhysicalWindowSize,
+        render_callback: &mut dyn FnMut(
+            NonZeroU32,
+            NonZeroU32,
+            skia_safe::ColorType,
+            u8,
+            &mut [u8],
+        ) -> Result<
+            Option<DirtyRegion>,
+            i_slint_core::platform::PlatformError,
+        >,
+    ) -> Result<(), i_slint_core::platform::PlatformError> {
+        self.as_ref().with_buffer(window, size, render_callback)
     }
 }

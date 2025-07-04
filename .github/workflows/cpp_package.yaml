@@ -14,7 +14,7 @@ on:
 
 env:
     MACOSX_DEPLOYMENT_TARGET: "11.0"
-    # Keep in sync with features in nightly_snapshot.yaml, slint_tool_binary.yaml, api/node/Cargo.toml, and api/python/Cargo.toml
+    # Keep in sync with features in nightly_snapshot.yaml, slint_tool_binary.yaml, api/node/Cargo.toml, and api/python/slint/Cargo.toml
     SLINT_BINARY_FEATURES: "-DSLINT_FEATURE_BACKEND_LINUXKMS_NOSEAT=ON -DSLINT_FEATURE_BACKEND_WINIT=ON -DSLINT_FEATURE_RENDERER_FEMTOVG=ON -DSLINT_FEATURE_RENDERER_SKIA=ON -DSLINT_FEATURE_RENDERER_SOFTWARE=ON"
     SLINT_MCU_FEATURES: "-DSLINT_FEATURE_FREESTANDING=ON -DSLINT_FEATURE_RENDERER_SOFTWARE=ON"
     # env variable used by espup https://github.com/esp-rs/espup?tab=readme-ov-file#github-api
@@ -28,16 +28,20 @@ jobs:
             CARGO_INCREMENTAL: false
         strategy:
             matrix:
-                os: [ubuntu-20.04, macOS-13, macos-14, windows-2022]
+                os: [ubuntu-22.04, macOS-13, macos-14, windows-2022]
                 include:
-                    - os: ubuntu-20.04
+                    - os: ubuntu-22.04
                       package_suffix: linux
                     - os: macOS-13
                       package_suffix: macos-x86_64
                     - os: macos-14
                       package_suffix: macos-aarch64
                     - os: windows-2022
-                      package_suffix: windows
+                      package_suffix: windows-x86_64
+                      msvc_arch: x64
+                    - os: windows-11-arm
+                      package_suffix: windows-aarch64
+                      msvc_arch: arm64
 
         runs-on: ${{ matrix.os }}
         steps:
@@ -47,7 +51,7 @@ jobs:
                   old-ubuntu: true
             - name: Install Qt (Ubuntu)
               uses: jurplel/install-qt-action@v4
-              if: matrix.os == 'ubuntu-20.04'
+              if: matrix.os == 'ubuntu-22.04'
               with:
                   version: 6.2.2
                   cache: true
@@ -55,25 +59,25 @@ jobs:
             - uses: baptiste0928/cargo-install@v3
               with:
                   crate: cargo-about
+                  version: "=0.6.6"
             - name: Prepare licenses
-              run: bash -x ../../scripts/prepare_binary_package.sh ../..
+              run: bash -x ../../scripts/prepare_binary_package.sh ${{ runner.workspace }}/cppbuild
               working-directory: api/cpp/
-            # Pin Python version until https://github.com/slint-ui/slint/issues/6615 is fixed.   
-            - uses: actions/setup-python@v5
-              with:
-                python-version: '3.12'
             - uses: ilammy/msvc-dev-cmd@v1
+              with:
+                arch: ${{ matrix.msvc_arch }}
+              if: runner.os == 'Windows'
             - name: Select MSVC (windows)
               run: |
                   echo "CC=cl.exe" >> $GITHUB_ENV
                   echo "CXX=cl.exe" >> $GITHUB_ENV
-              if: matrix.os == 'windows-2022'
+              if: runner.os == 'Windows'
             - name: C++ Build
               uses: lukka/run-cmake@v3.4
               with:
                   cmakeListsOrSettingsJson: CMakeListsTxtAdvanced
                   cmakeListsTxtPath: CMakeLists.txt
-                  cmakeAppendedArgs: "-DCMAKE_BUILD_TYPE=RelWithDebInfo ${{ env.SLINT_BINARY_FEATURES }} ${{ inputs.extra_cmake_flags }}"
+                  cmakeAppendedArgs: "-DCMAKE_BUILD_TYPE=RelWithDebInfo ${{ env.SLINT_BINARY_FEATURES }} ${{ inputs.extra_cmake_flags }} -DSLINT_FEATURE_SDF_FONTS=ON"
                   buildDirectory: ${{ runner.workspace }}/cppbuild
                   buildWithCMakeArgs: "--config Release"
             - name: cpack
@@ -92,7 +96,7 @@ jobs:
             matrix:
                 target: [thumbv7em-none-eabihf]
 
-        runs-on: ubuntu-20.04
+        runs-on: ubuntu-22.04
         steps:
             - uses: actions/checkout@v4
             - uses: ./.github/actions/install-linux-dependencies
@@ -108,8 +112,9 @@ jobs:
             - uses: baptiste0928/cargo-install@v3
               with:
                   crate: cargo-about
+                  version: "=0.6.6"
             - name: Prepare licenses
-              run: bash -x ../../scripts/prepare_binary_package.sh ../..
+              run: bash -x ../../scripts/prepare_binary_package.sh ${{ runner.workspace }}/cppbuild
               working-directory: api/cpp/
             - name: C++ Build
               uses: lukka/run-cmake@v3.4
@@ -151,9 +156,10 @@ jobs:
               with:
                   old-ubuntu: true
             - uses: dtolnay/rust-toolchain@stable
+            - uses: cargo-bins/cargo-binstall@main
             - name: install espup
               run: |
-                  cargo install espup
+                  cargo binstall espup
                   espup install
                   rustup default esp
             - name: add esp toolchains to PATH
@@ -164,8 +170,9 @@ jobs:
             - uses: baptiste0928/cargo-install@v3
               with:
                   crate: cargo-about
+                  version: "=0.6.6"
             - name: Prepare licenses
-              run: bash -x ../../scripts/prepare_binary_package.sh ../..
+              run: bash -x ../../scripts/prepare_binary_package.sh ${{ runner.workspace }}/cppbuild
               working-directory: api/cpp/
             - name: C++ Build
               uses: lukka/run-cmake@v3.4
@@ -205,11 +212,18 @@ jobs:
         container: ghcr.io/slint-ui/slint/${{ matrix.rust_target }}-cpp
         steps:
             - uses: actions/checkout@v4
+            - uses: baptiste0928/cargo-install@v3
+              with:
+                  crate: cargo-about
+                  version: "=0.6.6"
+            - name: Prepare licenses
+              run: bash -x ../../scripts/prepare_binary_package.sh ../../build
+              working-directory: api/cpp/
             - name: CMake configure
               run: cmake -B build -S . -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=${{ matrix.cmake_system_processor }} -DRust_CARGO_TARGET=${{ matrix.rust_target}} -DCMAKE_C_COMPILER=${{ matrix.gcc_target }}-gcc -DCMAKE_CXX_COMPILER=${{ matrix.gcc_target }}-g++  -DSLINT_COMPILER=download ${{ env.SLINT_BINARY_FEATURES }} ${{ inputs.extra_cmake_flags }}
             - name: CMake build
               run: cmake --build build --parallel
-            - name: CMake package                                      
+            - name: CMake package
               working-directory: build
               run: cpack -G TGZ
             - name: "Upload C++ packages"
@@ -223,16 +237,25 @@ jobs:
             CARGO_INCREMENTAL: false
         strategy:
             matrix:
-                os: [ubuntu-20.04, macOS-13, macos-14, windows-2022]
+                os: [ubuntu-22.04, macOS-13, macos-14, windows-2022]
                 include:
-                    - os: ubuntu-20.04
+                    - os: ubuntu-22.04
                       package_suffix: Linux-x86_64
+                      cargo_target: x86_64-unknown-linux-gnu
                     - os: macOS-13
                       package_suffix: Darwin-x86_64
+                      cargo_target: x86_64-apple-darwin
                     - os: macos-14
                       package_suffix: Darwin-arm64
+                      cargo_target: aarch64-apple-darwin
                     - os: windows-2022
-                      package_suffix: Windows
+                      package_suffix: Windows-AMD64
+                      msvc_arch: x64
+                      cargo_target: x86_64-pc-windows-gnu
+                    - os: windows-11-arm
+                      package_suffix: Windows-ARM64
+                      msvc_arch: arm64
+                      cargo_target: aarch64-pc-windows-gnu
 
         runs-on: ${{ matrix.os }}
         steps:
@@ -241,13 +264,22 @@ jobs:
               with:
                   old-ubuntu: true
             - uses: ./.github/actions/setup-rust
+            - uses: ilammy/msvc-dev-cmd@v1
+              with:
+                arch: ${{ matrix.msvc_arch }}
+              if: runner.os == 'Windows'
+            - name: Select MSVC (windows)
+              run: |
+                  echo "CC=cl.exe" >> $GITHUB_ENV
+                  echo "CXX=cl.exe" >> $GITHUB_ENV
+              if: runner.os == 'Windows'
             # Build Slint-compiler with CMake so that CMakeLists.txt can configure C++ specific features
             - name: Slint Compiler Build
               uses: lukka/run-cmake@v3.4
               with:
                 cmakeListsOrSettingsJson: CMakeListsTxtAdvanced
                 cmakeListsTxtPath: CMakeLists.txt
-                cmakeAppendedArgs: "-GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSLINT_BUILD_RUNTIME=OFF ${{ inputs.extra_cmake_flags }}"
+                cmakeAppendedArgs: "-GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DSLINT_BUILD_RUNTIME=OFF ${{ inputs.extra_cmake_flags }} -DSLINT_FEATURE_SDF_FONTS=ON -DRust_CARGO_TARGET=${{ matrix.cargo_target }}"
                 buildDirectory: ${{ runner.workspace }}/cppbuild
                 buildWithCMakeArgs: "--config Release"
             - name: cpack

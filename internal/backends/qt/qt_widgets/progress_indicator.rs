@@ -30,6 +30,7 @@ impl Item for NativeProgressIndicator {
         self: Pin<&Self>,
         orientation: Orientation,
         _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
     ) -> LayoutInfo {
         let indeterminate = self.indeterminate();
         let progress =
@@ -71,7 +72,7 @@ impl Item for NativeProgressIndicator {
 
     fn input_event_filter_before_children(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
@@ -80,7 +81,7 @@ impl Item for NativeProgressIndicator {
 
     fn input_event(
         self: Pin<&Self>,
-        _event: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &i_slint_core::items::ItemRc,
     ) -> InputEventResult {
@@ -128,6 +129,19 @@ impl Item for NativeProgressIndicator {
 
             qApp->style()->drawControl(QStyle::CE_ProgressBar, &option, painter_, widget);
         });
+    }
+
+    fn bounding_rect(
+        self: core::pin::Pin<&Self>,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+        geometry: LogicalRect,
+    ) -> LogicalRect {
+        geometry
+    }
+
+    fn clips_children(self: core::pin::Pin<&Self>) -> bool {
+        false
     }
 }
 

@@ -4,13 +4,13 @@
 use core::ops::ControlFlow;
 use i_slint_core::accessibility::{AccessibilityAction, AccessibleStringProperty};
 use i_slint_core::api::{ComponentHandle, LogicalPosition};
-use i_slint_core::item_tree::{ItemTreeRc, ItemWeak};
+use i_slint_core::item_tree::{ItemTreeRc, ItemWeak, ParentItemTraversalMode};
 use i_slint_core::items::{ItemRc, Opacity};
 use i_slint_core::window::WindowInner;
 use i_slint_core::SharedString;
 
 fn warn_missing_debug_info() {
-    i_slint_core::debug_log!("The use of the ElementHandle API requires the presence of debug info in Slint compiler generated code. Set the `SLINT_EMIT_DEBUG_INFO=1` environment variable at application build time")
+    i_slint_core::debug_log!("The use of the ElementHandle API requires the presence of debug info in Slint compiler generated code. Set the `SLINT_EMIT_DEBUG_INFO=1` environment variable at application build time or use `compile_with_config` and `with_debug_info` with `slint_build`'s `CompilerConfiguration`")
 }
 
 mod internal {
@@ -51,31 +51,29 @@ impl SingleElementMatch {
     fn matches(&self, element: &ElementHandle) -> bool {
         match self {
             SingleElementMatch::MatchById { id, root_base } => {
-                if element.id().map_or(false, |candidate_id| candidate_id == id) {
+                if element.id().is_some_and(|candidate_id| candidate_id == id) {
                     return true;
                 }
-                root_base.as_ref().map_or(false, |root_base| {
+                root_base.as_ref().is_some_and(|root_base| {
                     element
                         .type_name()
-                        .map_or(false, |type_name_candidate| type_name_candidate == root_base)
+                        .is_some_and(|type_name_candidate| type_name_candidate == root_base)
                         || element
                             .bases()
-                            .map_or(false, |mut bases| bases.any(|base| base == root_base))
+                            .is_some_and(|mut bases| bases.any(|base| base == root_base))
                 })
             }
             SingleElementMatch::MatchByTypeName(type_name) => element
                 .type_name()
-                .map_or(false, |candidate_type_name| candidate_type_name == type_name),
+                .is_some_and(|candidate_type_name| candidate_type_name == type_name),
             SingleElementMatch::MatchByTypeNameOrBase(type_name) => {
                 element
                     .type_name()
-                    .map_or(false, |candidate_type_name| candidate_type_name == type_name)
-                    || element
-                        .bases()
-                        .map_or(false, |mut bases| bases.any(|base| base == type_name))
+                    .is_some_and(|candidate_type_name| candidate_type_name == type_name)
+                    || element.bases().is_some_and(|mut bases| bases.any(|base| base == type_name))
             }
             SingleElementMatch::MatchByAccessibleRole(role) => {
-                element.accessible_role().map_or(false, |candidate_role| candidate_role == *role)
+                element.accessible_role() == Some(*role)
             }
             SingleElementMatch::MatchByPredicate(predicate) => (predicate)(element),
         }
@@ -92,6 +90,7 @@ impl ElementQueryInstruction {
         query_stack: &[Self],
         element: ElementHandle,
         control_flow_after_first_match: ControlFlow<()>,
+        active_popups: &[(ItemRc, ItemTreeRc)],
     ) -> (ControlFlow<()>, Vec<ElementHandle>) {
         let Some((query, tail)) = query_stack.split_first() else {
             return (control_flow_after_first_match, vec![element]);
@@ -100,12 +99,19 @@ impl ElementQueryInstruction {
         match query {
             ElementQueryInstruction::MatchDescendants => {
                 let mut results = vec![];
-                match element.visit_descendants(|child| {
-                    let (next_control_flow, sub_results) =
-                        Self::match_recursively(tail, child, control_flow_after_first_match);
-                    results.extend(sub_results);
-                    next_control_flow
-                }) {
+                match element.visit_descendants_impl(
+                    &mut |child| {
+                        let (next_control_flow, sub_results) = Self::match_recursively(
+                            tail,
+                            child,
+                            control_flow_after_first_match,
+                            active_popups,
+                        );
+                        results.extend(sub_results);
+                        next_control_flow
+                    },
+                    active_popups,
+                ) {
                     Some(_) => (ControlFlow::Break(()), results),
                     None => (ControlFlow::Continue(()), results),
                 }
@@ -113,8 +119,12 @@ impl ElementQueryInstruction {
             ElementQueryInstruction::MatchSingleElement(criteria) => {
                 let mut results = vec![];
                 let control_flow = if criteria.matches(&element) {
-                    let (next_control_flow, sub_results) =
-                        Self::match_recursively(tail, element, control_flow_after_first_match);
+                    let (next_control_flow, sub_results) = Self::match_recursively(
+                        tail,
+                        element,
+                        control_flow_after_first_match,
+                        active_popups,
+                    );
                     results.extend(sub_results);
                     next_control_flow
                 } else {
@@ -204,6 +214,7 @@ impl ElementQuery {
             &self.query_stack,
             self.root.clone(),
             ControlFlow::Break(()),
+            &self.root.active_popups(),
         )
         .1
         .into_iter()
@@ -216,6 +227,7 @@ impl ElementQuery {
             &self.query_stack,
             self.root.clone(),
             ControlFlow::Continue(()),
+            &self.root.active_popups(),
         )
         .1
     }
@@ -249,11 +261,46 @@ impl ElementHandle {
         &self,
         mut visitor: impl FnMut(ElementHandle) -> ControlFlow<R>,
     ) -> Option<R> {
+        self.visit_descendants_impl(&mut |e| visitor(e), &self.active_popups())
+    }
+
+    /// Visit all descendants of this element and call the visitor to each of them, until the visitor returns [`ControlFlow::Break`].
+    /// When the visitor breaks, the function returns the value. If it doesn't break, the function returns None.
+    fn visit_descendants_impl<R>(
+        &self,
+        visitor: &mut dyn FnMut(ElementHandle) -> ControlFlow<R>,
+        active_popups: &[(ItemRc, ItemTreeRc)],
+    ) -> Option<R> {
         let self_item = self.item.upgrade()?;
-        self_item.visit_descendants(|item_rc| {
+
+        let visit_attached_popups =
+            |item_rc: &ItemRc, visitor: &mut dyn FnMut(ElementHandle) -> ControlFlow<R>| {
+                for (popup_elem, popup_item_tree) in active_popups {
+                    if popup_elem == item_rc {
+                        if let Some(result) = (ElementHandle {
+                            item: ItemRc::new(popup_item_tree.clone(), 0).downgrade(),
+                            element_index: 0,
+                        })
+                        .visit_descendants_impl(visitor, active_popups)
+                        {
+                            return Some(result);
+                        }
+                    }
+                }
+                None
+            };
+
+        visit_attached_popups(&self_item, visitor);
+
+        self_item.visit_descendants(move |item_rc| {
             if !item_rc.is_visible() {
                 return ControlFlow::Continue(());
             }
+
+            if let Some(result) = visit_attached_popups(item_rc, visitor) {
+                return ControlFlow::Break(result);
+            }
+
             let elements = ElementHandle::collect_elements(item_rc.clone());
             for e in elements {
                 let result = visitor(e);
@@ -285,7 +332,7 @@ impl ElementHandle {
             .root_element()
             .query_descendants()
             .match_predicate(move |elem| {
-                elem.accessible_label().map_or(false, |candidate_label| candidate_label == label)
+                elem.accessible_label().is_some_and(|candidate_label| candidate_label == label)
             })
             .find_all();
         results.into_iter()
@@ -647,6 +694,39 @@ impl ElementHandle {
         })
     }
 
+    /// Returns the value of the `accessible-expanded` property, if present
+    pub fn accessible_expanded(&self) -> Option<bool> {
+        if self.element_index != 0 {
+            return None;
+        }
+        self.item
+            .upgrade()
+            .and_then(|item| item.accessible_string_property(AccessibleStringProperty::Expanded))
+            .and_then(|item| item.parse().ok())
+    }
+
+    /// Returns the value of the `accessible-expandable` property, if present
+    pub fn accessible_expandable(&self) -> Option<bool> {
+        if self.element_index != 0 {
+            return None;
+        }
+        self.item
+            .upgrade()
+            .and_then(|item| item.accessible_string_property(AccessibleStringProperty::Expandable))
+            .and_then(|item| item.parse().ok())
+    }
+
+    /// Returns the value of the `accessible-read-only` property, if present
+    pub fn accessible_read_only(&self) -> Option<bool> {
+        if self.element_index != 0 {
+            return None;
+        }
+        self.item
+            .upgrade()
+            .and_then(|item| item.accessible_string_property(AccessibleStringProperty::ReadOnly))
+            .and_then(|item| item.parse().ok())
+    }
+
     /// Returns the size of the element in logical pixels. This corresponds to the value of the `width` and
     /// `height` properties in Slint code. Returns a zero size if the element is not valid.
     pub fn size(&self) -> i_slint_core::api::LogicalSize {
@@ -673,14 +753,14 @@ impl ElementHandle {
     }
 
     /// Returns the opacity that is applied when rendering this element. This is the product of
-    /// the opacity property multipled with any opacity specified by parent elements. Returns zero
+    /// the opacity property multiplied with any opacity specified by parent elements. Returns zero
     /// if the element is not valid.
     pub fn computed_opacity(&self) -> f32 {
         self.item
             .upgrade()
             .map(|mut item| {
                 let mut opacity = 1.0;
-                while let Some(parent) = item.parent_item() {
+                while let Some(parent) = item.parent_item(ParentItemTraversalMode::StopAtPopups) {
                     if let Some(opacity_item) =
                         i_slint_core::items::ItemRef::downcast_pin::<Opacity>(item.borrow())
                     {
@@ -712,6 +792,17 @@ impl ElementHandle {
         }
         if let Some(item) = self.item.upgrade() {
             item.accessible_action(&AccessibilityAction::Decrement)
+        }
+    }
+
+    /// Invokes the element's `accessible-action-expand` callback, if declared. On widgets such as combo boxes, this
+    /// typically discloses the list of available choices.
+    pub fn invoke_accessible_expand_action(&self) {
+        if self.element_index != 0 {
+            return;
+        }
+        if let Some(item) = self.item.upgrade() {
+            item.accessible_action(&AccessibilityAction::Expand)
         }
     }
 
@@ -793,6 +884,23 @@ impl ElementHandle {
         window_adapter.window().dispatch_event(
             i_slint_core::platform::WindowEvent::PointerReleased { position, button },
         );
+    }
+
+    fn active_popups(&self) -> Vec<(ItemRc, ItemTreeRc)> {
+        self.item
+            .upgrade()
+            .and_then(|item| item.window_adapter())
+            .map(|window_adapter| {
+                let window = WindowInner::from_pub(window_adapter.window());
+                window
+                    .active_popups()
+                    .iter()
+                    .filter_map(|popup| {
+                        Some((popup.parent_item.upgrade()?, popup.component.clone()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -1045,4 +1153,98 @@ fn test_opacity() {
         .unwrap()
         .computed_opacity()
         .approx_eq(&1.0));
+}
+
+#[test]
+fn test_popups() {
+    crate::init_no_event_loop();
+
+    slint::slint! {
+        export component App inherits Window {
+            popup := PopupWindow {
+                close-policy: close-on-click-outside;
+                Rectangle {
+                    ok-label := Text {
+                        accessible-role: text;
+                        accessible-value: self.text;
+                        text: "Ok";
+                    }
+                    ta := TouchArea {
+                        clicked => {
+                            another-popup.show();
+                        }
+                        accessible-role: button;
+                        accessible-action-default => {
+                            another-popup.show();
+                        }
+                    }
+                    another-popup := PopupWindow {
+                        inner-rect := Rectangle {
+                            nested-label := Text {
+                                accessible-role: text;
+                                accessible-value: self.text;
+                                text: "Nested";
+                            }
+                        }
+                    }
+                }
+            }
+            Rectangle {
+            }
+            first-button := TouchArea {
+                clicked => {
+                    popup.show();
+                }
+                accessible-role: button;
+                accessible-action-default => {
+                    popup.show();
+                }
+            }
+        }
+    }
+
+    let app = App::new().unwrap();
+
+    let root = app.root_element();
+
+    assert!(root
+        .query_descendants()
+        .match_accessible_role(crate::AccessibleRole::Text)
+        .find_all()
+        .into_iter()
+        .filter_map(|elem| elem.accessible_label())
+        .collect::<Vec<_>>()
+        .is_empty());
+
+    root.query_descendants()
+        .match_id("App::first-button")
+        .find_first()
+        .unwrap()
+        .invoke_accessible_default_action();
+
+    assert_eq!(
+        root.query_descendants()
+            .match_accessible_role(crate::AccessibleRole::Text)
+            .find_all()
+            .into_iter()
+            .filter_map(|elem| elem.accessible_label())
+            .collect::<Vec<_>>(),
+        ["Ok"]
+    );
+
+    root.query_descendants()
+        .match_id("App::ta")
+        .find_first()
+        .unwrap()
+        .invoke_accessible_default_action();
+
+    assert_eq!(
+        root.query_descendants()
+            .match_accessible_role(crate::AccessibleRole::Text)
+            .find_all()
+            .into_iter()
+            .filter_map(|elem| elem.accessible_label())
+            .collect::<Vec<_>>(),
+        ["Nested", "Ok"]
+    );
 }

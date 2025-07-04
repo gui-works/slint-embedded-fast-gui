@@ -3,7 +3,7 @@
 
 [package]
 name = "printerdemo"
-version = "1.9.2"
+version = "1.13.0"
 authors = ["Slint Developers <info@slint.dev>"]
 edition = "2021"
 build = "build.rs"
@@ -21,20 +21,15 @@ name = "printerdemo_lib"
 
 [dependencies]
 slint = { path = "../../../api/rs/slint", features = ["backend-android-activity-06"] }
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"]}
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [target.'cfg(not(any(target_os = "android", target_arch = "wasm32")))'.dependencies]
-slint = { path = "../../../api/rs/slint", features=["gettext"] }
+slint = { path = "../../../api/rs/slint", features = ["gettext"] }
 
 [build-dependencies]
 slint-build = { path = "../../../api/rs/build" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { version = "0.2" }
-web-sys = { version = "0.3", features=["console"] }
+web-sys = { version = "0.3", features = ["console"] }
 console_error_panic_hook = "0.1.5"
-
-
-
-
-

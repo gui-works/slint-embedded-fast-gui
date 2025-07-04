@@ -18,7 +18,7 @@ cargo install slint-lsp
 ```
 
 This makes the latest released version available in `$HOME/.cargo/bin`. If you would like to try a development version, you can also point `cargo install` to the git repository:
-for the released version. Or, to install the develoment version:
+for the released version. Or, to install the development version:
 
 ```sh
 cargo install slint-lsp --git https://github.com/slint-ui/slint --force
@@ -34,6 +34,12 @@ Alternatively, you can download one of our pre-built binaries for Linux or Windo
 4. Uncompress the downloaded archive into a location of your choice.
 
 As the next step, configure your editor to use the binary, no arguments are required
+
+Make sure the required dependencies are found. On Debian-like systems install them with the following command:
+
+```shell
+sudo apt install -y build-essential libx11-xcb1 libx11-dev libxcb1-dev libxkbcommon0 libinput10 libinput-dev libgbm1 libgbm-dev
+```
 
 ## Code formatting
 

@@ -27,8 +27,6 @@ jobs:
             PKG_VERSION: ${{ steps.mkversion.outputs.PKG_VERSION }}
         steps:
             - uses: actions/checkout@v4
-            - uses: ./.github/actions/install-linux-dependencies
-            - uses: ./.github/actions/setup-rust
             # Setup .npmrc file to publish to npm
             - uses: actions/setup-node@v4
               with:
@@ -56,10 +54,10 @@ jobs:
         strategy:
             matrix:
                 include:
-                    - os: ubuntu-20.04
+                    - os: ubuntu-22.04
                       rust-target: x86_64-unknown-linux-gnu
                       napi-rs-target: linux-x64-gnu
-                    - os: ubicloud-standard-2-arm
+                    - os: ubuntu-22.04-arm
                       rust-target: aarch64-unknown-linux-gnu
                       napi-rs-target: linux-arm64-gnu
                     - os: macos-13
@@ -71,9 +69,11 @@ jobs:
                     - os: windows-2022
                       rust-target: x86_64-pc-windows-msvc
                       napi-rs-target: win32-x64-msvc
-                    - os: windows-2022
-                      rust-target: i686-pc-windows-msvc
-                      napi-rs-target: win32-ia32-msvc
+                      msvc-arch: x64
+                    - os: windows-11-arm
+                      rust-target: aarch64-pc-windows-msvc
+                      napi-rs-target: win32-arm64-msvc
+                      msvc-arch: arm64
         needs: determine_version
         runs-on: ${{ matrix.os }}
         steps:
@@ -81,16 +81,14 @@ jobs:
             - uses: ./.github/actions/install-linux-dependencies
               with:
                   old-ubuntu: true
+            - uses: ./.github/actions/install-skia-dependencies
+            - uses: ilammy/msvc-dev-cmd@v1
+              if: runner.os == 'Windows'
+              with:
+                  arch: ${{ matrix.msvc-arch }}
             - uses: ./.github/actions/setup-rust
               with:
                   target: ${{ matrix.rust-target }}
-            - name: Upgrade LLVM for Skia build on Windows
-              if: runner.os == 'Windows'
-              run: choco upgrade llvm 
-            # Pin Python version until https://github.com/slint-ui/slint/issues/6615 is fixed.   
-            - uses: actions/setup-python@v5
-              with:
-                python-version: '3.12'
             # Setup .npmrc file to publish to npm
             - uses: actions/setup-node@v4
               with:
@@ -103,14 +101,19 @@ jobs:
                   if [ "$RELEASE_INPUT" != "true" ]; then
                       npm version $PKG_VERSION
                   fi
+            - uses: baptiste0928/cargo-install@v3
+              with:
+                  crate: taplo-cli
             - name: Prepare feature config for binaries
               working-directory: api/node
               shell: bash
               run: |
-                  perl -pi -e 's,^default =.*,,' Cargo.toml
-                  perl -pi -e 's,# binaries:,,' Cargo.toml
-                  echo "New defaults:"
-                  grep "^\s*default =" Cargo.toml
+                cat Cargo.toml | taplo format --option column_width=100000 --stdin-filepath=Cargo.toml - | \
+                  perl -p -e 's,^\s*default\s*=.*,,' | \
+                  perl -p -e 's,# binaries:\s?,,' > Cargo.toml.new
+                cat Cargo.toml.new | taplo format --stdin-filepath=Cargo.toml - > Cargo.toml
+                rm Cargo.toml.new
+                taplo get -f Cargo.toml features.default
             - name: Build binary
               shell: bash
               working-directory: api/node
@@ -198,12 +201,12 @@ jobs:
             - name: Download artifacts
               uses: actions/download-artifact@v4
               with:
-                  name: binaries-i686-pc-windows-msvc
+                  name: binaries-aarch64-pc-windows-msvc
                   path: api/node/
             - name: Add binary dependencies
               working-directory: api/node
               run: |
-                  for package in @slint-ui/slint-ui-binary-linux-x64-gnu @slint-ui/slint-ui-binary-linux-arm64-gnu @slint-ui/slint-ui-binary-darwin-x64 @slint-ui/slint-ui-binary-darwin-arm64 @slint-ui/slint-ui-binary-win32-x64-msvc @slint-ui/slint-ui-binary-win32-ia32-msvc; do
+                  for package in @slint-ui/slint-ui-binary-linux-x64-gnu @slint-ui/slint-ui-binary-linux-arm64-gnu @slint-ui/slint-ui-binary-darwin-x64 @slint-ui/slint-ui-binary-darwin-arm64 @slint-ui/slint-ui-binary-win32-x64-msvc @slint-ui/slint-ui-binary-win32-arm64-msvc; do
                       jq --arg pkg "$package" --arg version "$PKG_VERSION" '.optionalDependencies[$pkg]=$version' package.json > new.json
                       mv new.json package.json
                   done
@@ -230,7 +233,7 @@ jobs:
                   npm publish --access public $PUBLISH_TAG api/node/slint-ui-slint-ui-binary-darwin-x64-$PKG_VERSION.tgz
                   npm publish --access public $PUBLISH_TAG api/node/slint-ui-slint-ui-binary-darwin-arm64-$PKG_VERSION.tgz
                   npm publish --access public $PUBLISH_TAG api/node/slint-ui-slint-ui-binary-win32-x64-msvc-$PKG_VERSION.tgz
-                  npm publish --access public $PUBLISH_TAG api/node/slint-ui-slint-ui-binary-win32-ia32-msvc-$PKG_VERSION.tgz
+                  npm publish --access public $PUBLISH_TAG api/node/slint-ui-slint-ui-binary-win32-arm64-msvc-$PKG_VERSION.tgz
                   npm publish $PUBLISH_TAG api/node/slint-ui-$PKG_VERSION.tgz
               env:
                   NODE_AUTH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}

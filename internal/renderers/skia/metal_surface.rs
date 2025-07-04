@@ -6,14 +6,45 @@ use i_slint_core::graphics::RequestedGraphicsAPI;
 use i_slint_core::item_rendering::DirtyRegion;
 use objc2::rc::autoreleasepool;
 use objc2::{rc::Retained, runtime::ProtocolObject};
-use objc2_foundation::CGSize;
-use objc2_metal::{MTLCommandBuffer, MTLCommandQueue, MTLDevice, MTLPixelFormat};
+use objc2_core_foundation::CGSize;
+use objc2_metal::{MTLCommandBuffer, MTLCommandQueue, MTLDevice, MTLPixelFormat, MTLTexture};
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 
 use skia_safe::gpu::mtl;
 
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::Arc;
+
+use crate::SkiaSharedContext;
+
+pub struct SharedMetalContext {
+    device: Retained<ProtocolObject<dyn objc2_metal::MTLDevice>>,
+    command_queue: Retained<ProtocolObject<dyn objc2_metal::MTLCommandQueue>>,
+}
+
+impl super::SkiaSharedContextInner {
+    fn shared_metal_context(
+        &self,
+    ) -> Result<&SharedMetalContext, i_slint_core::platform::PlatformError> {
+        if let Some(ctx) = self.metal_context.get() {
+            return Ok(ctx);
+        }
+        self.metal_context.set(SharedMetalContext::new()?).ok();
+        Ok(self.metal_context.get().unwrap())
+    }
+}
+
+impl SharedMetalContext {
+    fn new() -> Result<Self, i_slint_core::platform::PlatformError> {
+        let device = objc2_metal::MTLCreateSystemDefaultDevice().ok_or_else(|| {
+            format!("Skia Renderer: Unable to obtain metal system default device")
+        })?;
+        let command_queue = device
+            .newCommandQueue()
+            .ok_or_else(|| format!("Skia Renderer: Unable to create command queue"))?;
+        Ok(Self { device, command_queue })
+    }
+}
 
 /// This surface renders into the given window using Metal. The provided display argument
 /// is ignored, as it has no meaning on macOS.
@@ -21,16 +52,20 @@ pub struct MetalSurface {
     command_queue: Retained<ProtocolObject<dyn objc2_metal::MTLCommandQueue>>,
     layer: raw_window_metal::Layer,
     gr_context: RefCell<skia_safe::gpu::DirectContext>,
+    // Map from drawable texture to age. Per https://developer.apple.com/documentation/quartzcore/cametallayer/maximumdrawablecount, CAMetalLayer
+    // can have either 2 or 3 drawables, but not more. That way, this vector is bound in growth.
+    drawable_ages: RefCell<Vec<(objc2_metal::MTLResourceID, u8)>>,
 }
 
 impl super::Surface for MetalSurface {
     fn new(
-        window_handle: Rc<dyn raw_window_handle::HasWindowHandle>,
-        _display_handle: Rc<dyn raw_window_handle::HasDisplayHandle>,
+        shared_context: &SkiaSharedContext,
+        window_handle: Arc<dyn raw_window_handle::HasWindowHandle>,
+        _display_handle: Arc<dyn raw_window_handle::HasDisplayHandle>,
         size: PhysicalWindowSize,
         requested_graphics_api: Option<RequestedGraphicsAPI>,
     ) -> Result<Self, i_slint_core::platform::PlatformError> {
-        if requested_graphics_api.map_or(false, |api| api != RequestedGraphicsAPI::Metal) {
+        if requested_graphics_api.map_or(false, |api| !matches!(api, RequestedGraphicsAPI::Metal)) {
             return Err(format!("Requested non-Metal rendering with Metal renderer").into());
         }
 
@@ -51,11 +86,9 @@ impl super::Surface for MetalSurface {
         // SAFETY: The pointer is a valid `CAMetalLayer`.
         let ca_layer: &CAMetalLayer = unsafe { layer.as_ptr().cast().as_ref() };
 
-        let device = {
-            let ptr = unsafe { objc2_metal::MTLCreateSystemDefaultDevice() };
-            unsafe { Retained::retain(ptr) }
-                .ok_or_else(|| format!("Skia Renderer: No metal device found"))?
-        };
+        let shared_context = shared_context.0.shared_metal_context()?;
+
+        let device = &shared_context.device;
 
         unsafe {
             ca_layer.setDevice(Some(&device));
@@ -74,9 +107,7 @@ impl super::Surface for MetalSurface {
         };
         ca_layer.setContentsGravity(gravity);
 
-        let command_queue = device
-            .newCommandQueue()
-            .ok_or_else(|| format!("Skia Renderer: Unable to create command queue"))?;
+        let command_queue = shared_context.command_queue.clone();
 
         let backend = unsafe {
             mtl::BackendContext::new(
@@ -88,7 +119,7 @@ impl super::Surface for MetalSurface {
         let gr_context =
             skia_safe::gpu::direct_contexts::make_metal(&backend, None).unwrap().into();
 
-        Ok(Self { command_queue, layer, gr_context })
+        Ok(Self { command_queue, layer, gr_context, drawable_ages: Default::default() })
     }
 
     fn name(&self) -> &'static str {
@@ -104,6 +135,7 @@ impl super::Surface for MetalSurface {
         unsafe {
             ca_layer.setDrawableSize(CGSize::new(size.width as f64, size.height as f64));
         }
+        self.drawable_ages.borrow_mut().clear();
         Ok(())
     }
 
@@ -155,7 +187,20 @@ impl super::Surface for MetalSurface {
                 .unwrap()
             };
 
-            callback(surface.canvas(), Some(gr_context), 0);
+            let texture: Retained<ProtocolObject<dyn MTLTexture>> = unsafe { drawable.texture() };
+            let texture_id = unsafe { texture.gpuResourceID() };
+            let age = {
+                let mut drawables = self.drawable_ages.borrow_mut();
+                if let Some(existing_age) =
+                    drawables.iter().find_map(|(id, age)| (*id == texture_id).then_some(*age))
+                {
+                    existing_age
+                } else {
+                    drawables.push((texture_id, 0));
+                    0
+                }
+            };
+            callback(surface.canvas(), Some(gr_context), age);
 
             drop(surface);
 
@@ -170,6 +215,19 @@ impl super::Surface for MetalSurface {
             })?;
             command_buffer.presentDrawable(ProtocolObject::from_ref(&*drawable));
             command_buffer.commit();
+
+            self.drawable_ages.borrow_mut().retain_mut(|(id, age)| {
+                if *id == texture_id {
+                    *age = 1;
+                } else {
+                    let Some(new_age) = age.checked_add(1) else {
+                        // texture became too old, remove it.
+                        return false;
+                    };
+                    *age = new_age;
+                }
+                true
+            });
 
             Ok(())
         })

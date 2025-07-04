@@ -18,6 +18,7 @@ pub mod rename_component;
 pub mod test;
 #[cfg(any(test, feature = "preview-engine"))]
 pub mod text_edit;
+pub mod token_info;
 
 pub type Error = Box<dyn std::error::Error>;
 pub type Result<T> = std::result::Result<T, Error>;
@@ -105,7 +106,7 @@ pub struct ElementRcNode {
 
 impl std::cmp::PartialEq for ElementRcNode {
     fn eq(&self, other: &Self) -> bool {
-        self.path_and_offset() == other.path_and_offset()
+        self.path_and_offset() == other.path_and_offset() && self.debug_index == other.debug_index
     }
 }
 
@@ -176,14 +177,11 @@ impl ElementRcNode {
     /// Run with all the debug information on the node
     pub fn with_element_debug<R>(
         &self,
-        func: impl Fn(
-            &i_slint_compiler::parser::syntax_nodes::Element,
-            &Option<i_slint_compiler::layout::Layout>,
-        ) -> R,
+        func: impl Fn(&i_slint_compiler::object_tree::ElementDebugInfo) -> R,
     ) -> R {
         let elem = self.element.borrow();
-        let d = &elem.debug.get(self.debug_index).unwrap();
-        func(&d.node, &d.layout)
+        let d = elem.debug.get(self.debug_index).unwrap();
+        func(d)
     }
 
     /// Run with the `Element` node
@@ -285,7 +283,7 @@ impl ElementRcNode {
 
     pub fn contains_offset(&self, offset: TextSize) -> bool {
         self.with_element_node(|node| {
-            node.parent().map_or(false, |n| n.text_range().contains(offset))
+            node.parent().is_some_and(|n| n.text_range().contains(offset))
         })
     }
 }
@@ -521,8 +519,6 @@ impl PropertyChange {
 #[allow(unused)]
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub enum PreviewToLspMessage {
-    /// Show a status message in the editor
-    Status { message: String, health: crate::lsp_ext::Health },
     /// Report diagnostics to editor.
     Diagnostics { uri: Url, version: SourceFileVersion, diagnostics: Vec<lsp_types::Diagnostic> },
     /// Show a document in the editor.
@@ -536,6 +532,8 @@ pub enum PreviewToLspMessage {
     SendWorkspaceEdit { label: Option<String>, edit: lsp_types::WorkspaceEdit },
     /// Pass a `ShowMessage` notification on to the editor
     SendShowMessage { message: lsp_types::ShowMessageParams },
+    /// Senf a telemetry event
+    TelemetryEvent(serde_json::Map<String, serde_json::Value>),
 }
 
 /// Information on the Element types available
@@ -580,24 +578,28 @@ impl ComponentInformation {
     }
 }
 
-#[cfg(any(feature = "preview-external", feature = "preview-engine"))]
-pub mod lsp_to_editor {
-    pub fn send_status_notification(
-        sender: &crate::ServerNotifier,
-        message: &str,
-        health: crate::lsp_ext::Health,
-    ) {
-        sender
-            .send_notification::<crate::lsp_ext::ServerStatusNotification>(
-                crate::lsp_ext::ServerStatusParams {
-                    health,
-                    quiescent: false,
-                    message: Some(message.into()),
-                },
-            )
-            .unwrap_or_else(|e| eprintln!("Error sending notification: {:?}", e));
+/// Poll a future once and return its result if it was `Ready` afterwards
+/// or `None` otherwise.
+#[cfg(feature = "preview-engine")]
+pub fn poll_once<F: std::future::Future>(future: F) -> Option<F::Output> {
+    struct DummyWaker();
+    impl std::task::Wake for DummyWaker {
+        fn wake(self: std::sync::Arc<Self>) {}
     }
 
+    let waker = std::sync::Arc::new(DummyWaker()).into();
+    let mut ctx = std::task::Context::from_waker(&waker);
+
+    let future = std::pin::pin!(future);
+
+    match future.poll(&mut ctx) {
+        std::task::Poll::Ready(result) => Some(result),
+        std::task::Poll::Pending => None,
+    }
+}
+
+#[cfg(any(feature = "preview-external", feature = "preview-engine"))]
+pub mod lsp_to_editor {
     pub fn notify_lsp_diagnostics(
         sender: &crate::ServerNotifier,
         uri: lsp_types::Url,
@@ -644,6 +646,45 @@ pub mod lsp_to_editor {
 
         let _ = fut.await;
     }
+}
+
+#[cfg(feature = "preview-engine")]
+pub fn fuzzy_filter_iter<T: std::fmt::Debug>(
+    input: &mut impl Iterator<Item = T>,
+    transformer: impl Fn(&T) -> String,
+    needle: &str,
+) -> Vec<T> {
+    use nucleo_matcher::{pattern, Config, Matcher};
+
+    let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
+    let pattern = pattern::Pattern::parse(
+        needle,
+        pattern::CaseMatching::Ignore,
+        pattern::Normalization::Smart,
+    );
+
+    let mut all_matches = input
+        .filter_map(|t| {
+            let terms = [transformer(&t)];
+            pattern.match_list(terms.iter(), &mut matcher).pop().map(|(_, v)| (v, t))
+        })
+        .collect::<Vec<_>>();
+
+    // sort by value, highest first. Sort names with the same value alphabetically
+    all_matches.sort_by(|r, l| l.0.cmp(&r.0));
+
+    let cut_off = {
+        let lowest_value = all_matches.last().map(|(v, _)| *v).unwrap_or_default();
+        let highest_value = all_matches.first().map(|(v, _)| *v).unwrap_or_default();
+
+        if all_matches.len() < 10 {
+            lowest_value
+        } else {
+            highest_value - (highest_value - lowest_value) / 2
+        }
+    };
+
+    all_matches.drain(..).take_while(|(v, _)| *v >= cut_off).map(|(_, t)| t).collect::<Vec<_>>()
 }
 
 #[cfg(test)]

@@ -7,11 +7,19 @@ import { fileURLToPath } from "node:url";
 
 import { loadFile, loadSource, CompileError } from "../dist/index.js";
 
-const dirname = path.dirname(fileURLToPath(import.meta.url));
+const dirname = path.dirname(
+    fileURLToPath(import.meta.url).replace("build", "__test__"),
+);
 
 // loadFile api
 test("loadFile", (t) => {
-    const demo = loadFile(path.join(dirname, "resources/test.slint")) as any;
+    // Test the URL variant here, to ensure that it works (esp. on Windows)
+    const demo = loadFile(
+        new URL(
+            "resources/test.slint",
+            import.meta.url.replace("build", "__test__"),
+        ),
+    ) as any;
     const test = new demo.Test();
     t.is(test.check, "Test");
 
@@ -271,7 +279,7 @@ test("loadFile enum", (t) => {
 
 test("file loader", (t) => {
     const testSource = `export component Test {
-       in-out property <string> text: "Hello World"; 
+       in-out property <string> text: "Hello World";
     }`;
     const demo = loadFile(
         path.join(dirname, "resources/test-fileloader.slint"),

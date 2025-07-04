@@ -22,7 +22,9 @@ pub fn lower_accessibility_properties(component: &Rc<Component>, diag: &mut Buil
             apply_builtin(elem);
             let accessible_role_set = match elem.borrow().bindings.get("accessible-role") {
                 Some(role) => {
-                    if let Expression::EnumerationValue(val) = &role.borrow().expression {
+                    if let Expression::EnumerationValue(val) =
+                        super::ignore_debug_hooks(&role.borrow().expression)
+                    {
                         debug_assert_eq!(val.enumeration.name, "AccessibleRole");
                         debug_assert_eq!(val.enumeration.values[0], "none");
                         if val.value == 0 {
@@ -73,6 +75,34 @@ fn apply_builtin(e: &ElementRc) {
         let text_prop = NamedReference::new(e, SmolStr::new_static("text"));
         e.borrow_mut().set_binding_if_not_set("accessible-label".into(), || {
             Expression::PropertyReference(text_prop)
+        });
+    } else if bty.name == "TextInput" {
+        e.borrow_mut().set_binding_if_not_set("accessible-role".into(), || {
+            let enum_ty = crate::typeregister::BUILTIN.with(|e| e.enums.AccessibleRole.clone());
+            Expression::EnumerationValue(EnumerationValue {
+                value: enum_ty.values.iter().position(|v| v == "text-input").unwrap(),
+                enumeration: enum_ty,
+            })
+        });
+        let text_prop = NamedReference::new(e, SmolStr::new_static("text"));
+        e.borrow_mut().set_binding_if_not_set("accessible-value".into(), || {
+            Expression::PropertyReference(text_prop)
+        });
+        let enabled_prop = NamedReference::new(e, SmolStr::new_static("enabled"));
+        e.borrow_mut().set_binding_if_not_set("accessible-enabled".into(), || {
+            Expression::PropertyReference(enabled_prop)
+        });
+        let read_only_prop = NamedReference::new(e, SmolStr::new_static("read-only"));
+        e.borrow_mut().set_binding_if_not_set("accessible-read-only".into(), || {
+            Expression::PropertyReference(read_only_prop)
+        });
+    } else if bty.name == "Image" {
+        e.borrow_mut().set_binding_if_not_set("accessible-role".into(), || {
+            let enum_ty = crate::typeregister::BUILTIN.with(|e| e.enums.AccessibleRole.clone());
+            Expression::EnumerationValue(EnumerationValue {
+                value: enum_ty.values.iter().position(|v| v == "image").unwrap(),
+                enumeration: enum_ty,
+            })
         });
     }
 }

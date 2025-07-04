@@ -16,9 +16,27 @@ concurrency:
 
 env:
     MACOSX_DEPLOYMENT_TARGET: "11.0"
+    SLINT_COMPILER_DENY_WARNINGS: 1
 
 jobs:
+    files-changed:
+      runs-on: ubuntu-latest
+      permissions:
+        pull-requests: read
+      outputs:
+        slint: ${{ steps.filter.outputs.slint }}
+        figma_inspector : ${{ steps.filter.outputs.figma_inspector }}
+      steps:
+        - uses: actions/checkout@v4
+        - uses: dorny/paths-filter@v3
+          id: filter
+          with:
+            token: ${{ github.token }}
+            filters: .github/ci_path_filters.yaml
+
     build_and_test:
+        needs: files-changed
+        if: needs.files-changed.outputs.slint == 'true'
         env:
             DYLD_FRAMEWORK_PATH: /Users/runner/work/slint/Qt/6.2.2/macos/lib
             QT_QPA_PLATFORM: offscreen
@@ -30,7 +48,7 @@ jobs:
         strategy:
             matrix:
                 os: [ubuntu-22.04, macos-14, windows-2022]
-                rust_version: [stable, "1.77"]
+                rust_version: [stable, "1.85"]
                 include:
                     - os: windows-2022
                       extra_args: "--exclude ffmpeg --exclude gstreamer-player"
@@ -43,8 +61,8 @@ jobs:
                       rust_version: "nightly"
                 exclude:
                     - os: macos-14
-                      rust_version: "1.77"
-                    # We already test 1.77 and nightly. Stable is in the middle and already covered by other jobs
+                      rust_version: "1.85"
+                    # We already test 1.85 and nightly. Stable is in the middle and already covered by other jobs
                     - os: ubuntu-22.04
                       rust_version: "stable"
 
@@ -53,6 +71,8 @@ jobs:
         steps:
             - uses: actions/checkout@v4
             - uses: ./.github/actions/install-linux-dependencies
+            - uses: ./.github/actions/install-skia-dependencies
+            - uses: ilammy/msvc-dev-cmd@v1
             - uses: actions/setup-python@v5
               with:
                 python-version: '3.10'
@@ -69,29 +89,24 @@ jobs:
             - name: Install gstreamer and libunwind (Linux)
               if: runner.os == 'Linux'
               run: sudo apt-get install libunwind-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good
-            - name: Upgrade LLVM for Skia build on Windows
-              if: runner.os == 'Windows'
-              run: choco upgrade llvm
             - name: Setup headless display
-              uses: pyvista/setup-headless-display-action@v3
+              uses: pyvista/setup-headless-display-action@v4
             - uses: ./.github/actions/setup-rust
               with:
                   toolchain: ${{ matrix.rust_version }}
                   key: x-v3
-            - name: Pin dependencies to make it build with our MSRV
-              if: matrix.rust_version == '1.77'
-              shell: bash
-              run: |
-                 if [ ! -f ./Cargo.lock ]; then
-                   cargo update -p home --precise 0.5.9
-                 fi
-            - name: Run tests (not qt)
-              run:  cargo test --verbose --all-features --workspace ${{ matrix.extra_args }} --exclude slint-node --exclude pyslint --exclude test-driver-node --exclude slint-node --exclude test-driver-nodejs --exclude test-driver-cpp --exclude mcu-board-support --exclude printerdemo_mcu --exclude uefi-demo --exclude slint-cpp --exclude slint-python -- --skip=_qt::t
+            - name: Run tests
+              run:  cargo test --verbose --all-features --workspace ${{ matrix.extra_args }} ${{ matrix.maybe_exclude_bevy }} --exclude slint-node --exclude pyslint --exclude test-driver-node --exclude slint-node --exclude test-driver-nodejs --exclude test-driver-cpp --exclude mcu-board-support --exclude mcu-embassy --exclude printerdemo_mcu --exclude uefi-demo --exclude slint-cpp --exclude slint-python -- --skip=_qt::t
               env:
                   SLINT_CREATE_SCREENSHOTS: 1
               shell: bash
             - name: Run tests (qt)
-              run: cargo test --verbose --all-features --workspace ${{ matrix.extra_args }} --exclude slint-node --exclude pyslint --exclude test-driver-node --exclude slint-node --exclude test-driver-nodejs --exclude test-driver-cpp --exclude mcu-board-support --exclude printerdemo_mcu --exclude uefi-demo --exclude slint-cpp --exclude slint-python --bin test-driver-rust -- _qt --test-threads=1
+              run: cargo test --verbose --all-features --workspace ${{ matrix.extra_args }} ${{ matrix.maybe_exclude_bevy }} --exclude slint-node --exclude pyslint --exclude test-driver-node --exclude slint-node --exclude test-driver-nodejs --exclude test-driver-cpp --exclude mcu-board-support --exclude mcu-embassy --exclude printerdemo_mcu --exclude uefi-demo --exclude slint-cpp --exclude slint-python --bin test-driver-rust -- _qt --test-threads=1
+              shell: bash
+            - name: live-reload test
+              env:
+                SLINT_LIVE_RELOAD: 1
+              run: cargo test --verbose --features=build-time,slint/live-reload -p test-driver-rust -- --skip=_qt::t
               shell: bash
             - name: Archive screenshots after failed tests
               if: ${{ failure() }}
@@ -102,9 +117,9 @@ jobs:
                       tests/screenshots/references
 
     node_test:
+        needs: files-changed
+        if: needs.files-changed.outputs.slint == 'true'
         env:
-            DYLD_FRAMEWORK_PATH: /Users/runner/work/slint/Qt/5.15.2/clang_64/lib
-            QT_QPA_PLATFORM: offscreen
             RUSTFLAGS: -D warnings
             CARGO_PROFILE_DEV_DEBUG: 0
             CARGO_INCREMENTAL: false
@@ -118,25 +133,16 @@ jobs:
         steps:
             - uses: actions/checkout@v4
             - uses: ./.github/actions/install-linux-dependencies
-            - name: Install Qt
-              if: runner.os == 'Linux'
-              uses: jurplel/install-qt-action@v4
-              with:
-                  version: "5.15.2"
-                  setup-python: false
-                  cache: true
-            - name: Upgrade LLVM for Skia build on Windows
-              if: runner.os == 'Windows'
-              run: choco upgrade llvm
+            - uses: ./.github/actions/install-skia-dependencies
             - name: Setup headless display
-              uses: pyvista/setup-headless-display-action@v3
+              uses: pyvista/setup-headless-display-action@v4
             - uses: actions/setup-node@v4
               with:
                 node-version: 20
               id: node-install
-            - uses: pnpm/action-setup@v4.0.0
+            - uses: pnpm/action-setup@v4.1.0
               with:
-                version: 9.11.0
+                version: 10.11.0
             - uses: ./.github/actions/setup-rust
               with:
                   key: x-napi-v2-${{ steps.node-install.outputs.node-version }} # the cache key consists of a manually bumpable version and the node version, as the cached rustc artifacts contain linking information where to find node.lib, which is in a versioned directory.
@@ -158,6 +164,8 @@ jobs:
               run: pnpm check
 
     python_test:
+        needs: files-changed
+        if: needs.files-changed.outputs.slint == 'true'
         env:
             DYLD_FRAMEWORK_PATH: /Users/runner/work/slint/Qt/5.15.2/clang_64/lib
             QT_QPA_PLATFORM: offscreen
@@ -182,19 +190,32 @@ jobs:
                   setup-python: false
                   cache: true
             - name: Setup headless display
-              uses: pyvista/setup-headless-display-action@v3
+              uses: pyvista/setup-headless-display-action@v4
             - uses: ./.github/actions/setup-rust
               with:
                   key: x-napi-v2-${{ steps.node-install.outputs.node-version }} # the cache key consists of a manually bumpable version and the node version, as the cached rustc artifacts contain linking information where to find node.lib, which is in a versioned directory.
             - uses: actions/setup-python@v5
               with:
-                  python-version: "3.10"
+                  python-version: "3.12"
+            - name: Install uv
+              uses: astral-sh/setup-uv@v6
             - uses: fjwillemsen/setup-nox2@v3.0.0
             - name: Run python tests
-              working-directory: api/python
-              run: nox
+              working-directory: api/python/slint
+              run: nox --default-venv-backend uv
+            - name: Run mypy
+              working-directory: api/python/slint
+              run: uv run mypy -p tests -p slint
+            - name: Run ruff linter
+              working-directory: api/python/slint
+              run: uv tool run ruff check
+            - name: Run ruff linter
+              working-directory: api/python/briefcase
+              run: uv tool run ruff check
 
     cpp_test_driver:
+        needs: files-changed
+        if: needs.files-changed.outputs.slint == 'true'
         env:
             DYLD_FRAMEWORK_PATH: /Users/runner/work/slint/Qt/5.15.2/clang_64/lib
             QT_QPA_PLATFORM: offscreen
@@ -231,6 +252,8 @@ jobs:
               run: cargo test --verbose -p  test-driver-cpp --features slint-cpp/backend-qt
 
     cpp_cmake:
+        needs: files-changed
+        if: needs.files-changed.outputs.slint == 'true'
         env:
             DYLD_FRAMEWORK_PATH: /Users/runner/work/slint/Qt/6.5.1/clang_64/lib
             QT_QPA_PLATFORM: offscreen
@@ -242,7 +265,7 @@ jobs:
             matrix:
                 include:
                     - os: macos-14
-                      rust_version: "1.77"
+                      rust_version: "1.85"
                     - os: windows-2022
                       rust_version: "nightly"
                     - os: ubuntu-22.04
@@ -326,13 +349,14 @@ jobs:
                   buildWithCMakeArgs: "--config Release"
 
     vsce_build_test:
+        needs: files-changed
+        if: needs.files-changed.outputs.slint == 'true'
         runs-on: ubuntu-22.04
-
         steps:
             - uses: actions/checkout@v4
-            - uses: pnpm/action-setup@v4.0.0
+            - uses: pnpm/action-setup@v4.1.0
               with:
-                version: 9.11.0
+                version: 10.11.0
             - uses: Swatinem/rust-cache@v2
               with:
                 key: "vsce_1" # increment this to bust the cache if needed
@@ -358,9 +382,14 @@ jobs:
             - name: Typescript syntax check # has to run after the build as it depends on the wasm
               working-directory: editors/vscode
               run: pnpm type-check
+            - name: Check tmGrammar
+              working-directory: editors/vscode
+              run: pnpm test_grammar
 
     # test to compile the mcu backend for the arm target (no_std)
     mcu:
+        needs: files-changed
+        if: needs.files-changed.outputs.slint == 'true'
         env:
             SLINT_FONT_SIZES: 8,11,10,12,13,14,15,16,18,20,22,24,32
             RUSTFLAGS: --cfg slint_int_coord -D warnings
@@ -384,27 +413,46 @@ jobs:
             - name: Check
               run: cargo check --target=${{matrix.target}} -p printerdemo_mcu --no-default-features --features=mcu-board-support/${{matrix.feature}} --release
 
-    mcu_esp:
+    # test to compile the mcu backend for the arm target (no_std) using embassy
+    mcu-embassy:
+        needs: files-changed
+        if: needs.files-changed.outputs.slint == 'true'
         env:
-            RUSTFLAGS: -D warnings
+            SLINT_FONT_SIZES: 8,11,10,12,13,14,15,16,18,20,22,24,32
+            RUSTFLAGS: --cfg slint_int_coord -D warnings
+            CARGO_PROFILE_DEV_DEBUG: 0
+            CARGO_PROFILE_RELEASE_OPT_LEVEL: s
         runs-on: ubuntu-22.04
         steps:
             - uses: actions/checkout@v4
-            - uses: dtolnay/rust-toolchain@stable
-            - uses: esp-rs/xtensa-toolchain@v1.5
+            - uses: ./.github/actions/setup-rust
               with:
-                  default: true
-                  buildtargets: esp32
-                  ldproxy: false
-                  # version pinned until new version of esp-hal with https://github.com/esp-rs/esp-hal/pull/2615/
-                  version: 1.82.0
-            - uses: Swatinem/rust-cache@v2
-            - name: Kaluga
-              run: cargo +esp check -p printerdemo_mcu --target xtensa-esp32s2-none-elf --no-default-features --features=mcu-board-support/esp32-s2-kaluga-1  --config examples/mcu-board-support/esp32_s2_kaluga_1/cargo-config.toml --release
-            - name: S3Box
-              run: cargo +esp check -p printerdemo_mcu --target xtensa-esp32s3-none-elf --no-default-features --features=mcu-board-support/esp32-s3-box  --config examples/mcu-board-support/esp32_s3_box/cargo-config.toml --release
+                  target: thumbv8m.main-none-eabihf
+            - name: Check
+              working-directory: examples/mcu-embassy
+              run: cargo check --bin ui_mcu --target=thumbv8m.main-none-eabihf --no-default-features --features="mcu-embassy/mcu" --release
+
+#    mcu_esp:
+#        env:
+#            RUSTFLAGS: -D warnings
+#        runs-on: ubuntu-22.04
+#        steps:
+#            - uses: actions/checkout@v4
+#            - uses: dtolnay/rust-toolchain@stable
+#            - uses: esp-rs/xtensa-toolchain@v1.5
+#              with:
+#                  default: true
+#                  buildtargets: esp32
+#                  ldproxy: false
+#                  # version pinned until new version of esp-hal with https://github.com/esp-rs/esp-hal/pull/2615/
+#                  version: 1.82.0
+#            - uses: Swatinem/rust-cache@v2
+#            - name: S3Box
+#              run: cargo +esp check -p printerdemo_mcu --target xtensa-esp32s3-none-elf --no-default-features --features=mcu-board-support/esp32-s3-box  --config examples/mcu-board-support/esp32_s3_box/cargo-config.toml --release
 
     ffi_32bit_build:
+        needs: files-changed
+        if: needs.files-changed.outputs.slint == 'true'
         runs-on: ubuntu-22.04
         steps:
             - uses: actions/checkout@v4
@@ -418,6 +466,8 @@ jobs:
               run: cross check --target=armv7-unknown-linux-gnueabihf -p slint-cpp --no-default-features --features=testing,interpreter,std
 
     docs:
+        needs: files-changed
+        if: needs.files-changed.outputs.slint == 'true'
         uses: ./.github/workflows/build_docs.yaml
         secrets: inherit
         with:
@@ -425,22 +475,30 @@ jobs:
           app-id: ${{ vars.READ_WRITE_APP_ID }}
 
     wasm:
+        needs: files-changed
+        if: needs.files-changed.outputs.slint == 'true'
         uses: ./.github/workflows/wasm_editor_and_interpreter.yaml
 
     wasm_demo:
+        needs: files-changed
+        if: needs.files-changed.outputs.slint == 'true'
         uses: ./.github/workflows/wasm_demos.yaml
         with:
           build_artifacts: false
 
     tree-sitter:
+        needs: files-changed
+        if: needs.files-changed.outputs.slint == 'true'
         uses: ./.github/workflows/tree_sitter.yaml
         with:
             latest: false
-            tag: "v0.22.6"
+            tag: "v0.25.3"
 
     # Checkout a old version of the tests and example, then run the slint-updater on them
     # and check that it worked with the interpreter test.
     updater_test:
+        needs: files-changed
+        if: needs.files-changed.outputs.slint == 'true'
         env:
             SLINT_NO_QT: 1
             CARGO_INCREMENTAL: false
@@ -501,12 +559,17 @@ jobs:
                             --skip test_interpreter_models_assign_equal_model \
                             --skip example_carousel \
                             --skip example_fancy_demo \
+                            --skip example_dial \
+                            --skip example_fancy_switches \
+                            --skip example_sprite_sheet \
                             --skip test_interpreter_elements_path_fit \
                             --skip test_interpreter_layout_path \
                             --skip test_interpreter_7guis_booker \
 
     # Test that the formater don't introduce slint compilation error
     fmt_test:
+        needs: files-changed
+        if: needs.files-changed.outputs.slint == 'true'
         env:
             SLINT_NO_QT: 1
             CARGO_INCREMENTAL: false
@@ -538,6 +601,8 @@ jobs:
                   git diff --exit-code
 
     esp-idf-quick:
+        needs: files-changed
+        if: needs.files-changed.outputs.slint == 'true'
         runs-on: ubuntu-22.04
         container: espressif/idf:release-v5.2
         steps:
@@ -557,6 +622,8 @@ jobs:
                   idf.py build
 
     android:
+        needs: files-changed
+        if: needs.files-changed.outputs.slint == 'true'
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v4
@@ -588,7 +655,12 @@ jobs:
             - name: Build printerdemo example
               run: cargo apk build -p printerdemo --target aarch64-linux-android --lib
 
+            - name: Build usecases demo
+              run: cargo apk build -p usecases --target aarch64-linux-android --lib
+
     miri:
+        needs: files-changed
+        if: needs.files-changed.outputs.slint == 'true'
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v4
@@ -599,3 +671,37 @@ jobs:
                   components: miri
             - name: Run Miri
               run: cargo miri test -p vtable -p const-field-offset -p i-slint-common
+
+    test-figma-inspector:
+        needs: files-changed
+        if: needs.files-changed.outputs.figma_inspector == 'true'
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/setup-node@v4
+              with:
+                node-version: 20
+              id: node-install
+            - uses: pnpm/action-setup@v4.1.0
+              with:
+                version: 10.11.0
+            - name: Run pnpm install
+              working-directory: tools/figma-inspector
+              run: pnpm install --frozen-lockfile
+            - name: Run build
+              working-directory: tools/figma-inspector
+              run: pnpm build
+            - name: Run tests
+              working-directory: tools/figma-inspector
+              run: pnpm test
+            - name: Type Check
+              working-directory: tools/figma-inspector
+              run: pnpm type-check
+            - name: Build zip
+              working-directory: tools/figma-inspector
+              run: pnpm zip
+            - name: Archive zip
+              uses: actions/upload-artifact@v4
+              with:
+                  name: figma-plugin
+                  path: tools/figma-inspector/zip

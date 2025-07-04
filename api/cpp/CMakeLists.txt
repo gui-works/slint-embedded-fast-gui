@@ -4,27 +4,33 @@
 cmake_minimum_required(VERSION 3.21)
 # Select C++ and C as languages, as Corrosion needs ${CMAKE_C_COMPILER}
 # for linking
-project(Slint HOMEPAGE_URL "https://slint.dev/" LANGUAGES C CXX VERSION 1.9.2)
+project(Slint HOMEPAGE_URL "https://slint.dev/" LANGUAGES C CXX VERSION 1.13.0)
 
 include(FeatureSummary)
 include(CMakeDependentOption)
 
-include(FetchContent)
-FetchContent_Declare(
-    Corrosion
-    GIT_REPOSITORY https://github.com/corrosion-rs/corrosion.git
-    GIT_TAG v0.5.1
-)
-FetchContent_MakeAvailable(Corrosion)
+find_package(Corrosion QUIET 0.5)
+if (NOT Corrosion_FOUND)
+    include(FetchContent)
+    FetchContent_Declare(
+        Corrosion
+        GIT_REPOSITORY https://github.com/corrosion-rs/corrosion.git
+        GIT_TAG v0.5.2
+    )
+
+    FetchContent_MakeAvailable(Corrosion)
+endif (NOT Corrosion_FOUND)
 
 list(PREPEND CMAKE_MODULE_PATH ${Corrosion_SOURCE_DIR}/cmake)
-find_package(Rust 1.77 REQUIRED MODULE)
+find_package(Rust 1.85 REQUIRED MODULE)
 
 option(BUILD_SHARED_LIBS "Build Slint as shared library" ON)
 option(SLINT_FEATURE_COMPILER "Enable support for compiling .slint files to C++ ahead of time" ON)
 add_feature_info(SLINT_FEATURE_COMPILER SLINT_FEATURE_COMPILER "Enable support for compiling .slint files to C++ ahead of time")
 option(SLINT_BUILD_RUNTIME "Actually build the Slint runtime libraries (Disable that to only build the compiler)" ON)
 add_feature_info(SLINT_BUILD_RUNTIME SLINT_BUILD_RUNTIME "Actually build the Slint runtime libraries (Disable that to only build the compiler)")
+option(SLINT_FEATURE_SDF_FONTS "Enable support for pre-rendering fonts as Signed Distance Fields (for the software renderer)" OFF)
+add_feature_info(SLINT_FEATURE_SDF_FONTS SLINT_FEATURE_SDF_FONTS "Enable support for pre-rendering fonts as Signed Distance Fields (for the software renderer)")
 
 set(SLINT_COMPILER "" CACHE STRING "Path to the slint-compiler executable. When unset, it the compiler will be build as part of the build process. When set to 'download', the compiler will be downloaded from GitHub.")
 set(SLINT_LIBRARY_CARGO_FLAGS "" CACHE STRING
@@ -85,13 +91,14 @@ define_renderer_winit_compat_option(skia-opengl)
 define_renderer_winit_compat_option(skia-vulkan)
 define_renderer_winit_compat_option(software)
 
-define_cargo_dependent_feature(interpreter "Enable support for the Slint interpeter to load .slint files at run-time" ON "NOT SLINT_FEATURE_FREESTANDING")
+define_cargo_dependent_feature(interpreter "Enable support for the Slint interpreter to load .slint files at run-time" ON "NOT SLINT_FEATURE_FREESTANDING")
 
 define_cargo_dependent_feature(backend-winit "Enable support for the winit crate to interaction with all windowing systems." ON "NOT SLINT_FEATURE_FREESTANDING")
 define_cargo_dependent_feature(backend-winit-x11 "Enable support for the winit create to interact only with the X11 windowing system on Unix. Enable this option and turn off SLINT_FEATURE_BACKEND_WINIT for a smaller build with just X11 support on Unix." OFF "NOT SLINT_FEATURE_FREESTANDING")
 define_cargo_dependent_feature(backend-winit-wayland "Enable support for the winit create to interact only with the wayland windowing system on Unix. Enable this option and turn off SLINT_FEATURE_BACKEND_WINIT for a smaller build with just wayland support." OFF "NOT SLINT_FEATURE_FREESTANDING")
 
 define_cargo_dependent_feature(renderer-femtovg "Enable support for the OpenGL ES 2.0 based FemtoVG rendering engine." ON "NOT SLINT_FEATURE_FREESTANDING")
+define_cargo_dependent_feature(renderer-femtovg-wgpu "Enable support for the WGPU based FemtoVG rendering engine." ON "NOT SLINT_FEATURE_FREESTANDING")
 define_cargo_dependent_feature(renderer-skia "Enable support for the Skia based rendering engine." OFF "NOT SLINT_FEATURE_FREESTANDING")
 define_cargo_dependent_feature(renderer-skia-opengl "Enable support for the Skia based rendering engine with its OpenGL backend." OFF "NOT SLINT_FEATURE_FREESTANDING")
 define_cargo_dependent_feature(renderer-skia-vulkan "Enable support for the Skia based rendering engine with its Vulkan backend." OFF "NOT SLINT_FEATURE_FREESTANDING")
@@ -136,6 +143,24 @@ endif()
 
 if(SLINT_FEATURE_COMPILER AND NOT SLINT_COMPILER)
     corrosion_set_hostbuild(slint-compiler)
+    set_property(
+        TARGET slint-compiler
+        PROPERTY CORROSION_NO_DEFAULT_FEATURES
+        ON
+    )
+    list(APPEND slint_compiler_features "software-renderer")
+    if (SLINT_FEATURE_SDF_FONTS)
+        list(APPEND slint_compiler_features "sdf-fonts")
+    endif()
+    # Enable jemalloc, except when cross-compiling. (#7463)
+    if(NOT CMAKE_CROSSCOMPILING)
+        list(APPEND slint_compiler_features "jemalloc")
+    endif()
+    set_property(
+        TARGET slint-compiler
+        PROPERTY CORROSION_FEATURES
+        ${slint_compiler_features}
+    )
 endif()
 
 if (SLINT_BUILD_RUNTIME)
@@ -149,7 +174,7 @@ if (SLINT_BUILD_RUNTIME)
     if (APPLE AND SLINT_IS_TOPLEVEL_BUILD AND BUILD_SHARED_LIBS)
         # corrosion could provide the Cargo.toml package version as a CMake target property.
         corrosion_add_target_local_rustflags(slint_cpp -Clink-arg=-Wl,-install_name,@rpath/libslint_cpp.dylib,-current_version,${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR},-compatibility_version,${PROJECT_VERSION_MAJOR}.0)
-        # Set this one to false again explicitely because Corrosion will starting setting this property to true by default.
+        # Set this one to false again explicitly because Corrosion will starting setting this property to true by default.
         set_target_properties(slint_cpp-shared PROPERTIES IMPORTED_NO_SONAME 0)
         set_target_properties(slint_cpp-shared PROPERTIES IMPORTED_SONAME libslint_cpp.dylib)
     endif()
@@ -348,6 +373,7 @@ if (SLINT_BUILD_RUNTIME)
         ${CMAKE_CURRENT_BINARY_DIR}/generated_include/slint_sharedvector_internal.h
         ${CMAKE_CURRENT_BINARY_DIR}/generated_include/slint_string_internal.h
         ${CMAKE_CURRENT_BINARY_DIR}/generated_include/slint_timer_internal.h
+        ${CMAKE_CURRENT_BINARY_DIR}/generated_include/slint_events_internal.h
     )
 
     if(SLINT_FEATURE_INTERPRETER)
@@ -464,6 +490,11 @@ set(CPACK_RESOURCE_FILE_README "${CMAKE_CURRENT_LIST_DIR}/README.md")
 set(CPACK_STRIP_FILES ON)
 set(CPACK_NSIS_DEFINES "ManifestDPIAware true")
 
+# Include a third-party license attribution folder, if generated by the CI.
+if(EXISTS "${CMAKE_BINARY_DIR}/licenses")
+    list(APPEND CPACK_INSTALLED_DIRECTORIES "${CMAKE_BINARY_DIR}/licenses" licenses)
+endif()
+
 if(WIN32)
     if(MSVC)
         set(compiler_suffix "-MSVC")
@@ -475,7 +506,7 @@ if(WIN32)
     else()
         set(CPACK_SYSTEM_NAME win32)
     endif()
-    set(CPACK_SYSTEM_NAME "${CPACK_SYSTEM_NAME}${compiler_suffix}")
+    set(CPACK_SYSTEM_NAME "${CPACK_SYSTEM_NAME}${compiler_suffix}-${CMAKE_SYSTEM_PROCESSOR}")
 else()
     set(CPACK_GENERATOR "TGZ")
     set(CPACK_SYSTEM_NAME "${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")

@@ -8,13 +8,13 @@ use xshell::{Cmd, Shell};
 use std::collections::BTreeMap;
 use std::{ffi::OsStr, path::Path, path::PathBuf};
 
-fn cmd<'a, I>(sh: &'a Shell, command: impl AsRef<Path>, args: I) -> Result<Cmd<'a>>
+fn cmd<I>(sh: &Shell, command: impl AsRef<Path>, args: I) -> Result<Cmd<'_>>
 where
     I: IntoIterator,
     I::Item: AsRef<OsStr>,
 {
     let home_dir = std::env::var("HOME").context("HOME is not set in the environment")?;
-    Ok(sh.cmd(command).args(args).env("PATH", &format!("/bin:/usr/bin:{}/.local/bin", home_dir)))
+    Ok(sh.cmd(command).args(args).env("PATH", &format!("/bin:/usr/bin:{home_dir}/.local/bin")))
 }
 
 pub fn find_reuse() -> Result<PathBuf> {
@@ -80,10 +80,10 @@ fn find_licenses_directories(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut result = Vec::new();
 
     let licenses_name: Option<&OsStr> = Some(OsStr::new("LICENSES"));
-    let dot_name: &OsStr = &OsStr::new(".");
+    let dot_name: &OsStr = OsStr::new(".");
 
     for d in std::fs::read_dir(dir)?
-        .filter(|d| d.as_ref().map_or(false, |e| e.file_type().map_or(false, |f| f.is_dir())))
+        .filter(|d| d.as_ref().is_ok_and(|e| e.file_type().is_ok_and(|f| f.is_dir())))
     {
         let path = d?.path();
         let parent_path = path.parent().expect("This is a subdirectory, so it must have a parent!");
@@ -124,7 +124,7 @@ fn populate_license_map(
 }
 
 fn is_symlink(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).map_or(false, |m| m.file_type().is_symlink())
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
 }
 
 fn validate_license_directory(dir: &Path, licenses: &[String], fix_it: bool) -> Result<()> {

@@ -8,7 +8,7 @@
 // cSpell: ignore qualname
 
 use crate::diagnostics::{BuildDiagnostics, SourceLocation, Spanned};
-use crate::expression_tree::{self, BindingExpression, Expression, Unit};
+use crate::expression_tree::{self, BindingExpression, Callable, Expression, Unit};
 use crate::langtype::{
     BuiltinElement, BuiltinPropertyDefault, Enumeration, EnumerationValue, Function, NativeClass,
     Struct, Type,
@@ -21,9 +21,8 @@ use crate::parser::{syntax_nodes, SyntaxKind, SyntaxNode};
 use crate::typeloader::{ImportKind, ImportedTypes};
 use crate::typeregister::TypeRegister;
 use itertools::Either;
-use once_cell::unsync::OnceCell;
 use smol_str::{format_smolstr, SmolStr, ToSmolStr};
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Display;
@@ -43,7 +42,7 @@ macro_rules! unwrap_or_continue {
 }
 
 /// The full document (a complete file)
-#[derive(Default, Debug)]
+#[derive(Default)]
 pub struct Document {
     pub node: Option<syntax_nodes::Document>,
     pub inner_components: Vec<Rc<Component>>,
@@ -58,7 +57,10 @@ pub struct Document {
     /// Map of resources that should be embedded in the generated code, indexed by their absolute path on
     /// disk on the build system
     pub embedded_file_resources:
-        RefCell<HashMap<SmolStr, crate::embedded_resources::EmbeddedResources>>,
+        RefCell<BTreeMap<SmolStr, crate::embedded_resources::EmbeddedResources>>,
+
+    #[cfg(feature = "bundle-translations")]
+    pub translation_builder: Option<crate::translations::TranslationsBuilder>,
 
     /// The list of used extra types used recursively.
     pub used_types: RefCell<UsedSubTypes>,
@@ -143,6 +145,10 @@ impl Document {
                 .collect();
             let en =
                 Enumeration { name: name.clone(), values, default_value: 0, node: Some(n.clone()) };
+            if en.values.is_empty() {
+                diag.push_error("Enums must have at least one value".into(), &n);
+            }
+
             let ty = Type::Enumeration(Rc::new(en));
             if !local_registry.insert_type_with_name(ty.clone(), name.clone()) {
                 diag.push_warning(
@@ -260,6 +266,8 @@ impl Document {
             imports,
             exports,
             embedded_file_resources: Default::default(),
+            #[cfg(feature = "bundle-translations")]
+            translation_builder: None,
             used_types: Default::default(),
             popup_menu_impl: None,
         }
@@ -313,7 +321,12 @@ pub struct Timer {
     pub running: NamedReference,
 }
 
-type ChildrenInsertionPoint = (ElementRc, usize, syntax_nodes::ChildrenPlaceholder);
+#[derive(Clone, Debug)]
+pub struct ChildrenInsertionPoint {
+    pub parent: ElementRc,
+    pub insertion_index: usize,
+    pub node: syntax_nodes::ChildrenPlaceholder,
+}
 
 /// Used sub types for a root component
 #[derive(Debug, Default)]
@@ -384,6 +397,7 @@ pub struct Component {
 
     pub popup_windows: RefCell<Vec<PopupWindow>>,
     pub timers: RefCell<Vec<Timer>>,
+    pub menu_item_tree: RefCell<Vec<Rc<Component>>>,
 
     /// This component actually inherits PopupWindow (although that has been changed to a Window by the lower_popups pass)
     pub inherits_popup_window: Cell<bool>,
@@ -414,7 +428,7 @@ impl Component {
             root_element: Element::from_node(
                 node.Element(),
                 "root".into(),
-                if node.child_text(SyntaxKind::Identifier).map_or(false, |t| t == "global") {
+                if node.child_text(SyntaxKind::Identifier).is_some_and(|t| t == "global") {
                     ElementType::Global
                 } else {
                     ElementType::Error
@@ -538,12 +552,19 @@ impl From<Type> for PropertyDeclaration {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TransitionDirection {
+    In,
+    Out,
+    InOut,
+}
+
 #[derive(Debug, Clone)]
 pub struct TransitionPropertyAnimation {
     /// The state id as computed in lower_state
     pub state_id: i32,
-    /// false for 'to', true for 'out'
-    pub is_out: bool,
+    /// The direction of the transition
+    pub direction: TransitionDirection,
     /// The content of the `animation` object
     pub animation: ElementRc,
 }
@@ -552,13 +573,42 @@ impl TransitionPropertyAnimation {
     /// Return an expression which returns a boolean which is true if the transition is active.
     /// The state argument is an expression referencing the state property of type StateInfo
     pub fn condition(&self, state: Expression) -> Expression {
-        Expression::BinaryExpression {
-            lhs: Box::new(Expression::StructFieldAccess {
-                base: Box::new(state),
-                name: (if self.is_out { "previous-state" } else { "current-state" }).into(),
-            }),
-            rhs: Box::new(Expression::NumberLiteral(self.state_id as _, Unit::None)),
-            op: '=',
+        match self.direction {
+            TransitionDirection::In => Expression::BinaryExpression {
+                lhs: Box::new(Expression::StructFieldAccess {
+                    base: Box::new(state),
+                    name: "current-state".into(),
+                }),
+                rhs: Box::new(Expression::NumberLiteral(self.state_id as _, Unit::None)),
+                op: '=',
+            },
+            TransitionDirection::Out => Expression::BinaryExpression {
+                lhs: Box::new(Expression::StructFieldAccess {
+                    base: Box::new(state),
+                    name: "previous-state".into(),
+                }),
+                rhs: Box::new(Expression::NumberLiteral(self.state_id as _, Unit::None)),
+                op: '=',
+            },
+            TransitionDirection::InOut => Expression::BinaryExpression {
+                lhs: Box::new(Expression::BinaryExpression {
+                    lhs: Box::new(Expression::StructFieldAccess {
+                        base: Box::new(state.clone()),
+                        name: "current-state".into(),
+                    }),
+                    rhs: Box::new(Expression::NumberLiteral(self.state_id as _, Unit::None)),
+                    op: '=',
+                }),
+                rhs: Box::new(Expression::BinaryExpression {
+                    lhs: Box::new(Expression::StructFieldAccess {
+                        base: Box::new(state),
+                        name: "previous-state".into(),
+                    }),
+                    rhs: Box::new(Expression::NumberLiteral(self.state_id as _, Unit::None)),
+                    op: '=',
+                }),
+                op: '|',
+            },
         }
     }
 }
@@ -596,7 +646,7 @@ impl Clone for PropertyAnimation {
                         .iter()
                         .map(|t| TransitionPropertyAnimation {
                             state_id: t.state_id,
-                            is_out: t.is_out,
+                            direction: t.direction,
                             animation: deep_clone(&t.animation),
                         })
                         .collect(),
@@ -636,8 +686,13 @@ pub struct ElementDebugInfo {
     // The id qualified with the enclosing component name. Given `foo := Bar {}` this is `EnclosingComponent::foo`
     pub qualified_id: Option<SmolStr>,
     pub type_name: String,
+    // Hold an id for each element that is unique during this build, based on the source file and
+    // the offset of the `LBrace` token.
+    //
+    // This helps to cross-reference the element in the different build stages the LSP has to deal with.
+    pub element_hash: u64,
     pub node: syntax_nodes::Element,
-    // Field to indicate wether this element was a layout that had
+    // Field to indicate whether this element was a layout that had
     // been lowered into a rectangle in the lower_layouts pass.
     pub layout: Option<crate::layout::Layout>,
     /// Set to true if the ElementDebugInfo following this one in the debug vector
@@ -788,20 +843,20 @@ pub fn pretty_print(
     for (name, expr) in &e.bindings {
         let expr = expr.borrow();
         indent!();
-        write!(f, "{}: ", name)?;
+        write!(f, "{name}: ")?;
         expression_tree::pretty_print(f, &expr.expression)?;
-        if expr.analysis.as_ref().map_or(false, |a| a.is_const) {
+        if expr.analysis.as_ref().is_some_and(|a| a.is_const) {
             write!(f, "/*const*/")?;
         }
         writeln!(f, ";")?;
         //writeln!(f, "; /*{}*/", expr.priority)?;
         if let Some(anim) = &expr.animation {
             indent!();
-            writeln!(f, "animate {} {:?}", name, anim)?;
+            writeln!(f, "animate {name} {anim:?}")?;
         }
         for nr in &expr.two_way_bindings {
             indent!();
-            writeln!(f, "{} <=> {:?};", name, nr)?;
+            writeln!(f, "{name} <=> {nr:?};")?;
         }
     }
     for (name, ch) in &e.change_callbacks {
@@ -826,7 +881,7 @@ pub fn pretty_print(
     }
     if let Some(g) = &e.geometry_props {
         indent!();
-        writeln!(f, "geometry {:?} ", g)?;
+        writeln!(f, "geometry {g:?} ")?;
     }
 
     /*if let Type::Component(base) = &e.base_type {
@@ -948,7 +1003,7 @@ impl Element {
         } else if parent_type == ElementType::Global {
             // This must be a global component it can only have properties and callback
             let mut error_on = |node: &dyn Spanned, what: &str| {
-                diag.push_error(format!("A global component cannot have {}", what), node);
+                diag.push_error(format!("A global component cannot have {what}"), node);
             };
             node.SubElement().for_each(|n| error_on(&n, "sub elements"));
             node.RepeatedElement().for_each(|n| error_on(&n, "sub elements"));
@@ -959,13 +1014,12 @@ impl Element {
             node.States().for_each(|n| error_on(&n, "states"));
             node.Transitions().for_each(|n| error_on(&n, "transitions"));
             node.CallbackDeclaration().for_each(|cb| {
-                if parser::identifier_text(&cb.DeclaredIdentifier()).map_or(false, |s| s == "init")
-                {
+                if parser::identifier_text(&cb.DeclaredIdentifier()).is_some_and(|s| s == "init") {
                     error_on(&cb, "an 'init' callback")
                 }
             });
             node.CallbackConnection().for_each(|cb| {
-                if parser::identifier_text(&cb).map_or(false, |s| s == "init") {
+                if parser::identifier_text(&cb).is_some_and(|s| s == "init") {
                     error_on(&cb, "an 'init' callback")
                 }
             });
@@ -993,6 +1047,7 @@ impl Element {
             base_type,
             debug: vec![ElementDebugInfo {
                 qualified_id,
+                element_hash: 0,
                 type_name,
                 node: node.clone(),
                 layout: None,
@@ -1019,14 +1074,14 @@ impl Element {
             match maybe_existing_prop_type {
                 Type::Callback { .. } => {
                     diag.push_error(
-                        format!("Cannot declare property '{}' when a callback with the same name exists", prop_name),
+                        format!("Cannot declare property '{prop_name}' when a callback with the same name exists"),
                         &prop_decl.DeclaredIdentifier().child_token(SyntaxKind::Identifier).unwrap(),
                     );
                     continue;
                 }
                 Type::Function { .. } => {
                     diag.push_error(
-                        format!("Cannot declare property '{}' when a function with the same name exists", prop_name),
+                        format!("Cannot declare property '{prop_name}' when a function with the same name exists"),
                         &prop_decl.DeclaredIdentifier().child_token(SyntaxKind::Identifier).unwrap(),
                     );
                     continue;
@@ -1034,7 +1089,7 @@ impl Element {
                 Type::Invalid => {} // Ok to proceed with a new declaration
                 _ => {
                     diag.push_error(
-                        format!("Cannot override property '{}'", unresolved_prop_name),
+                        format!("Cannot override property '{unresolved_prop_name}'"),
                         &prop_decl
                             .DeclaredIdentifier()
                             .child_token(SyntaxKind::Identifier)
@@ -1130,7 +1185,7 @@ impl Element {
                 unwrap_or_continue!(parser::identifier_text(&sig_decl.DeclaredIdentifier()); diag);
 
             let pure = Some(
-                sig_decl.child_token(SyntaxKind::Identifier).map_or(false, |t| t.text() == "pure"),
+                sig_decl.child_token(SyntaxKind::Identifier).is_some_and(|t| t.text() == "pure"),
             );
 
             let PropertyLookupResult {
@@ -1147,7 +1202,7 @@ impl Element {
                         );
                     } else {
                         diag.push_error(
-                            format!("Cannot override callback '{}'", existing_name),
+                            format!("Cannot override callback '{existing_name}'"),
                             &sig_decl.DeclaredIdentifier(),
                         )
                     }
@@ -1224,12 +1279,12 @@ impl Element {
                 if matches!(maybe_existing_prop_type, Type::Callback { .. } | Type::Function { .. })
                 {
                     diag.push_error(
-                        format!("Cannot override '{}'", existing_name),
+                        format!("Cannot override '{existing_name}'"),
                         &func.DeclaredIdentifier(),
                     )
                 } else {
                     diag.push_error(
-                        format!("Cannot declare function '{}' when a property with the same name exists", existing_name),
+                        format!("Cannot declare function '{existing_name}' when a property with the same name exists"),
                         &func.DeclaredIdentifier(),
                     );
                 }
@@ -1471,7 +1526,7 @@ impl Element {
                     diag,
                     tr,
                 );
-                if let Some((_, _, se)) = sub_child_insertion_point {
+                if let Some(ChildrenInsertionPoint { node: se, .. }) = sub_child_insertion_point {
                     diag.push_error(
                         "The @children placeholder cannot appear in a repeated element".into(),
                         &se,
@@ -1488,7 +1543,7 @@ impl Element {
                     diag,
                     tr,
                 );
-                if let Some((_, _, se)) = sub_child_insertion_point {
+                if let Some(ChildrenInsertionPoint { node: se, .. }) = sub_child_insertion_point {
                     diag.push_error(
                         "The @children placeholder cannot appear in a conditional element".into(),
                         &se,
@@ -1514,7 +1569,11 @@ impl Element {
                     &children_placeholder,
                 )
             } else {
-                *component_child_insertion_point = Some((r.clone(), index, children_placeholder));
+                *component_child_insertion_point = Some(ChildrenInsertionPoint {
+                    parent: r.clone(),
+                    insertion_index: index,
+                    node: children_placeholder,
+                });
             }
         }
 
@@ -1587,7 +1646,7 @@ impl Element {
         let mut id = parser::identifier_text(&node).unwrap_or_default();
         if matches!(id.as_ref(), "parent" | "self" | "root") {
             diag.push_error(
-                format!("'{}' is a reserved id", id),
+                format!("'{id}' is a reserved id"),
                 &node.child_token(SyntaxKind::Identifier).unwrap(),
             );
             id = SmolStr::default();
@@ -1695,6 +1754,7 @@ impl Element {
                 declared_pure: p.pure,
                 is_local_to_component: true,
                 is_in_direct_base: false,
+                builtin_function: None,
             },
         )
     }
@@ -1721,7 +1781,7 @@ impl Element {
                             }
                         }
                         Type::Callback { .. } => {
-                            diag.push_error(format!("'{}' is a callback. Use `=>` to connect", unresolved_name),
+                            diag.push_error(format!("'{unresolved_name}' is a callback. Use `=>` to connect"),
                             &name_token)
                         }
                         _ => diag.push_error(format!(
@@ -1819,7 +1879,7 @@ impl Element {
     /// If `need_explicit` is true, then only consider binding set in the code, not the ones set
     /// by the compiler later.
     pub fn is_binding_set(self: &Element, property_name: &str, need_explicit: bool) -> bool {
-        if self.bindings.get(property_name).map_or(false, |b| {
+        if self.bindings.get(property_name).is_some_and(|b| {
             b.borrow().has_binding() && (!need_explicit || b.borrow().priority > 0)
         }) {
             true
@@ -1859,7 +1919,7 @@ impl Element {
     }
 
     pub fn sub_component(&self) -> Option<&Rc<Component>> {
-        if self.repeated.is_some() || self.is_component_placeholder {
+        if self.repeated.is_some() {
             None
         } else if let ElementType::Component(sub_component) = &self.base_type {
             Some(sub_component)
@@ -1922,10 +1982,10 @@ pub fn type_from_node(
         let prop_type = tr.lookup_qualified(&qualified_type.members);
 
         if prop_type == Type::Invalid && tr.lookup_element(&qualified_type.to_smolstr()).is_err() {
-            diag.push_error(format!("Unknown type '{}'", qualified_type), &qualified_type_node);
+            diag.push_error(format!("Unknown type '{qualified_type}'"), &qualified_type_node);
         } else if !prop_type.is_property_type() {
             diag.push_error(
-                format!("'{}' is not a valid type", qualified_type),
+                format!("'{qualified_type}' is not a valid type"),
                 &qualified_type_node,
             );
         }
@@ -2029,7 +2089,7 @@ fn lookup_property_from_qualified_name_for_state(
         [unresolved_prop_name] => {
             let lookup_result = r.borrow().lookup_property(unresolved_prop_name.as_ref());
             if !lookup_result.property_type.is_property_type() {
-                diag.push_error(format!("'{}' is not a valid property", qualname), &node);
+                diag.push_error(format!("'{qualname}' is not a valid property"), &node);
             } else if !lookup_result.is_valid_for_assignment() {
                 diag.push_error(
                     format!(
@@ -2049,7 +2109,7 @@ fn lookup_property_from_qualified_name_for_state(
                 let lookup_result = element.borrow().lookup_property(unresolved_prop_name.as_ref());
                 if !lookup_result.is_valid() {
                     diag.push_error(
-                        format!("'{}' not found in '{}'", unresolved_prop_name, elem_id),
+                        format!("'{unresolved_prop_name}' not found in '{elem_id}'"),
                         &node,
                     );
                 } else if !lookup_result.is_valid_for_assignment() {
@@ -2066,12 +2126,12 @@ fn lookup_property_from_qualified_name_for_state(
                     lookup_result.property_type,
                 ))
             } else {
-                diag.push_error(format!("'{}' is not a valid element id", elem_id), &node);
+                diag.push_error(format!("'{elem_id}' is not a valid element id"), &node);
                 None
             }
         }
         _ => {
-            diag.push_error(format!("'{}' is not a valid property", qualname), &node);
+            diag.push_error(format!("'{qualname}' is not a valid property"), &node);
             None
         }
     }
@@ -2154,7 +2214,12 @@ pub fn recurse_elem_including_sub_components<State>(
         .popup_windows
         .borrow()
         .iter()
-        .for_each(|p| recurse_elem_including_sub_components(&p.component, state, vis))
+        .for_each(|p| recurse_elem_including_sub_components(&p.component, state, vis));
+    component
+        .menu_item_tree
+        .borrow()
+        .iter()
+        .for_each(|c| recurse_elem_including_sub_components(c, state, vis));
 }
 
 /// Same as recurse_elem, but will take the children from the element as to not keep the element borrow
@@ -2196,6 +2261,11 @@ pub fn recurse_elem_including_sub_components_no_borrow<State>(
         .borrow()
         .iter()
         .for_each(|p| recurse_elem_including_sub_components_no_borrow(&p.component, state, vis));
+    component
+        .menu_item_tree
+        .borrow()
+        .iter()
+        .for_each(|c| recurse_elem_including_sub_components_no_borrow(c, state, vis));
 }
 
 /// This visit the binding attached to this element, but does not recurse in children elements
@@ -2281,9 +2351,11 @@ pub fn visit_named_references_in_expression(
 ) {
     expr.visit_mut(|sub| visit_named_references_in_expression(sub, vis));
     match expr {
-        Expression::PropertyReference(r)
-        | Expression::CallbackReference(r, _)
-        | Expression::FunctionReference(r, _) => vis(r),
+        Expression::PropertyReference(r) => vis(r),
+        Expression::FunctionCall {
+            function: Callable::Callback(r) | Callable::Function(r),
+            ..
+        } => vis(r),
         Expression::LayoutCacheAccess { layout_cache_prop, .. } => vis(layout_cache_prop),
         Expression::SolveLayout(l, _) => l.visit_named_references(vis),
         Expression::ComputeLayoutInfo(l, _) => l.visit_named_references(vis),
@@ -2397,6 +2469,11 @@ pub fn visit_all_named_references(
                     vis(&mut t.triggered);
                     vis(&mut t.running);
                 });
+                for o in compo.optimized_elements.borrow().iter() {
+                    visit_element_expressions(o, |expr, _, _| {
+                        visit_named_references_in_expression(expr, vis)
+                    });
+                }
             }
             compo
         },
@@ -2410,8 +2487,16 @@ pub fn visit_all_expressions(
     component: &Component,
     mut vis: impl FnMut(&mut Expression, &dyn Fn() -> Type),
 ) {
-    recurse_elem_including_sub_components(component, &(), &mut |elem, _| {
+    recurse_elem_including_sub_components(component, &Weak::new(), &mut |elem, parent_compo| {
         visit_element_expressions(elem, |expr, _, ty| vis(expr, ty));
+        let compo = elem.borrow().enclosing_component.clone();
+        if !Weak::ptr_eq(parent_compo, &compo) {
+            let compo = compo.upgrade().unwrap();
+            for o in compo.optimized_elements.borrow().iter() {
+                visit_element_expressions(o, |expr, _, ty| vis(expr, ty));
+            }
+        }
+        compo
     })
 }
 
@@ -2424,8 +2509,7 @@ pub struct State {
 
 #[derive(Debug, Clone)]
 pub struct Transition {
-    /// false for 'to', true for 'out'
-    pub is_out: bool,
+    pub direction: TransitionDirection,
     pub state_id: SmolStr,
     pub property_animations: Vec<(NamedReference, SourceLocation, ElementRc)>,
     pub node: syntax_nodes::Transition,
@@ -2441,8 +2525,21 @@ impl Transition {
         if let Some(star) = trs.child_token(SyntaxKind::Star) {
             diag.push_error("catch-all not yet implemented".into(), &star);
         };
+        let direction_text = trs
+            .first_child_or_token()
+            .and_then(|t| t.as_token().map(|tok| tok.text().to_string()))
+            .unwrap_or_default();
+
         Transition {
-            is_out: parser::identifier_text(&trs).unwrap_or_default() == "out",
+            direction: match direction_text.as_str() {
+                "in" => TransitionDirection::In,
+                "out" => TransitionDirection::Out,
+                "in-out" => TransitionDirection::InOut,
+                "in_out" => TransitionDirection::InOut,
+                _ => {
+                    unreachable!("Unknown transition direction: '{}'", direction_text);
+                }
+            },
             state_id: trs
                 .DeclaredIdentifier()
                 .and_then(|x| parser::identifier_text(&x))
@@ -2520,12 +2617,12 @@ impl Exports {
                     || type_registry.lookup(internal_name) != Type::Invalid
                 {
                     diag.push_error(
-                        format!("Cannot export '{}' because it is not a component", internal_name,),
+                        format!("Cannot export '{internal_name}' because it is not a component",),
                         internal_name_node,
                     );
                     None
                 } else {
-                    diag.push_error(format!("'{}' not found", internal_name,), internal_name_node);
+                    diag.push_error(format!("'{internal_name}' not found",), internal_name_node);
                     None
                 }
             };
@@ -2752,12 +2849,12 @@ pub fn inject_element_as_repeated_element(repeated_element: &ElementRc, new_root
         let li_v = crate::layout::create_new_prop(
             &new_root,
             SmolStr::new_static("layoutinfo-v"),
-            crate::typeregister::layout_info_type(),
+            crate::typeregister::layout_info_type().into(),
         );
         let li_h = crate::layout::create_new_prop(
             &new_root,
             SmolStr::new_static("layoutinfo-h"),
-            crate::typeregister::layout_info_type(),
+            crate::typeregister::layout_info_type().into(),
         );
         let expr_h = crate::layout::implicit_layout_info_call(old_root, Orientation::Horizontal);
         let expr_v = crate::layout::implicit_layout_info_call(old_root, Orientation::Vertical);

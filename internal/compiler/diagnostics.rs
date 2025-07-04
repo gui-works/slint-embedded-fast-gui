@@ -71,7 +71,7 @@ pub struct SourceFileInner {
     source: Option<String>,
 
     /// The offset of each linebreak
-    line_offsets: once_cell::unsync::OnceCell<Vec<usize>>,
+    line_offsets: std::cell::OnceCell<Vec<usize>>,
 }
 
 impl std::fmt::Debug for SourceFileInner {
@@ -173,7 +173,7 @@ pub fn load_from_path(path: &Path) -> Result<String, Diagnostic> {
         level: DiagnosticLevel::Error,
     })?;
 
-    if path.extension().map_or(false, |e| e == "rs") {
+    if path.extension().is_some_and(|e| e == "rs") {
         return crate::lexer::extract_rust_macro(string).ok_or_else(|| Diagnostic {
             message: "No `slint!` macro".into(),
             span: SourceLocation {
@@ -320,8 +320,7 @@ impl BuildDiagnostics {
     ) {
         debug_assert!(
             !message.as_str().ends_with('.'),
-            "Error message should not end with a period: ({:?})",
-            message
+            "Error message should not end with a period: ({message:?})"
         );
         self.inner.push(Diagnostic { message, span, level });
     }
@@ -349,8 +348,7 @@ impl BuildDiagnostics {
     ) {
         self.push_diagnostic_with_span(
             format!(
-                "The property '{}' has been deprecated. Please use '{}' instead",
-                old_property, new_property
+                "The property '{old_property}' has been deprecated. Please use '{new_property}' instead"
             ),
             source.to_source_location(),
             crate::diagnostics::DiagnosticLevel::Warning,

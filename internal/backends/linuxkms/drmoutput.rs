@@ -30,7 +30,6 @@ enum PageFlipState {
     InitialBufferPosted,
     WaitingForPageFlip {
         _buffer_to_keep_alive_until_flip: Box<dyn Buffer>,
-        ready_for_next_animation_frame: Box<dyn FnOnce()>,
     },
     ReadyForNextBuffer,
 }
@@ -42,7 +41,6 @@ pub struct DrmOutput {
     crtc: drm::control::crtc::Handle,
     last_buffer: Cell<Option<Box<dyn Buffer>>>,
     page_flip_state: Rc<RefCell<PageFlipState>>,
-    page_flip_event_source_registered: Cell<bool>,
 }
 
 impl DrmOutput {
@@ -198,7 +196,6 @@ impl DrmOutput {
             crtc,
             last_buffer: Cell::default(),
             page_flip_state: Default::default(),
-            page_flip_event_source_registered: Cell::new(false),
         })
     }
 
@@ -206,17 +203,14 @@ impl DrmOutput {
         &self,
         front_buffer: impl Buffer + 'static,
         framebuffer_handle: drm::control::framebuffer::Handle,
-        ready_for_next_animation_frame: Box<dyn FnOnce()>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if let Some(last_buffer) = self.last_buffer.replace(Some(Box::new(front_buffer))) {
             self.drm_device
                 .page_flip(self.crtc, framebuffer_handle, drm::control::PageFlipFlags::EVENT, None)
                 .map_err(|e| format!("Error presenting framebuffer on screen: {e}"))?;
 
-            *self.page_flip_state.borrow_mut() = PageFlipState::WaitingForPageFlip {
-                _buffer_to_keep_alive_until_flip: last_buffer,
-                ready_for_next_animation_frame,
-            };
+            *self.page_flip_state.borrow_mut() =
+                PageFlipState::WaitingForPageFlip { _buffer_to_keep_alive_until_flip: last_buffer };
         } else {
             self.drm_device
                 .set_crtc(
@@ -228,66 +222,34 @@ impl DrmOutput {
                 )
                 .map_err(|e| format!("Error presenting framebuffer on screen: {e}"))?;
             *self.page_flip_state.borrow_mut() = PageFlipState::InitialBufferPosted;
-
-            // We can render the next frame right away, if needed, since we have at least two buffers. The callback
-            // will decide (will check if animation is running). However invoke the callback through the event loop
-            // instead of directly, so that if it decides to set `needs_redraw` to true, the event loop will process it.
-            i_slint_core::timers::Timer::single_shot(std::time::Duration::default(), move || {
-                ready_for_next_animation_frame();
-            })
         }
 
         Ok(())
     }
 
-    pub fn register_page_flip_handler(
-        &self,
-        event_loop_handle: crate::calloop_backend::EventLoopHandle,
-    ) -> Result<(), PlatformError> {
-        if self.page_flip_event_source_registered.replace(true) {
-            return Ok(());
-        }
-
-        let source = calloop::generic::Generic::new_with_error::<std::io::Error>(
-            self.drm_device.0.clone(),
-            calloop::Interest::READ,
-            calloop::Mode::Level,
-        );
-
-        event_loop_handle
-            .insert_source(source, {
-                let drm_device = self.drm_device.clone();
-                let page_flip_state = self.page_flip_state.clone();
-
-                move |_, _, _| {
-                    if drm_device
-                        .receive_events()?
-                        .any(|event| matches!(event, drm::control::Event::PageFlip(..)))
-                    {
-                        if let PageFlipState::WaitingForPageFlip {
-                            ready_for_next_animation_frame,
-                            ..
-                        } = page_flip_state.replace(PageFlipState::ReadyForNextBuffer)
-                        {
-                            ready_for_next_animation_frame();
-                        }
-                    }
-                    Ok(calloop::PostAction::Continue)
-                }
-            })
-            .map_err(|e| {
-                PlatformError::Other(format!("Error registering page flip handler: {e}"))
-            })?;
-        Ok(())
-    }
-
-    pub fn is_ready_to_present(&self) -> bool {
-        matches!(
+    pub fn wait_for_page_flip(&self) {
+        if matches!(
             *self.page_flip_state.borrow(),
             PageFlipState::NoFrameBufferPosted
                 | PageFlipState::InitialBufferPosted
                 | PageFlipState::ReadyForNextBuffer
-        )
+        ) {
+            return;
+        }
+
+        loop {
+            let Ok(mut event_it) = self.drm_device.receive_events() else {
+                return;
+            };
+
+            if event_it.any(|event| matches!(event, drm::control::Event::PageFlip(..))) {
+                if let PageFlipState::WaitingForPageFlip { .. } =
+                    self.page_flip_state.replace(PageFlipState::ReadyForNextBuffer)
+                {
+                    return;
+                }
+            }
+        }
     }
 
     pub fn size(&self) -> (u32, u32) {

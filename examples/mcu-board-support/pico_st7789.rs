@@ -126,7 +126,7 @@ pub fn init() {
     });
 
     let rst = pins.gpio15.into_push_pull_output();
-    let mut backlight = pins.gpio13.into_push_pull_output();
+    let backlight = pins.gpio13.into_push_pull_output();
 
     let dc = pins.gpio8.into_push_pull_output();
     let cs = pins.gpio9.into_push_pull_output();
@@ -149,9 +149,10 @@ pub fn init() {
     let stolen_spi = unsafe { core::ptr::read(&spi as *const _) };
 
     let spi = singleton!(:SpiRefCell = SpiRefCell::new((spi, 0.Hz()))).unwrap();
+    let mipidsi_buffer = singleton!(:[u8; 512] = [0; 512]).unwrap();
 
     let display_spi = SharedSpiWithFreq { refcell: spi, cs, freq: SPI_ST7789VW_MAX_FREQ };
-    let di = display_interface_spi::SPIInterface::new(display_spi, dc);
+    let di = mipidsi::interface::SpiInterface::new(display_spi, dc, mipidsi_buffer);
     let display = mipidsi::Builder::new(mipidsi::models::ST7789, di)
         .reset_pin(rst)
         .display_size(DISPLAY_SIZE.height as _, DISPLAY_SIZE.width as _)
@@ -159,7 +160,6 @@ pub fn init() {
         .invert_colors(mipidsi::options::ColorInversion::Inverted)
         .init(&mut timer)
         .unwrap();
-    backlight.set_high().unwrap();
 
     let touch = xpt2046::XPT2046::new(
         &IRQ_PIN,
@@ -197,18 +197,20 @@ pub fn init() {
         window: Default::default(),
         buffer_provider: buffer_provider.into(),
         touch: touch.into(),
+        backlight: Some(backlight).into(),
     }))
     .expect("backend already initialized");
 }
 
-struct PicoBackend<DrawBuffer, Touch> {
+struct PicoBackend<DrawBuffer, Touch, Backlight> {
     window: RefCell<Option<Rc<renderer::MinimalSoftwareWindow>>>,
     buffer_provider: RefCell<DrawBuffer>,
     touch: RefCell<Touch>,
+    backlight: RefCell<Option<Backlight>>,
 }
 
 impl<
-        DI: display_interface::WriteOnlyDataCommand,
+        DI: mipidsi::interface::Interface<Word = u8>,
         RST: OutputPin<Error = Infallible>,
         TO: WriteTarget<TransmittedWord = u8> + embedded_hal_nb::spi::FullDuplex,
         CH: SingleChannel,
@@ -216,10 +218,12 @@ impl<
         CS_: OutputPin<Error = Infallible>,
         IRQ: InputPin<Error = Infallible>,
         SPI: SpiDevice,
+        BL: OutputPin<Error = Infallible>,
     > slint::platform::Platform
     for PicoBackend<
         DrawBuffer<Display<DI, RST>, PioTransfer<TO, CH>, (DC_, CS_)>,
         xpt2046::XPT2046<IRQ, SPI>,
+        BL,
     >
 {
     fn create_window_adapter(
@@ -251,6 +255,9 @@ impl<
                     let mut buffer_provider = self.buffer_provider.borrow_mut();
                     renderer.render_by_line(&mut *buffer_provider);
                     buffer_provider.flush_frame();
+                    if let Some(mut backlight) = self.backlight.take() {
+                        backlight.set_high().unwrap();
+                    }
                 });
 
                 // handle touch event
@@ -281,11 +288,11 @@ impl<
                     let is_pointer_release_event =
                         matches!(event, WindowEvent::PointerReleased { .. });
 
-                    window.dispatch_event(event);
+                    window.try_dispatch_event(event)?;
 
                     // removes hover state on widgets
                     if is_pointer_release_event {
-                        window.dispatch_event(WindowEvent::PointerExited);
+                        window.try_dispatch_event(WindowEvent::PointerExited)?;
                     }
                     // Don't go to sleep after a touch event that forces a redraw
                     continue;
@@ -356,7 +363,7 @@ struct DrawBuffer<Display, PioTransfer, Stolen> {
 }
 
 impl<
-        DI: display_interface::WriteOnlyDataCommand,
+        DI: mipidsi::interface::Interface<Word = u8>,
         RST: OutputPin<Error = Infallible>,
         TO: WriteTarget<TransmittedWord = u8>,
         CH: SingleChannel,
@@ -416,7 +423,7 @@ impl<
 }
 
 impl<
-        DI: display_interface::WriteOnlyDataCommand,
+        DI: mipidsi::interface::Interface<Word = u8>,
         RST: OutputPin<Error = Infallible>,
         TO: WriteTarget<TransmittedWord = u8> + embedded_hal_nb::spi::FullDuplex,
         CH: SingleChannel,
@@ -604,7 +611,8 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     bl.set_high().unwrap();
     let spi = singleton!(:SpiRefCell = SpiRefCell::new((spi, 0.Hz()))).unwrap();
     let display_spi = SharedSpiWithFreq { refcell: spi, cs, freq: SPI_ST7789VW_MAX_FREQ };
-    let di = display_interface_spi::SPIInterface::new(display_spi, dc);
+    let mut buffer = [0_u8; 512];
+    let di = mipidsi::interface::SpiInterface::new(display_spi, dc, &mut buffer);
     let mut display = mipidsi::Builder::new(mipidsi::models::ST7789, di)
         .reset_pin(rst)
         .display_size(DISPLAY_SIZE.height as _, DISPLAY_SIZE.width as _)

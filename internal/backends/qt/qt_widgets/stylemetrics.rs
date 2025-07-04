@@ -49,6 +49,8 @@ pub struct NativeStyleMetrics {
     // Tab Bar metrics:
     pub tab_bar_alignment: Property<LayoutAlignment>,
 
+    pub style_name: Property<SharedString>,
+
     pub style_change_listener: core::cell::Cell<*const u8>,
 }
 
@@ -75,6 +77,7 @@ impl NativeStyleMetrics {
             placeholder_color_disabled: Default::default(),
             dark_color_scheme: Default::default(),
             tab_bar_alignment: Default::default(),
+            style_name: Default::default(),
             style_change_listener: core::cell::Cell::new(core::ptr::null()),
         })
     }
@@ -192,13 +195,13 @@ impl i_slint_core::rtti::BuiltinGlobal for NativeStyleMetrics {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn slint_native_style_metrics_init(self_: Pin<&NativeStyleMetrics>) {
     self_.style_change_listener.set(core::ptr::null()); // because the C++ code don't initialize it
     self_.init_impl();
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn slint_native_style_metrics_deinit(self_: Pin<&mut NativeStyleMetrics>) {
     let scl = self_.style_change_listener.get();
     cpp!(unsafe [scl as "StyleChangeListener*"] { delete scl; });

@@ -7,6 +7,19 @@ use i_slint_compiler::*;
 use itertools::Itertools;
 use std::io::{BufWriter, Write};
 
+#[cfg(all(
+    feature = "jemalloc",
+    not(any(target_os = "windows", all(target_arch = "aarch64", target_os = "linux")))
+))]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(all(
+    feature = "jemalloc",
+    not(any(target_os = "windows", all(target_arch = "aarch64", target_os = "linux")))
+))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum Embedding {
     /// Embed resources using absolute paths on the build system (alias: false)
@@ -20,65 +33,80 @@ enum Embedding {
     /// used
     #[cfg(feature = "software-renderer")]
     EmbedForSoftwareRenderer,
+    /// Same as "embed-files-for-software-renderer" but use Signed Distance Field (SDF) to render fonts.
+    /// This produces smaller binaries, but may result in slightly inferior visual output and slower rendering.
+    #[cfg(all(feature = "software-renderer", feature = "sdf-fonts"))]
+    EmbedForSoftwareRendererWithSdf,
 }
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// Set output format
-    #[arg(short = 'f', long = "format", default_value = "cpp", action)]
+    /// Set the output format for generated code.
+    /// Possible values: 'cpp' for C++ code or 'rust' for Rust code.
+    #[arg(short = 'f', long = "format", default_value = "cpp")]
     format: generator::OutputFormat,
 
-    /// Include path for other .slint files
-    #[arg(short = 'I', name = "include path", number_of_values = 1, action)]
+    /// Specify include paths for imported .slint files or image resources.
+    /// This is used for including external .slint files or image resources referenced by '@image-url'.
+    #[arg(short = 'I', name = "include path", number_of_values = 1)]
     include_paths: Vec<std::path::PathBuf>,
 
-    /// The argument should be in the format `<library>=<path>` specifying the
-    /// name of the library and the path to the library directory or a .slint
-    /// entry-point file.
-    #[arg(short = 'L', name = "library path", number_of_values = 1, action)]
+    /// Define library paths in the format `<library>=<path>`.
+    /// This can point to either a library directory or a .slint entry-point file.
+    #[arg(short = 'L', name = "library path", number_of_values = 1)]
     library_paths: Vec<String>,
 
-    /// Path to .slint file ('-' for stdin)
-    #[arg(name = "file", action)]
+    /// Specify the path to the main .slint file to compile.
+    /// Use '-' to read from stdin.
+    #[arg(name = "file")]
     path: std::path::PathBuf,
 
-    /// The style name ('native' or 'fluent')
-    #[arg(long, name = "style name", action)]
+    /// Set the style for the UI (e.g., 'native' or 'fluent').
+    #[arg(long, name = "style name")]
     style: Option<String>,
 
-    /// The constant scale factor to apply for embedded assets and set by default on the window.
-    #[arg(long, name = "scale factor", action)]
+    /// Apply a constant scale factor to embedded assets, typically for high-DPI displays.
+    /// This scale factor is also applied to the window by default.
+    #[arg(long, name = "scale factor")]
     scale_factor: Option<f64>,
 
-    /// Generate a dependency file
-    #[arg(name = "dependency file", long = "depfile", number_of_values = 1, action)]
+    /// Generate a dependency file for build systems like CMake or Ninja.
+    /// This file is similar to the output of `gcc -M`.
+    #[arg(long = "depfile", name = "dependency file", number_of_values = 1)]
     depfile: Option<std::path::PathBuf>,
 
-    /// Declare which resources to embed
+    /// Declare which resources to embed into the final output.
     #[arg(long, name = "value", value_enum)]
     embed_resources: Option<Embedding>,
 
-    /// Sets the output file ('-' for stdout)
-    #[arg(name = "file to generate", short = 'o', default_value = "-", action)]
+    /// Set the output file for the generated code.
+    /// Use '-' to output to stdout.
+    #[arg(short = 'o', name = "output file", default_value = "-")]
     output: std::path::PathBuf,
 
-    /// Translation domain
-    #[arg(long = "translation-domain", action)]
+    /// Set the translation domain for translatable strings.
+    /// This is used to manage translation of strings in the UI.
+    #[arg(long = "translation-domain")]
     translation_domain: Option<String>,
 
-    /// Bundle translations from the specified path.
-    /// Translations files should be in the gettext .po format and should be found in
-    /// `<path>/<lang>/LC_MESSAGES/<domain>.po`
-    #[arg(long = "bundle-translations", name = "path", action)]
+    /// Bundle translations from a specified path.
+    /// Translation files should be in the gettext `.po` format and follow the directory structure:
+    /// `<path>/<lang>/LC_MESSAGES/<domain>.po`.
+    #[arg(long = "bundle-translations", name = "path")]
     bundle_translations: Option<std::path::PathBuf>,
 
-    /// C++ namespace
+    /// Define the C++ namespace for generated code.
     #[arg(long = "cpp-namespace", name = "C++ namespace")]
     cpp_namespace: Option<String>,
 
-    /// C++ files to generate (0 for header-only output)
-    #[arg(long = "cpp-file", name = "C++ file to generate", number_of_values = 1, action)]
+    /// Specify C++ files to generate.
+    ///
+    /// The header file (.h) is always generated in the file specified by `-o`.
+    /// If `--cpp-file` is not set, all code will be generated in the header file.
+    /// If set, function definitions are placed in the specified `.cpp` file.
+    /// If specified multiple times, the definitions are split across multiple `.cpp` files.
+    #[arg(long = "cpp-file", name = "output .cpp file", number_of_values = 1)]
     cpp_files: Vec<std::path::PathBuf>,
 }
 
@@ -118,7 +146,7 @@ fn main() -> std::io::Result<()> {
                 config.header_include = args.output.to_string_lossy().to_string();
             }
             _ => {
-                eprintln!("C++ files option was set but the output format is not C++ - ignorning");
+                eprintln!("C++ files option was set but the output format is not C++ - ignoring");
             }
         }
     }
@@ -133,6 +161,11 @@ fn main() -> std::io::Result<()> {
             Embedding::EmbedFiles => EmbedResourcesKind::EmbedAllResources,
             #[cfg(feature = "software-renderer")]
             Embedding::EmbedForSoftwareRenderer => EmbedResourcesKind::EmbedTextures,
+            #[cfg(all(feature = "software-renderer", feature = "sdf-fonts"))]
+            Embedding::EmbedForSoftwareRendererWithSdf => {
+                compiler_config.use_sdf_fonts = true;
+                EmbedResourcesKind::EmbedTextures
+            }
         };
     }
 
@@ -178,9 +211,9 @@ fn main() -> std::io::Result<()> {
         }
         for resource in doc.embedded_file_resources.borrow().keys() {
             if !fileaccess::load_file(std::path::Path::new(resource))
-                .map_or(false, |f| f.is_builtin())
+                .is_some_and(|f| f.is_builtin())
             {
-                write!(f, " {}", resource)?;
+                write!(f, " {resource}")?;
             }
         }
 

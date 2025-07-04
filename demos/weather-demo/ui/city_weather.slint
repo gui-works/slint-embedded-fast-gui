@@ -104,7 +104,6 @@ component CityWeatherList inherits Flickable {
 
     VerticalLayout {
         alignment: start;
-        padding: 0px;
 
         for city-weather-info[index] in CityWeather.city-weather:
             CitySlideArea {
@@ -150,7 +149,7 @@ component CityWeatherList inherits Flickable {
                     alternative-background: Math.mod(index, 2) == 0;
                 }
             }
-            
+
         Rectangle {
             // spacing
             min-height: WindowInfo.is-portrait ? 25px : 10px;
@@ -171,8 +170,6 @@ export component CityListView inherits PageBase {
     property<TileInfo> selected-tile;
 
     CityWeatherList {
-        padding: 16px;
-
         expand(index, absolute-position, width, height) => {
             root.selected-tile = {
                 index: index,
@@ -196,7 +193,7 @@ export component CityListView inherits PageBase {
             }
         ]
     }
-    
+
     expanded-tile := ExpandedCityWeatherTile {
         city-weather-info: CityWeather.city-weather[root.selected-tile.index];
         alternative-background: Math.mod(root.selected-tile.index, 2) == 0;

@@ -35,6 +35,7 @@ impl Item for NativeCheckBox {
         self: Pin<&Self>,
         orientation: Orientation,
         _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
     ) -> LayoutInfo {
         let text: qttypes::QString = self.text().as_str().into();
         let widget: NonNull<()> = SlintTypeErasedWidgetPtr::qwidget_ptr(&self.widget_ptr);
@@ -66,7 +67,7 @@ impl Item for NativeCheckBox {
 
     fn input_event_filter_before_children(
         self: Pin<&Self>,
-        event: MouseEvent,
+        event: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
@@ -76,7 +77,7 @@ impl Item for NativeCheckBox {
 
     fn input_event(
         self: Pin<&Self>,
-        event: MouseEvent,
+        event: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         self_rc: &i_slint_core::items::ItemRc,
     ) -> InputEventResult {
@@ -88,8 +89,8 @@ impl Item for NativeCheckBox {
         }
         if let MouseEvent::Released { position, button, .. } = event {
             let geo = self_rc.geometry();
-            if button == PointerEventButton::Left
-                && LogicalRect::new(LogicalPoint::default(), geo.size).contains(position)
+            if *button == PointerEventButton::Left
+                && LogicalRect::new(LogicalPoint::default(), geo.size).contains(*position)
             {
                 Self::FIELD_OFFSETS.checked.apply_pin(self).set(!self.checked());
                 Self::FIELD_OFFSETS.toggled.apply_pin(self).call(&())
@@ -128,7 +129,7 @@ impl Item for NativeCheckBox {
             Self::FIELD_OFFSETS
                 .has_focus
                 .apply_pin(self)
-                .set(event == &FocusEvent::FocusIn || event == &FocusEvent::WindowReceivedFocus);
+                .set(matches!(event, FocusEvent::FocusIn(_)));
             FocusEventResult::FocusAccepted
         } else {
             FocusEventResult::FocusIgnored
@@ -173,6 +174,19 @@ impl Item for NativeCheckBox {
             }
             qApp->style()->drawControl(QStyle::CE_CheckBox, &option, painter->get(), widget);
         });
+    }
+
+    fn bounding_rect(
+        self: core::pin::Pin<&Self>,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+        geometry: LogicalRect,
+    ) -> LogicalRect {
+        geometry
+    }
+
+    fn clips_children(self: core::pin::Pin<&Self>) -> bool {
+        false
     }
 }
 

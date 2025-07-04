@@ -49,7 +49,7 @@ fn project_data_dir() -> Option<PathBuf> {
                 }
             }
             Err(_e) => {
-                log::warn!("Cannot read ANDROID_DATA, persistence not avaialble.");
+                log::warn!("Cannot read ANDROID_DATA, persistence not available.");
                 return None;
             }
         }
@@ -264,7 +264,7 @@ impl WeatherController for OpenWeatherController {
 
     fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(storage_path) = &self.storage_path {
-            log::debug!("Saving data to: {:?}", storage_path.to_str());
+            log::debug!("Saving data to: {:?}", storage_path.display());
 
             // Ensure the parent directories exist
             if let Some(parent_dir) = storage_path.parent() {

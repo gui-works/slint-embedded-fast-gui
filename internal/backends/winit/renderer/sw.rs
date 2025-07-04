@@ -9,15 +9,19 @@ use i_slint_core::platform::PlatformError;
 pub use i_slint_core::software_renderer::SoftwareRenderer;
 use i_slint_core::software_renderer::{PremultipliedRgbaColor, RepaintBufferType, TargetPixel};
 use i_slint_core::{graphics::RequestedGraphicsAPI, graphics::Rgb8Pixel};
-use std::{cell::RefCell, rc::Rc};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Arc;
+use winit::event_loop::ActiveEventLoop;
 
 use super::WinitCompatibleRenderer;
 
 pub struct WinitSoftwareRenderer {
     renderer: SoftwareRenderer,
-    _context: RefCell<Option<softbuffer::Context<Rc<winit::window::Window>>>>,
-    surface:
-        RefCell<Option<softbuffer::Surface<Rc<winit::window::Window>, Rc<winit::window::Window>>>>,
+    _context: RefCell<Option<softbuffer::Context<Arc<winit::window::Window>>>>,
+    surface: RefCell<
+        Option<softbuffer::Surface<Arc<winit::window::Window>, Arc<winit::window::Window>>>,
+    >,
 }
 
 #[repr(transparent)]
@@ -66,7 +70,9 @@ impl TargetPixel for SoftBufferPixel {
 }
 
 impl WinitSoftwareRenderer {
-    pub fn new_suspended() -> Box<dyn WinitCompatibleRenderer> {
+    pub fn new_suspended(
+        _shared_backend_data: &Rc<crate::SharedBackendData>,
+    ) -> Box<dyn WinitCompatibleRenderer> {
         Box::new(Self {
             renderer: SoftwareRenderer::new(),
             _context: RefCell::new(None),
@@ -118,7 +124,7 @@ impl super::WinitCompatibleRenderer for WinitSoftwareRenderer {
                 buffer: &'a mut [u32],
                 line: Vec<i_slint_core::software_renderer::Rgb565Pixel>,
             }
-            impl<'a> i_slint_core::software_renderer::LineBufferProvider for FrameBuffer<'a> {
+            impl i_slint_core::software_renderer::LineBufferProvider for FrameBuffer<'_> {
                 type TargetPixel = i_slint_core::software_renderer::Rgb565Pixel;
                 fn process_line(
                     &mut self,
@@ -172,22 +178,23 @@ impl super::WinitCompatibleRenderer for WinitSoftwareRenderer {
 
     fn resume(
         &self,
+        active_event_loop: &ActiveEventLoop,
         window_attributes: winit::window::WindowAttributes,
         _requested_graphics_api: Option<RequestedGraphicsAPI>,
-    ) -> Result<Rc<winit::window::Window>, PlatformError> {
-        let winit_window = crate::event_loop::with_window_target(|event_loop| {
-            event_loop.create_window(window_attributes).map_err(|winit_os_error| {
-                format!("Error creating native window for software rendering: {}", winit_os_error)
-                    .into()
-            })
-        })?;
-        let winit_window = Rc::new(winit_window);
+    ) -> Result<Arc<winit::window::Window>, PlatformError> {
+        let winit_window =
+            active_event_loop.create_window(window_attributes).map_err(|winit_os_error| {
+                PlatformError::from(format!(
+                    "Error creating native window for software rendering: {winit_os_error}"
+                ))
+            })?;
+        let winit_window = Arc::new(winit_window);
 
         let context = softbuffer::Context::new(winit_window.clone())
             .map_err(|e| format!("Error creating softbuffer context: {e}"))?;
 
         let surface = softbuffer::Surface::new(&context, winit_window.clone()).map_err(
-            |softbuffer_error| format!("Error creating softbuffer surface: {}", softbuffer_error),
+            |softbuffer_error| format!("Error creating softbuffer surface: {softbuffer_error}"),
         )?;
 
         *self._context.borrow_mut() = Some(context);
@@ -200,9 +207,5 @@ impl super::WinitCompatibleRenderer for WinitSoftwareRenderer {
         drop(self.surface.borrow_mut().take());
         drop(self._context.borrow_mut().take());
         Ok(())
-    }
-
-    fn is_suspended(&self) -> bool {
-        self._context.borrow().is_none()
     }
 }

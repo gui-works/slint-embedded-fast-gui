@@ -16,6 +16,7 @@ enum ElementAccessibilityAction {
     Default_ = 0;
     Increment = 1;
     Decrement = 2;
+    Expand = 3;
 }
 
 enum PointerEventButton {
@@ -98,6 +99,8 @@ enum AccessibleRole {
     Switch = 14;
     ListItem = 15;
     TabPanel = 16;
+    Groupbox = 17;
+    Image = 18;
 }
 
 message ElementQueryInstruction {
@@ -140,6 +143,7 @@ message RequestSetElementAccessibleValue {
 
 message RequestTakeSnapshot {
     Handle window_handle = 1;
+    string image_mime_type = 2;
 }
 
 message RequestElementClick {
@@ -236,6 +240,9 @@ message ElementPropertiesResponse {
     LogicalPosition absolute_position = 11;
     AccessibleRole accessible_role = 12;
     float computed_opacity = 13;
+    string accessible_placeholder_text = 14;
+    bool accessible_enabled = 15;
+    bool accessible_read_only = 16;
 }
 
 message InvokeElementAccessibilityActionResponse {
@@ -245,10 +252,10 @@ message SetElementAccessibleValueResponse {
 }
 
 message TakeSnapshotResponse {
-    bytes window_contents_as_png = 1;
+    bytes window_contents_as_encoded_image = 1;
 }
 
-message ElementClickResponse {    
+message ElementClickResponse {
 }
 
 message DispatchWindowEventResponse {

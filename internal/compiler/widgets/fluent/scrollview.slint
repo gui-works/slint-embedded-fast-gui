@@ -16,6 +16,7 @@ component ScrollViewButton inherits TouchArea {
         width: parent.width;
         source: root.icon;
         colorize: FluentPalette.border;
+        accessible-role: none;
 
         animate colorize, opacity { duration: 150ms; }
         animate width, height { duration: 150ms; easing: ease-out; }
@@ -41,14 +42,17 @@ component ScrollBar inherits Rectangle {
     in property <ScrollBarPolicy> policy: ScrollBarPolicy.as-needed;
     in property <bool> enabled;
 
-    private property <length> offset: 16px;
-    private property <length> size: 2px;
-    private property <length> track-size: root.horizontal ? root.width - 2 * root.offset : root.height - 2 * offset;
-    private property <length> step-size: 10px;
+    callback scrolled();
+
+    property <length> offset: 16px;
+    property <length> size: 2px;
+    property <length> track-size: root.horizontal ? root.width - 2 * root.offset : root.height - 2 * offset;
+    property <length> step-size: 10px;
 
     border-width: 1px;
     border-radius: 7px;
     visible: (self.policy == ScrollBarPolicy.always-on) || (self.policy == ScrollBarPolicy.as-needed && self.maximum > 0);
+    clip: true;
 
     states [
         hover when touch-area.has-hover || down-scroll-button.has-hover || up-scroll-button.has-hover : {
@@ -62,8 +66,8 @@ component ScrollBar inherits Rectangle {
     animate size { duration: 150ms; easing: ease-out; }
 
     thumb := Rectangle {
-        width: !root.horizontal ? root.size : root.maximum <= 0phx ? 0phx : max(16px, root.track-size * root.page-size / (root.maximum + root.page-size));
-        height: root.horizontal ? root.size : root.maximum <= 0phx ? 0phx : max(16px, root.track-size * (root.page-size / (root.maximum + root.page-size)));
+        width: !root.horizontal ? root.size : root.maximum <= 0phx ? 0phx : max(min(16px, root.width), root.track-size * root.page-size / (root.maximum + root.page-size));
+        height: root.horizontal ? root.size : root.maximum <= 0phx ? 0phx : max(min(16px, root.height), root.track-size * (root.page-size / (root.maximum + root.page-size)));
         x: !root.horizontal ? parent.width - 4px - self.width : root.offset + (root.track-size - thumb.width) * (-root.value / root.maximum);
         y: root.horizontal ? parent.height - 4px - self.height : root.offset + (root.track-size - thumb.height) * (-root.value / root.maximum);
         border-radius: (root.horizontal ? self.height : self.width) / 2;
@@ -90,6 +94,7 @@ component ScrollBar inherits Rectangle {
                     root.horizontal ? (touch-area.mouse-x - touch-area.pressed-x) * (root.maximum / (root.track-size - thumb.width))
                                : (touch-area.mouse-y - touch-area.pressed-y) * (root.maximum / (root.track-size - thumb.height))
                 )));
+                root.scrolled();
             }
         }
 
@@ -140,10 +145,11 @@ export component ScrollView {
     in-out property <length> viewport-y <=> flickable.viewport-y;
     in property <ScrollBarPolicy> vertical-scrollbar-policy <=> vertical-bar.policy;
     in property <ScrollBarPolicy> horizontal-scrollbar-policy <=> horizontal-bar.policy;
+    in property <bool> mouse-drag-pan-enabled <=> flickable.interactive;
 
     // FIXME: remove. This property is currently set by the ListView and is used by the native style to draw the scrollbar differently when it has focus
     in-out property <bool> has-focus;
-    
+
     callback scrolled <=> flickable.flicked;
 
     min-height: 50px;
@@ -172,6 +178,8 @@ export component ScrollView {
         horizontal: false;
         maximum:  flickable.viewport-height - flickable.height;
         page-size:  flickable.height;
+
+        scrolled => {root.scrolled()}
     }
 
     horizontal-bar := ScrollBar {
@@ -183,5 +191,7 @@ export component ScrollView {
         horizontal: true;
         maximum:  flickable.viewport-width - flickable.width;
         page-size:  flickable.width;
+
+        scrolled => {root.scrolled()}
     }
 }

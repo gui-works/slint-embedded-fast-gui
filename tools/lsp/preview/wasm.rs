@@ -6,8 +6,7 @@
 
 use std::collections::HashMap;
 
-use crate::common::SourceFileVersion;
-use crate::lsp_ext::Health;
+use crate::common;
 use crate::wasm_prelude::*;
 use slint_interpreter::ComponentHandle;
 use std::cell::RefCell;
@@ -40,12 +39,26 @@ struct WasmCallbacks {
 
 thread_local! {static WASM_CALLBACKS: RefCell<Option<WasmCallbacks>> = Default::default();}
 
+#[wasm_bindgen(start)]
+pub fn init_backend() -> Result<(), JsValue> {
+    console_error_panic_hook::set_once();
+
+    // Initialize the winit backend when we're used in the browser's main thread.
+    if web_sys::window().is_some() {
+        let backend =
+            i_slint_backend_winit::Backend::builder().with_spawn_event_loop(true).build().unwrap();
+        i_slint_core::platform::set_platform(Box::new(backend))
+            .map_err(|e| -> JsValue { format!("{e}").into() })?;
+    }
+
+    Ok(())
+}
+
 /// Register DOM event handlers on all instance and set up the event loop for that.
-/// You can call this function only once. It will throw an exception but that is safe
-/// to ignore.
+/// You can call this function only once.
 #[wasm_bindgen]
 pub fn run_event_loop() -> Result<(), JsValue> {
-    slint_interpreter::spawn_event_loop().map_err(|e| -> JsValue { format!("{e}").into() })
+    slint_interpreter::run_event_loop().map_err(|e| -> JsValue { format!("{e}").into() })
 }
 
 #[wasm_bindgen]
@@ -105,10 +118,6 @@ impl PreviewConnector {
 
     #[wasm_bindgen]
     pub fn show_ui(&self) -> Result<js_sys::Promise, JsValue> {
-        {
-            let mut cache = super::CONTENT_CACHE.get_or_init(Default::default).lock().unwrap();
-            cache.ui_is_visible = true;
-        }
         invoke_from_event_loop_wrapped_in_promise(|instance| instance.show())
     }
 
@@ -116,7 +125,10 @@ impl PreviewConnector {
     pub fn process_lsp_to_preview_message(&self, value: JsValue) -> Result<(), JsValue> {
         let message = serde_wasm_bindgen::from_value(value)
             .map_err(|e| -> JsValue { format!("{e:?}").into() })?;
-        super::lsp_to_preview_message(message);
+        i_slint_core::api::invoke_from_event_loop(move || {
+            lsp_to_preview_message(message);
+        })
+        .map_err(|e| -> JsValue { format!("{e:?}").into() })?;
         Ok(())
     }
 }
@@ -178,13 +190,6 @@ fn invoke_from_event_loop_wrapped_in_promise(
     }))
 }
 
-pub fn run_in_ui_thread<F: Future<Output = ()> + 'static>(
-    create_future: impl Send + FnOnce() -> F + 'static,
-) -> Result<(), String> {
-    slint::spawn_local(create_future()).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
 pub fn resource_url_mapper(
 ) -> Option<Rc<dyn Fn(&str) -> Pin<Box<dyn Future<Output = Option<String>>>>>> {
     let callback = WASM_CALLBACKS.with_borrow(|callbacks| {
@@ -200,7 +205,7 @@ pub fn resource_url_mapper(
     }))
 }
 
-pub fn send_message_to_lsp(message: crate::common::PreviewToLspMessage) {
+pub fn send_message_to_lsp(message: common::PreviewToLspMessage) {
     WASM_CALLBACKS.with_borrow(|callbacks| {
         if let Some(callbacks) = &callbacks {
             let notifier = js_sys::Function::from((callbacks.lsp_notifier).clone());
@@ -210,31 +215,20 @@ pub fn send_message_to_lsp(message: crate::common::PreviewToLspMessage) {
     })
 }
 
-pub fn send_status(message: &str, health: Health) {
-    send_message_to_lsp(crate::common::PreviewToLspMessage::Status {
-        message: message.to_string(),
-        health,
-    });
-}
-
 pub fn notify_diagnostics(
-    diagnostics: HashMap<lsp_types::Url, (SourceFileVersion, Vec<lsp_types::Diagnostic>)>,
+    diagnostics: HashMap<lsp_types::Url, (common::SourceFileVersion, Vec<lsp_types::Diagnostic>)>,
 ) -> Option<()> {
     for (uri, (version, diagnostics)) in diagnostics {
-        send_message_to_lsp(crate::common::PreviewToLspMessage::Diagnostics {
-            uri,
-            version,
-            diagnostics,
-        });
+        send_message_to_lsp(common::PreviewToLspMessage::Diagnostics { uri, version, diagnostics });
     }
     Some(())
 }
 
 pub fn ask_editor_to_show_document(file: &str, selection: lsp_types::Range, take_focus: bool) {
     let Ok(file) = lsp_types::Url::from_file_path(file) else { return };
-    send_message_to_lsp(crate::common::PreviewToLspMessage::ShowDocument {
-        file,
-        selection,
-        take_focus,
-    });
+    send_message_to_lsp(common::PreviewToLspMessage::ShowDocument { file, selection, take_focus });
+}
+
+fn lsp_to_preview_message(message: common::LspToPreviewMessage) {
+    super::lsp_to_preview_message_impl(message);
 }

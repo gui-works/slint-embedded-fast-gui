@@ -49,6 +49,7 @@ pub const RESERVED_GRIDLAYOUT_PROPERTIES: &[(&str, Type)] = &[
 
 macro_rules! declare_enums {
     ($( $(#[$enum_doc:meta])* enum $Name:ident { $( $(#[$value_doc:meta])* $Value:ident,)* })*) => {
+        #[allow(non_snake_case)]
         pub struct BuiltinEnums {
             $(pub $Name : Rc<Enumeration>),*
         }
@@ -83,14 +84,14 @@ pub struct BuiltinTypes {
     pub strarg_callback_type: Type,
     pub logical_point_type: Type,
     pub font_metrics_type: Type,
-    pub layout_info_type: Type,
+    pub layout_info_type: Rc<Struct>,
     pub path_element_type: Type,
     pub box_layout_cell_data_type: Type,
 }
 
 impl BuiltinTypes {
     fn new() -> Self {
-        let layout_info_type = Type::Struct(Rc::new(Struct {
+        let layout_info_type = Rc::new(Struct {
             fields: ["min", "max", "preferred"]
                 .iter()
                 .map(|s| (SmolStr::new_static(s), Type::LogicalLength))
@@ -103,7 +104,7 @@ impl BuiltinTypes {
             name: Some("slint::private_api::LayoutInfo".into()),
             node: None,
             rust_attributes: None,
-        }));
+        });
         Self {
             enums: BuiltinEnums::new(),
             logical_point_type: Type::Struct(Rc::new(Struct {
@@ -146,7 +147,7 @@ impl BuiltinTypes {
                 rust_attributes: None,
             })),
             box_layout_cell_data_type: Type::Struct(Rc::new(Struct {
-                fields: IntoIterator::into_iter([("constraint".into(), layout_info_type)])
+                fields: IntoIterator::into_iter([("constraint".into(), layout_info_type.into())])
                     .collect(),
                 name: Some("BoxLayoutCellData".into()),
                 node: None,
@@ -180,7 +181,7 @@ pub const RESERVED_ROTATION_PROPERTIES: &[(&str, Type)] = &[
     ("rotation-origin-y", Type::LogicalLength),
 ];
 
-fn noarg_callback_type() -> Type {
+pub fn noarg_callback_type() -> Type {
     BUILTIN.with(|types| types.noarg_callback_type.clone())
 }
 
@@ -196,6 +197,8 @@ pub fn reserved_accessibility_properties() -> impl Iterator<Item = (&'static str
         ("accessible-delegate-focus", Type::Int32),
         ("accessible-description", Type::String),
         ("accessible-enabled", Type::Bool),
+        ("accessible-expandable", Type::Bool),
+        ("accessible-expanded", Type::Bool),
         ("accessible-label", Type::String),
         ("accessible-value", Type::String),
         ("accessible-value-maximum", Type::Float32),
@@ -206,10 +209,12 @@ pub fn reserved_accessibility_properties() -> impl Iterator<Item = (&'static str
         ("accessible-action-increment", noarg_callback_type()),
         ("accessible-action-decrement", noarg_callback_type()),
         ("accessible-action-set-value", strarg_callback_type()),
+        ("accessible-action-expand", noarg_callback_type()),
         ("accessible-item-selectable", Type::Bool),
         ("accessible-item-selected", Type::Bool),
         ("accessible-item-index", Type::Int32),
         ("accessible-item-count", Type::Int32),
+        ("accessible-read-only", Type::Bool),
     ]
     .into_iter()
 }
@@ -257,19 +262,20 @@ pub fn reserved_properties() -> impl Iterator<Item = (&'static str, Type, Proper
 }
 
 /// lookup reserved property injected in every item
-pub fn reserved_property(name: &str) -> PropertyLookupResult {
+pub fn reserved_property(name: &str) -> PropertyLookupResult<'_> {
     thread_local! {
-        static RESERVED_PROPERTIES: HashMap<&'static str, (Type, PropertyVisibility)>
-            = reserved_properties().map(|(name, ty, visibility)| (name, (ty, visibility))).collect();
+        static RESERVED_PROPERTIES: HashMap<&'static str, (Type, PropertyVisibility, Option<BuiltinFunction>)>
+            = reserved_properties().map(|(name, ty, visibility)| (name, (ty, visibility, reserved_member_function(name)))).collect();
     }
     if let Some(result) = RESERVED_PROPERTIES.with(|reserved| {
-        reserved.get(name).map(|(ty, visibility)| PropertyLookupResult {
+        reserved.get(name).map(|(ty, visibility, builtin_function)| PropertyLookupResult {
             property_type: ty.clone(),
             resolved_name: name.into(),
             is_local_to_component: false,
             is_in_direct_base: false,
             property_visibility: *visibility,
             declared_pure: None,
+            builtin_function: builtin_function.clone(),
         })
     }) {
         return result;
@@ -283,25 +289,19 @@ pub fn reserved_property(name: &str) -> PropertyLookupResult {
                     if b == "imum-" {
                         return PropertyLookupResult {
                             property_type: Type::LogicalLength,
-                            resolved_name: format!("{}-{}", pre, suf).into(),
+                            resolved_name: format!("{pre}-{suf}").into(),
                             is_local_to_component: false,
                             is_in_direct_base: false,
                             property_visibility: crate::object_tree::PropertyVisibility::InOut,
                             declared_pure: None,
+                            builtin_function: None,
                         };
                     }
                 }
             }
         }
     }
-    PropertyLookupResult {
-        resolved_name: name.into(),
-        property_type: Type::Invalid,
-        is_local_to_component: false,
-        is_in_direct_base: false,
-        property_visibility: crate::object_tree::PropertyVisibility::Private,
-        declared_pure: None,
-    }
+    PropertyLookupResult::invalid(name.into())
 }
 
 /// These member functions are injected in every time
@@ -358,13 +358,13 @@ impl TypeRegister {
 
     /// Insert a type into the type register with its builtin type name.
     ///
-    /// Returns false if a it replaced an existing type.
+    /// Returns false if it replaced an existing type.
     pub fn insert_type(&mut self, t: Type) -> bool {
         self.types.insert(t.to_smolstr(), t).is_none()
     }
     /// Insert a type into the type register with a specified name.
     ///
-    /// Returns false if a it replaced an existing type.
+    /// Returns false if it replaced an existing type.
     pub fn insert_type_with_name(&mut self, t: Type, name: SmolStr) -> bool {
         self.types.insert(name, t).is_none()
     }
@@ -408,6 +408,7 @@ impl TypeRegister {
             ($pub_type:ident, SharedString) => { Type::String };
             ($pub_type:ident, Image) => { Type::Image };
             ($pub_type:ident, Coord) => { Type::LogicalLength };
+            ($pub_type:ident, LogicalPosition) => { logical_point_type() };
             ($pub_type:ident, KeyboardModifiers) => { $pub_type.clone() };
             ($pub_type:ident, $_:ident) => {
                 BUILTIN.with(|e| Type::Enumeration(e.enums.$pub_type.clone()))
@@ -431,6 +432,7 @@ impl TypeRegister {
                     }
                 }
             )*) => { $(
+                #[allow(non_snake_case)]
                 let $Name = Type::Struct(Rc::new(Struct{
                     fields: BTreeMap::from([
                         $((stringify!($pub_field).replace_smolstr("_", "-"), map_type!($pub_type, $pub_type))),*
@@ -446,29 +448,37 @@ impl TypeRegister {
 
         crate::load_builtins::load_builtins(&mut register);
 
-        let mut context_restricted_types = HashMap::new();
-        register
-            .elements
-            .values()
-            .for_each(|ty| ty.collect_contextual_types(&mut context_restricted_types));
-        register.context_restricted_types = context_restricted_types;
+        for e in register.elements.values() {
+            if let ElementType::Builtin(b) = e {
+                for accepted_child_type_name in b.additional_accepted_child_types.keys() {
+                    register
+                        .context_restricted_types
+                        .entry(accepted_child_type_name.clone())
+                        .or_default()
+                        .insert(b.native_class.class_name.clone());
+                }
+                if b.additional_accept_self {
+                    register
+                        .context_restricted_types
+                        .entry(b.native_class.class_name.clone())
+                        .or_default()
+                        .insert(b.native_class.class_name.clone());
+                }
+            }
+        }
 
         match &mut register.elements.get_mut("PopupWindow").unwrap() {
             ElementType::Builtin(ref mut b) => {
                 let popup = Rc::get_mut(b).unwrap();
                 popup.properties.insert(
                     "show".into(),
-                    BuiltinPropertyInfo::new(Type::Function(BuiltinFunction::ShowPopupWindow.ty())),
+                    BuiltinPropertyInfo::from(BuiltinFunction::ShowPopupWindow),
                 );
-                popup.member_functions.insert("show".into(), BuiltinFunction::ShowPopupWindow);
 
                 popup.properties.insert(
                     "close".into(),
-                    BuiltinPropertyInfo::new(Type::Function(
-                        BuiltinFunction::ClosePopupWindow.ty(),
-                    )),
+                    BuiltinPropertyInfo::from(BuiltinFunction::ClosePopupWindow),
                 );
-                popup.member_functions.insert("close".into(), BuiltinFunction::ClosePopupWindow);
 
                 popup.properties.get_mut("close-on-click").unwrap().property_visibility =
                     PropertyVisibility::Constexpr;
@@ -476,34 +486,15 @@ impl TypeRegister {
                 popup.properties.get_mut("close-policy").unwrap().property_visibility =
                     PropertyVisibility::Constexpr;
             }
-
-            _ => unreachable!(),
-        };
-
-        match &mut register.elements.get_mut("ContextMenu").unwrap() {
-            ElementType::Builtin(ref mut b) => {
-                let b = Rc::get_mut(b).unwrap();
-                b.properties.insert(
-                    "show".into(),
-                    BuiltinPropertyInfo::new(Type::Function(BuiltinFunction::ShowPopupMenu.ty())),
-                );
-                b.member_functions.insert("show".into(), BuiltinFunction::ShowPopupMenu);
-            }
-
             _ => unreachable!(),
         };
 
         let font_metrics_prop = crate::langtype::BuiltinPropertyInfo {
             ty: font_metrics_type(),
             property_visibility: PropertyVisibility::Output,
-            default_value: BuiltinPropertyDefault::Fn(|elem| {
+            default_value: BuiltinPropertyDefault::WithElement(|elem| {
                 crate::expression_tree::Expression::FunctionCall {
-                    function: Box::new(
-                        crate::expression_tree::Expression::BuiltinFunctionReference(
-                            BuiltinFunction::ItemFontMetrics,
-                            None,
-                        ),
-                    ),
+                    function: BuiltinFunction::ItemFontMetrics.into(),
                     arguments: vec![crate::expression_tree::Expression::ElementReference(
                         Rc::downgrade(elem),
                     )],
@@ -517,13 +508,8 @@ impl TypeRegister {
                 let text_input = Rc::get_mut(b).unwrap();
                 text_input.properties.insert(
                     "set-selection-offsets".into(),
-                    BuiltinPropertyInfo::new(Type::Function(
-                        BuiltinFunction::SetSelectionOffsets.ty(),
-                    )),
+                    BuiltinPropertyInfo::from(BuiltinFunction::SetSelectionOffsets),
                 );
-                text_input
-                    .member_functions
-                    .insert("set-selection-offsets".into(), BuiltinFunction::SetSelectionOffsets);
                 text_input.properties.insert("font-metrics".into(), font_metrics_prop.clone());
             }
 
@@ -562,18 +548,12 @@ impl TypeRegister {
     pub fn builtin() -> Rc<RefCell<Self>> {
         let mut register = Self::builtin_internal();
 
-        register.elements.remove("ComponentContainer");
-        register.types.remove("component-factory");
-        match register.elements.get_mut("Window").unwrap() {
-            &mut ElementType::Builtin(ref mut b) => {
-                Rc::get_mut(b)
-                    .unwrap()
-                    .additional_accepted_child_types
-                    .remove("MenuBar")
-                    .expect("MenuBar is an experimental type");
-            }
-            _ => panic!("Window is a builtin type"),
-        };
+        register.elements.remove("ComponentContainer").unwrap();
+        register.types.remove("component-factory").unwrap();
+
+        register.elements.remove("DragArea").unwrap();
+        register.elements.remove("DropArea").unwrap();
+        register.types.remove("DropEvent").unwrap(); // Also removed in xtask/src/slintdocs.rs
 
         Rc::new(RefCell::new(register))
     }
@@ -626,9 +606,9 @@ impl TypeRegister {
                     )
                 }
             } else if let Some(ty) = self.types.get(name) {
-                format!("'{}' cannot be used as an element", ty)
+                format!("'{ty}' cannot be used as an element")
             } else {
-                format!("Unknown element '{}'", name)
+                format!("Unknown element '{name}'")
             }
         })
     }
@@ -647,7 +627,7 @@ impl TypeRegister {
         self.lookup(qualified[0].as_ref())
     }
 
-    /// Add the component with it's defined name
+    /// Add the component with its defined name
     ///
     /// Returns false if there was already an element with the same name
     pub fn add(&mut self, comp: Rc<Component>) -> bool {
@@ -715,7 +695,7 @@ pub fn font_metrics_type() -> Type {
 }
 
 /// The [`Type`] for a runtime LayoutInfo structure
-pub fn layout_info_type() -> Type {
+pub fn layout_info_type() -> Rc<Struct> {
     BUILTIN.with(|types| types.layout_info_type.clone())
 }
 

@@ -16,7 +16,6 @@
 /// A singled linked list whose nodes are pinned
 mod single_linked_list_pin {
     #![allow(unsafe_code)]
-    #[cfg(not(feature = "std"))]
     use alloc::boxed::Box;
     use core::pin::Pin;
 
@@ -77,8 +76,8 @@ mod single_linked_list_pin {
         head.push_front(2);
         head.push_front(3);
         assert_eq!(
-            head.iter().map(|x: Pin<&i32>| *x.get_ref()).collect::<Vec<i32>>(),
-            vec![3, 2, 1]
+            head.iter().map(|x: Pin<&i32>| *x.get_ref()).collect::<std::vec::Vec<i32>>(),
+            std::vec![3, 2, 1]
         );
     }
     #[test]
@@ -148,17 +147,6 @@ pub(crate) mod dependency_tracker {
             self.0.get().is_null()
         }
 
-        /// Remove all the nodes from the list;
-        pub fn clear(self: Pin<&Self>) {
-            unsafe {
-                if let Some(n) = self.0.get().as_ref() {
-                    n.debug_assert_valid();
-                    n.prev.set(core::ptr::null());
-                }
-            }
-            self.0.set(core::ptr::null());
-        }
-
         pub unsafe fn drop(_self: *mut Self) {
             if let Some(next) = (*_self).0.get().as_ref() {
                 debug_assert_eq!(_self as *const _, next.prev.get() as *const _);
@@ -193,6 +181,22 @@ pub(crate) mod dependency_tracker {
                     node.debug_assert_valid();
                     next = node.next.get();
                     f(&node.binding);
+                }
+            }
+        }
+
+        /// Returns the first node of the list, if any
+        pub fn take_head(&self) -> Option<T>
+        where
+            T: Copy,
+        {
+            unsafe {
+                if let Some(node) = self.0.get().as_ref() {
+                    node.debug_assert_valid();
+                    node.remove();
+                    Some(node.binding)
+                } else {
+                    None
                 }
             }
         }
@@ -260,7 +264,6 @@ pub(crate) mod dependency_tracker {
 type DependencyListHead = dependency_tracker::DependencyListHead<*const BindingHolder>;
 type DependencyNode = dependency_tracker::DependencyNode<*const BindingHolder>;
 
-#[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::cell::{Cell, RefCell, UnsafeCell};
@@ -330,6 +333,8 @@ unsafe impl<F: Fn(*mut ()) -> BindingResult> BindingCallable for F {
     }
 }
 
+#[cfg(feature = "std")]
+use std::thread_local;
 #[cfg(feature = "std")]
 scoped_tls_hkt::scoped_thread_local!(static CURRENT_BINDING : for<'a> Option<Pin<&'a BindingHolder>>);
 
@@ -574,7 +579,7 @@ impl PropertyHandle {
     /// Implementation of Self::set_binding.
     fn set_binding_impl(&self, binding: *mut BindingHolder) {
         let previous_binding_intercepted = self.access(|b| {
-            b.map_or(false, |b| unsafe {
+            b.is_some_and(|b| unsafe {
                 // Safety: b is a BindingHolder<T>
                 (b.vtable.intercept_set_binding)(&*b as *const BindingHolder, binding)
             })
@@ -676,8 +681,7 @@ impl PropertyHandle {
                     *(dependencies as *mut *const u32),
                     (&CONSTANT_PROPERTY_SENTINEL) as *const u32,
                 ),
-                "Constant property being changed {}",
-                debug_name
+                "Constant property being changed {debug_name}"
             );
             mark_dependencies_dirty(dependencies)
         };
@@ -748,7 +752,7 @@ impl<T, F: Fn() -> T> Binding<T> for F {
 
 /// A Property that allow binding that track changes
 ///
-/// Property van have be assigned value, or bindings.
+/// Property can have an assigned value, or binding.
 /// When a binding is assigned, it is lazily evaluated on demand
 /// when calling `get()`.
 /// When accessing another property from a binding evaluation,
@@ -861,8 +865,8 @@ impl<T: Clone> Property<T> {
         self.get_internal()
     }
 
-    /// Get the value without registering any dependencies or executing any binding
-    fn get_internal(&self) -> T {
+    /// Get the cached value without registering any dependencies or executing any binding
+    pub fn get_internal(&self) -> T {
         self.handle.access(|_| {
             // Safety: PropertyHandle::access ensure that the value is locked
             unsafe { (*self.value.get()).clone() }
@@ -879,7 +883,7 @@ impl<T: Clone> Property<T> {
         T: PartialEq,
     {
         let previous_binding_intercepted = self.handle.access(|b| {
-            b.map_or(false, |b| unsafe {
+            b.is_some_and(|b| unsafe {
                 // Safety: b is a BindingHolder<T>
                 (b.vtable.intercept_set)(&*b as *const BindingHolder, &t as *const T as *const ())
             })
@@ -951,7 +955,7 @@ impl<T: Clone> Property<T> {
     /// Any of the properties accessed during the last evaluation of the closure called
     /// from the last call to evaluate is potentially dirty.
     pub fn is_dirty(&self) -> bool {
-        self.handle.access(|binding| binding.map_or(false, |b| b.dirty.get()))
+        self.handle.access(|binding| binding.is_some_and(|b| b.dirty.get()))
     }
 
     /// Internal function to mark the property as dirty and notify dependencies, regardless of
@@ -1179,8 +1183,8 @@ fn property_two_ways_recurse_from_binding() {
             if !done.get() {
                 done.set(true);
                 Property::link_two_way(p1.as_ref(), p2.as_ref());
-                let xx = xx_weak.upgrade().unwrap();
-                p1.as_ref().set_binding(move || xx.as_ref().get() + 9);
+                let xx_weak = xx_weak.clone();
+                p1.as_ref().set_binding(move || xx_weak.upgrade().unwrap().as_ref().get() + 9);
             }
             global.as_ref().get() + 2
         }
@@ -1325,7 +1329,7 @@ struct StateInfoBinding<F> {
 
 unsafe impl<F: Fn() -> i32> crate::properties::BindingCallable for StateInfoBinding<F> {
     unsafe fn evaluate(self: Pin<&Self>, value: *mut ()) -> BindingResult {
-        // Safety: We should ony set this binding on a property of type StateInfo
+        // Safety: We should only set this binding on a property of type StateInfo
         let value = &mut *(value as *mut StateInfo);
         let new_state = (self.binding)();
         let timestamp = self.dirty_time.take();

@@ -6,12 +6,20 @@ import starlight from "@astrojs/starlight";
 import starlightLinksValidator from "starlight-links-validator";
 import rehypeExternalLinks from "rehype-external-links";
 import starlightSidebarTopics from "starlight-sidebar-topics";
-import { BASE_PATH, BASE_URL } from "./src/utils/site-config";
+import {
+    BASE_PATH,
+    BASE_URL,
+    CPP_BASE_URL,
+    RUST_SLINT_CRATE_URL,
+    NODEJS_BASE_URL,
+    PYTHON_BASE_URL,
+} from "./src/utils/site-config";
 
 // https://astro.build/config
 export default defineConfig({
     site: `${BASE_URL}${BASE_PATH}`,
     base: BASE_PATH,
+    trailingSlash: "always",
     markdown: {
         rehypePlugins: [
             [
@@ -31,10 +39,9 @@ export default defineConfig({
     },
     integrations: [
         starlight({
-            title: "1.9.2",
+            title: "Slint Docs",
             logo: {
-                light: "./src/assets/slint-logo-simple-light.webp",
-                dark: "./src/assets/slint-logo-simple-dark.webp",
+                src: "./src/assets/slint-logo-small-light.svg",
             },
             customCss: ["./src/styles/custom.css", "./src/styles/theme.css"],
 
@@ -54,7 +61,10 @@ export default defineConfig({
                             {
                                 label: "Tooling",
                                 collapsed: true,
-                                items: ["guide/tooling/vscode"],
+                                items: [
+                                    "guide/tooling/vscode",
+                                    "guide/tooling/figma-inspector",
+                                ],
                             },
                             {
                                 label: "Language",
@@ -140,6 +150,7 @@ export default defineConfig({
                                         label: "Custom Controls",
                                         slug: "guide/development/custom-controls",
                                     },
+                                    "guide/development/best-practices",
                                 ],
                             },
                             {
@@ -148,7 +159,10 @@ export default defineConfig({
                                 items: [
                                     "guide/platforms/desktop",
                                     "guide/platforms/embedded",
-                                    "guide/platforms/mobile",
+                                    "guide/platforms/android",
+                                    "guide/platforms/ios",
+                                    "guide/platforms/web",
+                                    "guide/platforms/other",
                                 ],
                             },
                             {
@@ -285,6 +299,10 @@ export default defineConfig({
                                             },
                                         ],
                                     },
+                                    {
+                                        label: "Platform Namespace",
+                                        slug: "reference/global-namespaces/platform",
+                                    },
                                 ],
                             },
                             {
@@ -380,12 +398,12 @@ export default defineConfig({
                         items: [
                             {
                                 label: "C++ ↗",
-                                link: "https://docs.slint.dev/latest/docs/cpp/",
+                                link: `${CPP_BASE_URL}`,
                                 attrs: { target: "_blank" },
                             },
                             {
                                 label: "Rust ↗",
-                                link: "https://docs.slint.dev/latest/docs/rust/slint/",
+                                link: `${RUST_SLINT_CRATE_URL}`,
                                 attrs: { target: "_blank" },
                             },
                             {
@@ -394,7 +412,16 @@ export default defineConfig({
                                     text: "beta",
                                     variant: "caution",
                                 },
-                                link: "https://docs.slint.dev/latest/docs/node/",
+                                link: `${NODEJS_BASE_URL}`,
+                                attrs: { target: "_blank" },
+                            },
+                            {
+                                label: "Python ↗",
+                                badge: {
+                                    text: "beta",
+                                    variant: "caution",
+                                },
+                                link: `${PYTHON_BASE_URL}`,
                                 attrs: { target: "_blank" },
                             },
                         ],
@@ -404,13 +431,77 @@ export default defineConfig({
                     errorOnLocalLinks: false,
                 }),
             ],
-            social: {
-                github: "https://github.com/slint-ui/slint",
-                "x.com": "https://x.com/slint_ui",
-                linkedin: "https://www.linkedin.com/company/slint-ui/",
-                mastodon: "https://fosstodon.org/@slint",
-            },
+            social: [
+                {
+                    icon: "github",
+                    label: "GitHub",
+                    href: "https://github.com/slint-ui/slint",
+                },
+                { icon: "x.com", label: "X", href: "https://x.com/slint_ui" },
+                {
+                    icon: "linkedin",
+                    label: "Linkedin",
+                    href: "https://www.linkedin.com/company/slint-ui",
+                },
+                {
+                    icon: "mastodon",
+                    label: "Mastodon",
+                    href: "https://fosstodon.org/@slint",
+                },
+            ],
             favicon: "favicon.svg",
+            head: [
+                {
+                    tag: "link",
+                    attrs: {
+                        rel: "icon",
+                        type: "image/svg+xml",
+                        href: "/favicon.svg",
+                    },
+                },
+                {
+                    tag: "link",
+                    attrs: {
+                        rel: "icon",
+                        type: "image/png",
+                        sizes: "32x32",
+                        href: "/favicon-32x32.png",
+                    },
+                },
+                {
+                    tag: "link",
+                    attrs: {
+                        rel: "icon",
+                        type: "image/png",
+                        sizes: "16x16",
+                        href: "/favicon-16x16.png",
+                    },
+                },
+                {
+                    tag: "link",
+                    attrs: {
+                        rel: "icon",
+                        type: "image/x-icon",
+                        href: "/favicon.ico",
+                    },
+                },
+                {
+                    tag: "link",
+                    attrs: {
+                        rel: "mask-icon",
+                        href: "/favicon.svg",
+                        color: "#8D46E7",
+                    },
+                },
+                {
+                    tag: "link",
+                    attrs: {
+                        rel: "apple-touch-icon",
+                        sizes: "180x180",
+                        href: "/apple-touch-icon.png",
+                    },
+                },
+            ],
         }),
     ],
 });

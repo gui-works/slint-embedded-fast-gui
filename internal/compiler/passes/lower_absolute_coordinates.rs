@@ -9,24 +9,23 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::expression_tree::{BuiltinFunction, Expression};
+use crate::langtype::Type;
 use crate::namedreference::NamedReference;
-use crate::object_tree::{
-    recurse_elem_including_sub_components_no_borrow, visit_all_named_references_in_element,
-    Component,
-};
+use crate::object_tree::Component;
 
 pub fn lower_absolute_coordinates(component: &Rc<Component>) {
     let mut to_materialize = std::collections::HashSet::new();
 
-    recurse_elem_including_sub_components_no_borrow(component, &(), &mut |elem, _| {
-        visit_all_named_references_in_element(elem, |nr| {
-            if nr.name() == "absolute-position" {
-                to_materialize.insert(nr.clone());
-            }
-        });
+    crate::object_tree::visit_all_named_references(component, &mut |nr| {
+        if nr.name() == "absolute-position" {
+            to_materialize.insert(nr.clone());
+        }
     });
 
-    let point_type = BuiltinFunction::ItemAbsolutePosition.ty().return_type.clone();
+    let Type::Struct(point_type) = BuiltinFunction::ItemAbsolutePosition.ty().return_type.clone()
+    else {
+        unreachable!()
+    };
 
     for nr in to_materialize {
         let elem = nr.element();
@@ -36,17 +35,14 @@ pub fn lower_absolute_coordinates(component: &Rc<Component>) {
 
         let parent_position_var = Box::new(Expression::ReadLocalVariable {
             name: "parent_position".into(),
-            ty: point_type.clone(),
+            ty: point_type.clone().into(),
         });
 
         let binding = Expression::CodeBlock(vec![
             Expression::StoreLocalVariable {
                 name: "parent_position".into(),
                 value: Expression::FunctionCall {
-                    function: Box::new(Expression::BuiltinFunctionReference(
-                        BuiltinFunction::ItemAbsolutePosition,
-                        None,
-                    )),
+                    function: BuiltinFunction::ItemAbsolutePosition.into(),
                     arguments: vec![Expression::ElementReference(Rc::downgrade(&elem))],
                     source_location: None,
                 }

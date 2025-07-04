@@ -20,23 +20,28 @@ When adding an item or a property, it needs to be kept in sync with different pl
 #![allow(non_upper_case_globals)]
 #![allow(missing_docs)] // because documenting each property of items is redundant
 
-use crate::graphics::{Brush, Color, Point};
+use crate::api::LogicalPosition;
+use crate::graphics::{Brush, Color, FontRequest, Image};
 use crate::input::{
     FocusEvent, FocusEventResult, InputEventFilterResult, InputEventResult, KeyEventResult,
     KeyEventType, MouseEvent,
 };
-use crate::item_rendering::{CachedRenderingData, RenderBorderRectangle};
-pub use crate::item_tree::ItemRc;
+use crate::item_rendering::{CachedRenderingData, RenderBorderRectangle, RenderRectangle};
+pub use crate::item_tree::{ItemRc, ItemTreeVTable};
 use crate::layout::LayoutInfo;
 use crate::lengths::{
-    LogicalBorderRadius, LogicalLength, LogicalSize, LogicalVector, PointLengths, RectLengths,
+    LogicalBorderRadius, LogicalLength, LogicalRect, LogicalSize, LogicalVector, PointLengths,
+    RectLengths,
 };
+pub use crate::menus::MenuItem;
 #[cfg(feature = "rtti")]
 use crate::rtti::*;
-use crate::window::{WindowAdapter, WindowAdapterRc};
+use crate::window::{WindowAdapter, WindowAdapterRc, WindowInner};
 use crate::{Callback, Coord, Property, SharedString};
 use alloc::rc::Rc;
 use const_field_offset::FieldOffsets;
+use core::cell::Cell;
+use core::num::NonZeroU32;
 use core::pin::Pin;
 use i_slint_core_macros::*;
 use vtable::*;
@@ -51,6 +56,8 @@ mod input_items;
 pub use input_items::*;
 mod image;
 pub use self::image::*;
+mod drag_n_drop;
+pub use drag_n_drop::*;
 #[cfg(feature = "std")]
 mod path;
 #[cfg(feature = "std")]
@@ -63,9 +70,10 @@ type ItemRendererRef<'a> = &'a mut dyn crate::item_rendering::ItemRenderer;
 /// Workarounds for cbindgen
 pub type VoidArg = ();
 pub type KeyEventArg = (KeyEvent,);
+type FocusReasonArg = (FocusReason,);
 type PointerEventArg = (PointerEvent,);
 type PointerScrollEventArg = (PointerScrollEvent,);
-type PointArg = (Point,);
+type PointArg = (LogicalPosition,);
 type MenuEntryArg = (MenuEntry,);
 type MenuEntryModel = crate::model::ModelRc<MenuEntry>;
 
@@ -74,10 +82,10 @@ type MenuEntryModel = crate::model::ModelRc<MenuEntry>;
 macro_rules! declare_item_vtable {
     (fn $getter:ident() -> $item_vtable_ty:ident for $item_ty:ty) => {
         ItemVTable_static! {
-            #[no_mangle]
+            #[unsafe(no_mangle)]
             pub static $item_vtable_ty for $item_ty
         }
-        #[no_mangle]
+        #[unsafe(no_mangle)]
         pub extern "C" fn $getter() -> *const ItemVTable {
             use vtable::HasStaticVTable;
             <$item_ty>::static_vtable()
@@ -89,7 +97,7 @@ macro_rules! declare_item_vtable {
 macro_rules! declare_item_vtable {
     (fn $getter:ident() -> $item_vtable_ty:ident for $item_ty:ty) => {
         ItemVTable_static! {
-            #[no_mangle]
+            #[unsafe(no_mangle)]
             pub static $item_vtable_ty for $item_ty
         }
     };
@@ -107,6 +115,7 @@ pub enum RenderingResult {
 }
 
 /// Items are the nodes in the render tree.
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 #[vtable]
 #[repr(C)]
 pub struct ItemVTable {
@@ -126,6 +135,7 @@ pub struct ItemVTable {
         core::pin::Pin<VRef<ItemVTable>>,
         orientation: Orientation,
         window_adapter: &WindowAdapterRc,
+        self_rc: &ItemRc,
     ) -> LayoutInfo,
 
     /// Event handler for mouse and touch event. This function is called before being called on children.
@@ -134,7 +144,7 @@ pub struct ItemVTable {
     /// on this item again.
     pub input_event_filter_before_children: extern "C" fn(
         core::pin::Pin<VRef<ItemVTable>>,
-        MouseEvent,
+        &MouseEvent,
         window_adapter: &WindowAdapterRc,
         self_rc: &ItemRc,
     ) -> InputEventFilterResult,
@@ -142,7 +152,7 @@ pub struct ItemVTable {
     /// Handle input event for mouse and touch event
     pub input_event: extern "C" fn(
         core::pin::Pin<VRef<ItemVTable>>,
-        MouseEvent,
+        &MouseEvent,
         window_adapter: &WindowAdapterRc,
         self_rc: &ItemRc,
     ) -> InputEventResult,
@@ -167,6 +177,15 @@ pub struct ItemVTable {
         self_rc: &ItemRc,
         size: LogicalSize,
     ) -> RenderingResult,
+
+    pub bounding_rect: extern "C" fn(
+        core::pin::Pin<VRef<ItemVTable>>,
+        window_adapter: &WindowAdapterRc,
+        self_rc: &ItemRc,
+        geometry: LogicalRect,
+    ) -> LogicalRect,
+
+    pub clips_children: extern "C" fn(core::pin::Pin<VRef<ItemVTable>>) -> bool,
 }
 
 /// Alias for `vtable::VRef<ItemVTable>` which represent a pointer to a `dyn Item` with
@@ -188,13 +207,14 @@ impl Item for Empty {
         self: Pin<&Self>,
         _orientation: Orientation,
         _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
     ) -> LayoutInfo {
         LayoutInfo { stretch: 1., ..LayoutInfo::default() }
     }
 
     fn input_event_filter_before_children(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
@@ -203,7 +223,7 @@ impl Item for Empty {
 
     fn input_event(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventResult {
@@ -236,6 +256,20 @@ impl Item for Empty {
     ) -> RenderingResult {
         RenderingResult::ContinueRenderingChildren
     }
+
+    fn bounding_rect(
+        self: core::pin::Pin<&Self>,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+        mut geometry: LogicalRect,
+    ) -> LogicalRect {
+        geometry.size = LogicalSize::zero();
+        geometry
+    }
+
+    fn clips_children(self: core::pin::Pin<&Self>) -> bool {
+        false
+    }
 }
 
 impl ItemConsts for Empty {
@@ -265,13 +299,14 @@ impl Item for Rectangle {
         self: Pin<&Self>,
         _orientation: Orientation,
         _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
     ) -> LayoutInfo {
         LayoutInfo { stretch: 1., ..LayoutInfo::default() }
     }
 
     fn input_event_filter_before_children(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
@@ -280,7 +315,7 @@ impl Item for Rectangle {
 
     fn input_event(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventResult {
@@ -311,8 +346,27 @@ impl Item for Rectangle {
         self_rc: &ItemRc,
         size: LogicalSize,
     ) -> RenderingResult {
-        (*backend).draw_rectangle(self, self_rc, size);
+        (*backend).draw_rectangle(self, self_rc, size, &self.cached_rendering_data);
         RenderingResult::ContinueRenderingChildren
+    }
+
+    fn bounding_rect(
+        self: core::pin::Pin<&Self>,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+        geometry: LogicalRect,
+    ) -> LogicalRect {
+        geometry
+    }
+
+    fn clips_children(self: core::pin::Pin<&Self>) -> bool {
+        false
+    }
+}
+
+impl RenderRectangle for Rectangle {
+    fn background(self: Pin<&Self>) -> Brush {
+        self.background()
     }
 }
 
@@ -346,13 +400,14 @@ impl Item for BasicBorderRectangle {
         self: Pin<&Self>,
         _orientation: Orientation,
         _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
     ) -> LayoutInfo {
         LayoutInfo { stretch: 1., ..LayoutInfo::default() }
     }
 
     fn input_event_filter_before_children(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
@@ -361,7 +416,7 @@ impl Item for BasicBorderRectangle {
 
     fn input_event(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventResult {
@@ -394,6 +449,19 @@ impl Item for BasicBorderRectangle {
     ) -> RenderingResult {
         (*backend).draw_border_rectangle(self, self_rc, size, &self.cached_rendering_data);
         RenderingResult::ContinueRenderingChildren
+    }
+
+    fn bounding_rect(
+        self: core::pin::Pin<&Self>,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+        geometry: LogicalRect,
+    ) -> LogicalRect {
+        geometry
+    }
+
+    fn clips_children(self: core::pin::Pin<&Self>) -> bool {
+        false
     }
 }
 
@@ -446,13 +514,14 @@ impl Item for BorderRectangle {
         self: Pin<&Self>,
         _orientation: Orientation,
         _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
     ) -> LayoutInfo {
         LayoutInfo { stretch: 1., ..LayoutInfo::default() }
     }
 
     fn input_event_filter_before_children(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
@@ -461,7 +530,7 @@ impl Item for BorderRectangle {
 
     fn input_event(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventResult {
@@ -494,6 +563,19 @@ impl Item for BorderRectangle {
     ) -> RenderingResult {
         (*backend).draw_border_rectangle(self, self_rc, size, &self.cached_rendering_data);
         RenderingResult::ContinueRenderingChildren
+    }
+
+    fn bounding_rect(
+        self: core::pin::Pin<&Self>,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+        geometry: LogicalRect,
+    ) -> LogicalRect {
+        geometry
+    }
+
+    fn clips_children(self: core::pin::Pin<&Self>) -> bool {
+        false
     }
 }
 
@@ -561,13 +643,14 @@ impl Item for Clip {
         self: Pin<&Self>,
         _orientation: Orientation,
         _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
     ) -> LayoutInfo {
         LayoutInfo { stretch: 1., ..LayoutInfo::default() }
     }
 
     fn input_event_filter_before_children(
         self: Pin<&Self>,
-        event: MouseEvent,
+        event: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         self_rc: &ItemRc,
     ) -> InputEventFilterResult {
@@ -587,7 +670,7 @@ impl Item for Clip {
 
     fn input_event(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventResult {
@@ -619,6 +702,19 @@ impl Item for Clip {
         size: LogicalSize,
     ) -> RenderingResult {
         (*backend).visit_clip(self, self_rc, size)
+    }
+
+    fn bounding_rect(
+        self: core::pin::Pin<&Self>,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+        geometry: LogicalRect,
+    ) -> LogicalRect {
+        geometry
+    }
+
+    fn clips_children(self: core::pin::Pin<&Self>) -> bool {
+        self.clip()
     }
 }
 
@@ -659,13 +755,14 @@ impl Item for Opacity {
         self: Pin<&Self>,
         _orientation: Orientation,
         _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
     ) -> LayoutInfo {
         LayoutInfo { stretch: 1., ..LayoutInfo::default() }
     }
 
     fn input_event_filter_before_children(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
@@ -674,7 +771,7 @@ impl Item for Opacity {
 
     fn input_event(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventResult {
@@ -706,6 +803,19 @@ impl Item for Opacity {
         size: LogicalSize,
     ) -> RenderingResult {
         backend.visit_opacity(self, self_rc, size)
+    }
+
+    fn bounding_rect(
+        self: core::pin::Pin<&Self>,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+        geometry: LogicalRect,
+    ) -> LogicalRect {
+        geometry
+    }
+
+    fn clips_children(self: core::pin::Pin<&Self>) -> bool {
+        false
     }
 }
 
@@ -763,13 +873,14 @@ impl Item for Layer {
         self: Pin<&Self>,
         _orientation: Orientation,
         _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
     ) -> LayoutInfo {
         LayoutInfo { stretch: 1., ..LayoutInfo::default() }
     }
 
     fn input_event_filter_before_children(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
@@ -778,7 +889,7 @@ impl Item for Layer {
 
     fn input_event(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventResult {
@@ -811,6 +922,19 @@ impl Item for Layer {
     ) -> RenderingResult {
         backend.visit_layer(self, self_rc, size)
     }
+
+    fn bounding_rect(
+        self: core::pin::Pin<&Self>,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+        geometry: LogicalRect,
+    ) -> LogicalRect {
+        geometry
+    }
+
+    fn clips_children(self: core::pin::Pin<&Self>) -> bool {
+        false
+    }
 }
 
 impl ItemConsts for Layer {
@@ -842,13 +966,14 @@ impl Item for Rotate {
         self: Pin<&Self>,
         _orientation: Orientation,
         _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
     ) -> LayoutInfo {
         LayoutInfo { stretch: 1., ..LayoutInfo::default() }
     }
 
     fn input_event_filter_before_children(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
@@ -857,7 +982,7 @@ impl Item for Rotate {
 
     fn input_event(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventResult {
@@ -895,6 +1020,19 @@ impl Item for Rotate {
         (*backend).translate(-origin);
         RenderingResult::ContinueRenderingChildren
     }
+
+    fn bounding_rect(
+        self: core::pin::Pin<&Self>,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+        geometry: LogicalRect,
+    ) -> LogicalRect {
+        geometry
+    }
+
+    fn clips_children(self: core::pin::Pin<&Self>) -> bool {
+        false
+    }
 }
 
 impl ItemConsts for Rotate {
@@ -910,6 +1048,14 @@ declare_item_vtable! {
 
 declare_item_vtable! {
     fn slint_get_FlickableVTable() -> FlickableVTable for Flickable
+}
+
+declare_item_vtable! {
+    fn slint_get_DragAreaVTable() -> DragAreaVTable for DragArea
+}
+
+declare_item_vtable! {
+    fn slint_get_DropAreaVTable() -> DropAreaVTable for DropArea
 }
 
 /// The implementation of the `PropertyAnimation` element
@@ -973,13 +1119,14 @@ impl Item for WindowItem {
         self: Pin<&Self>,
         _orientation: Orientation,
         _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
     ) -> LayoutInfo {
         LayoutInfo::default()
     }
 
     fn input_event_filter_before_children(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
@@ -988,7 +1135,7 @@ impl Item for WindowItem {
 
     fn input_event(
         self: Pin<&Self>,
-        _event: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventResult {
@@ -1015,11 +1162,43 @@ impl Item for WindowItem {
 
     fn render(
         self: Pin<&Self>,
-        _backend: &mut ItemRendererRef,
-        _self_rc: &ItemRc,
-        _size: LogicalSize,
+        backend: &mut ItemRendererRef,
+        self_rc: &ItemRc,
+        size: LogicalSize,
     ) -> RenderingResult {
+        backend.draw_window_background(self, self_rc, size, &self.cached_rendering_data);
         RenderingResult::ContinueRenderingChildren
+    }
+
+    fn bounding_rect(
+        self: core::pin::Pin<&Self>,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+        geometry: LogicalRect,
+    ) -> LogicalRect {
+        geometry
+    }
+
+    fn clips_children(self: core::pin::Pin<&Self>) -> bool {
+        false
+    }
+}
+
+impl RenderRectangle for WindowItem {
+    fn background(self: Pin<&Self>) -> Brush {
+        self.background()
+    }
+}
+
+fn next_window_item(item: &ItemRc) -> Option<ItemRc> {
+    let root_item_in_local_item_tree = ItemRc::new(item.item_tree().clone(), 0);
+
+    if root_item_in_local_item_tree.downcast::<crate::items::WindowItem>().is_some() {
+        Some(root_item_in_local_item_tree)
+    } else {
+        root_item_in_local_item_tree
+            .parent_item(crate::item_tree::ParentItemTraversalMode::FindAllParents)
+            .and_then(|parent| next_window_item(&parent))
     }
 }
 
@@ -1050,6 +1229,78 @@ impl WindowItem {
             Some(font_weight)
         }
     }
+
+    pub fn resolve_font_property<T>(
+        self_rc: &ItemRc,
+        property_fn: impl Fn(Pin<&Self>) -> Option<T>,
+    ) -> Option<T> {
+        let mut window_item_rc = self_rc.clone();
+        loop {
+            let window_item = window_item_rc.downcast::<Self>()?;
+            if let Some(result) = property_fn(window_item.as_pin_ref()) {
+                return Some(result);
+            }
+
+            match window_item_rc
+                .parent_item(crate::item_tree::ParentItemTraversalMode::FindAllParents)
+                .and_then(|p| next_window_item(&p))
+            {
+                Some(item) => window_item_rc = item,
+                None => return None,
+            }
+        }
+    }
+
+    /// Creates a new FontRequest that uses the provide local font properties. If they're not set, i.e.
+    /// the family is an empty string, or the weight is zero, the corresponding properties are fetched
+    /// from the next parent WindowItem.
+    pub fn resolved_font_request(
+        self_rc: &crate::items::ItemRc,
+        local_font_family: SharedString,
+        local_font_weight: i32,
+        local_font_size: LogicalLength,
+        local_letter_spacing: LogicalLength,
+        local_italic: bool,
+    ) -> FontRequest {
+        let Some(window_item_rc) = next_window_item(self_rc) else {
+            return FontRequest::default();
+        };
+
+        FontRequest {
+            family: {
+                if !local_font_family.is_empty() {
+                    Some(local_font_family)
+                } else {
+                    crate::items::WindowItem::resolve_font_property(
+                        &window_item_rc,
+                        crate::items::WindowItem::font_family,
+                    )
+                }
+            },
+            weight: {
+                if local_font_weight == 0 {
+                    crate::items::WindowItem::resolve_font_property(
+                        &window_item_rc,
+                        crate::items::WindowItem::font_weight,
+                    )
+                } else {
+                    Some(local_font_weight)
+                }
+            },
+            pixel_size: {
+                if local_font_size.get() == 0 as Coord {
+                    crate::items::WindowItem::resolve_font_property(
+                        &window_item_rc,
+                        crate::items::WindowItem::font_size,
+                    )
+                } else {
+                    Some(local_font_size)
+                }
+            },
+            letter_spacing: Some(local_letter_spacing),
+            italic: local_italic,
+        }
+    }
 }
 
 impl ItemConsts for WindowItem {
@@ -1061,7 +1312,7 @@ declare_item_vtable! {
     fn slint_get_WindowItemVTable() -> WindowItemVTable for WindowItem
 }
 
-/// The implementation of the `Window` element
+/// The implementation used for `ContextMenuArea` and `ContextMenuInternal` elements
 #[repr(C)]
 #[derive(FieldOffsets, Default, SlintElement)]
 #[pin]
@@ -1069,7 +1320,12 @@ pub struct ContextMenu {
     //pub entries: Property<crate::model::ModelRc<MenuEntry>>,
     pub sub_menu: Callback<MenuEntryArg, MenuEntryModel>,
     pub activated: Callback<MenuEntryArg>,
+    pub show: Callback<PointArg>,
     pub cached_rendering_data: CachedRenderingData,
+    pub popup_id: Cell<Option<NonZeroU32>>,
+    pub enabled: Property<bool>,
+    #[cfg(target_os = "android")]
+    long_press_timer: Cell<Option<crate::timers::Timer>>,
 }
 
 impl Item for ContextMenu {
@@ -1079,35 +1335,84 @@ impl Item for ContextMenu {
         self: Pin<&Self>,
         _orientation: Orientation,
         _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
     ) -> LayoutInfo {
         LayoutInfo::default()
     }
 
     fn input_event_filter_before_children(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
-        InputEventFilterResult::ForwardAndIgnore
+        InputEventFilterResult::ForwardEvent
     }
 
     fn input_event(
         self: Pin<&Self>,
-        _event: MouseEvent,
+        event: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventResult {
-        InputEventResult::EventIgnored
+        if !self.enabled() {
+            return InputEventResult::EventIgnored;
+        }
+        match event {
+            MouseEvent::Pressed { position, button: PointerEventButton::Right, .. } => {
+                self.show.call(&(LogicalPosition::from_euclid(*position),));
+                InputEventResult::EventAccepted
+            }
+            #[cfg(target_os = "android")]
+            MouseEvent::Pressed { position, button: PointerEventButton::Left, .. } => {
+                let timer = crate::timers::Timer::default();
+                let self_weak = _self_rc.downgrade();
+                let position = *position;
+                timer.start(
+                    crate::timers::TimerMode::SingleShot,
+                    WindowInner::from_pub(_window_adapter.window())
+                        .ctx
+                        .platform()
+                        .long_press_interval(crate::InternalToken),
+                    move || {
+                        let Some(self_rc) = self_weak.upgrade() else { return };
+                        let Some(self_) = self_rc.downcast::<ContextMenu>() else { return };
+                        self_.show.call(&(LogicalPosition::from_euclid(position),));
+                    },
+                );
+                self.long_press_timer.set(Some(timer));
+                InputEventResult::GrabMouse
+            }
+            #[cfg(target_os = "android")]
+            MouseEvent::Released { .. } | MouseEvent::Exit => {
+                if let Some(timer) = self.long_press_timer.take() {
+                    timer.stop();
+                }
+                InputEventResult::EventIgnored
+            }
+            #[cfg(target_os = "android")]
+            MouseEvent::Moved { .. } => InputEventResult::EventAccepted,
+            _ => InputEventResult::EventIgnored,
+        }
     }
 
     fn key_event(
         self: Pin<&Self>,
-        _: &KeyEvent,
+        event: &KeyEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> KeyEventResult {
-        KeyEventResult::EventIgnored
+        if !self.enabled() {
+            return KeyEventResult::EventIgnored;
+        }
+        if event.event_type == KeyEventType::KeyPressed
+            && event.text.starts_with(crate::input::key_codes::Menu)
+        {
+            self.show.call(&(Default::default(),));
+            KeyEventResult::EventAccepted
+        } else {
+            KeyEventResult::EventIgnored
+        }
     }
 
     fn focus_event(
@@ -1127,9 +1432,37 @@ impl Item for ContextMenu {
     ) -> RenderingResult {
         RenderingResult::ContinueRenderingChildren
     }
+
+    fn bounding_rect(
+        self: core::pin::Pin<&Self>,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+        geometry: LogicalRect,
+    ) -> LogicalRect {
+        geometry
+    }
+
+    fn clips_children(self: core::pin::Pin<&Self>) -> bool {
+        false
+    }
 }
 
-impl ContextMenu {}
+impl ContextMenu {
+    pub fn close(self: Pin<&Self>, window_adapter: &Rc<dyn WindowAdapter>, _: &ItemRc) {
+        if let Some(id) = self.popup_id.take() {
+            WindowInner::from_pub(window_adapter.window()).close_popup(id);
+        }
+    }
+
+    pub fn is_open(self: Pin<&Self>, window_adapter: &Rc<dyn WindowAdapter>, _: &ItemRc) -> bool {
+        self.popup_id.get().is_some_and(|id| {
+            WindowInner::from_pub(window_adapter.window())
+                .active_popups()
+                .iter()
+                .any(|p| p.popup_id == id)
+        })
+    }
+}
 
 impl ItemConsts for ContextMenu {
     const cached_rendering_data_offset: const_field_offset::FieldOffset<Self, CachedRenderingData> =
@@ -1138,6 +1471,32 @@ impl ItemConsts for ContextMenu {
 
 declare_item_vtable! {
     fn slint_get_ContextMenuVTable() -> ContextMenuVTable for ContextMenu
+}
+
+#[cfg(feature = "ffi")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn slint_contextmenu_close(
+    s: Pin<&ContextMenu>,
+    window_adapter: *const crate::window::ffi::WindowAdapterRcOpaque,
+    self_component: &vtable::VRc<crate::item_tree::ItemTreeVTable>,
+    self_index: u32,
+) {
+    let window_adapter = &*(window_adapter as *const Rc<dyn WindowAdapter>);
+    let self_rc = ItemRc::new(self_component.clone(), self_index);
+    s.close(window_adapter, &self_rc);
+}
+
+#[cfg(feature = "ffi")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn slint_contextmenu_is_open(
+    s: Pin<&ContextMenu>,
+    window_adapter: *const crate::window::ffi::WindowAdapterRcOpaque,
+    self_component: &vtable::VRc<crate::item_tree::ItemTreeVTable>,
+    self_index: u32,
+) -> bool {
+    let window_adapter = &*(window_adapter as *const Rc<dyn WindowAdapter>);
+    let self_rc = ItemRc::new(self_component.clone(), self_index);
+    s.is_open(window_adapter, &self_rc)
 }
 
 /// The implementation of the `BoxShadow` element
@@ -1161,13 +1520,14 @@ impl Item for BoxShadow {
         self: Pin<&Self>,
         _orientation: Orientation,
         _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
     ) -> LayoutInfo {
         LayoutInfo { stretch: 1., ..LayoutInfo::default() }
     }
 
     fn input_event_filter_before_children(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
@@ -1176,7 +1536,7 @@ impl Item for BoxShadow {
 
     fn input_event(
         self: Pin<&Self>,
-        _event: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventResult {
@@ -1209,6 +1569,21 @@ impl Item for BoxShadow {
     ) -> RenderingResult {
         (*backend).draw_box_shadow(self, self_rc, size);
         RenderingResult::ContinueRenderingChildren
+    }
+
+    fn bounding_rect(
+        self: core::pin::Pin<&Self>,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+        geometry: LogicalRect,
+    ) -> LogicalRect {
+        geometry
+            .outer_rect(euclid::SideOffsets2D::from_length_all_same(self.blur()))
+            .translate(LogicalVector::from_lengths(self.offset_x(), self.offset_y()))
+    }
+
+    fn clips_children(self: core::pin::Pin<&Self>) -> bool {
+        false
     }
 }
 
@@ -1248,6 +1623,10 @@ declare_item_vtable! {
 #[cfg(feature = "std")]
 declare_item_vtable! {
     fn slint_get_PathVTable() -> PathVTable for Path
+}
+
+declare_item_vtable! {
+    fn slint_get_MenuItemVTable() -> MenuItemVTable for MenuItem
 }
 
 macro_rules! declare_enums {
@@ -1307,7 +1686,7 @@ macro_rules! declare_builtin_structs {
 i_slint_common::for_each_builtin_structs!(declare_builtin_structs);
 
 #[cfg(feature = "ffi")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn slint_item_absolute_position(
     self_component: &vtable::VRc<crate::item_tree::ItemTreeVTable>,
     self_index: u32,

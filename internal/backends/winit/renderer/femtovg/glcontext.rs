@@ -1,7 +1,7 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-use std::{num::NonZeroU32, rc::Rc};
+use std::{num::NonZeroU32, sync::Arc};
 
 use glutin::{
     config::GlConfig,
@@ -16,10 +16,10 @@ use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 pub struct OpenGLContext {
     context: glutin::context::PossiblyCurrentContext,
     surface: glutin::surface::Surface<glutin::surface::WindowSurface>,
-    winit_window: Rc<winit::window::Window>,
+    winit_window: Arc<winit::window::Window>,
 }
 
-unsafe impl i_slint_renderer_femtovg::OpenGLInterface for OpenGLContext {
+unsafe impl i_slint_renderer_femtovg::opengl::OpenGLInterface for OpenGLContext {
     fn ensure_current(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if !self.context.is_current() {
             self.context.make_current(&self.surface).map_err(|glutin_error| -> PlatformError {
@@ -57,9 +57,9 @@ unsafe impl i_slint_renderer_femtovg::OpenGLInterface for OpenGLContext {
 impl OpenGLContext {
     pub(crate) fn new_context(
         window_attributes: winit::window::WindowAttributes,
-        event_loop: crate::event_loop::ActiveOrInactiveEventLoop<'_>,
+        active_event_loop: &winit::event_loop::ActiveEventLoop,
         requested_opengl_version: Option<RequestedOpenGLVersion>,
-    ) -> Result<(Rc<winit::window::Window>, Self), PlatformError> {
+    ) -> Result<(Arc<winit::window::Window>, Self), PlatformError> {
         let config_template_builder = glutin::config::ConfigTemplateBuilder::new();
 
         // On macOS, there's only one GL config and that's initialized based on the values in the config template
@@ -88,26 +88,15 @@ impl OpenGLContext {
             })
             .expect("internal error: Could not find any matching GL configuration")
         };
-        let (window, gl_config) = match event_loop {
-            crate::event_loop::ActiveOrInactiveEventLoop::Active(l) => display_builder
-                .build(l, config_template_builder, config_picker)
-                .map_err(|glutin_err| {
-                    format!(
-                        "Error creating OpenGL display ({:#?}) with glutin: {}",
-                        l.display_handle(),
-                        glutin_err
-                    )
-                }),
-            crate::event_loop::ActiveOrInactiveEventLoop::Inactive(l) => display_builder
-                .build(l, config_template_builder, config_picker)
-                .map_err(|glutin_err| {
-                    format!(
-                        "Error creating OpenGL display ({:#?}) with glutin: {}",
-                        l.display_handle(),
-                        glutin_err
-                    )
-                }),
-        }?;
+        let (window, gl_config) = display_builder
+            .build(active_event_loop, config_template_builder, config_picker)
+            .map_err(|glutin_err| {
+                format!(
+                    "Error creating OpenGL display ({:?}) with glutin: {}",
+                    active_event_loop.display_handle(),
+                    glutin_err
+                )
+            })?;
 
         let gl_display = gl_config.display();
 
@@ -148,22 +137,15 @@ impl OpenGLContext {
             gl_display
                 .create_context(&gl_config, &preferred_context_attributes)
                 .or_else(|_| gl_display.create_context(&gl_config, &fallback_context_attributes))
-                .map_err(|glutin_err| format!("Cannot create OpenGL context: {}", glutin_err))?
+                .map_err(|glutin_err| format!("Cannot create OpenGL context: {glutin_err}"))?
         };
 
         let window = match window {
             Some(window) => window,
-            None => match event_loop {
-                crate::event_loop::ActiveOrInactiveEventLoop::Active(l) => {
-                    glutin_winit::finalize_window(l, window_attributes, &gl_config)
-                }
-                crate::event_loop::ActiveOrInactiveEventLoop::Inactive(l) => {
-                    glutin_winit::finalize_window(l, window_attributes, &gl_config)
-                }
-            }
-            .map_err(|winit_os_error| {
-                format!("Error finalizing window for OpenGL rendering: {}", winit_os_error)
-            })?,
+            None => glutin_winit::finalize_window(active_event_loop, window_attributes, &gl_config)
+                .map_err(|winit_os_error| {
+                    format!("Error finalizing window for OpenGL rendering: {winit_os_error}")
+                })?,
         };
 
         let raw_window_handle = window.window_handle().map_err(|err| {
@@ -193,7 +175,7 @@ impl OpenGLContext {
 
         let surface = unsafe {
             gl_display.create_window_surface(&gl_config, &attrs).map_err(|glutin_err| {
-                format!("Error creating OpenGL Window surface: {}", glutin_err)
+                format!("Error creating OpenGL Window surface: {glutin_err}")
             })?
         };
 
@@ -247,7 +229,7 @@ impl OpenGLContext {
             )
             .ok();
 
-        let window = Rc::new(window);
+        let window = Arc::new(window);
 
         Ok((window.clone(), Self { context, surface, winit_window: window }))
     }

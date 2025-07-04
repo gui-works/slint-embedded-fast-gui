@@ -110,7 +110,7 @@ fn wrap_code(code: &str, size: Option<(usize, usize)>) -> String {
     background: #0000;
     {sizing_lines}VerticalLayout {{
         Rectangle {{
-        {code}  
+        {code}
         }}
     }}
 }}"#
@@ -227,7 +227,7 @@ fn extract_code_from_text(text: &str, size: Option<(usize, usize)>) -> Result<St
     }
 
     let Some(first_line_end) = without_leading.find('\n') else {
-        return Err("text in CodeSnippetMD tag is one line only, so ot a proper code block".into());
+        return Err("text in CodeSnippetMD tag is one line only, so not a proper code block".into());
     };
 
     let code = &without_leading[first_line_end..];
@@ -390,7 +390,7 @@ fn find_project_root(docs_folder: &Path) -> Result<PathBuf> {
     let mut path = Some(docs_folder.canonicalize()?);
 
     while let Some(d) = path {
-        if d.join("astro.config.mjs").exists() {
+        if d.join("astro.config.mjs").exists() || d.join("astro.config.ts").exists() {
             return Ok(d);
         }
         path = d.parent().map(|p| p.to_path_buf());
@@ -407,7 +407,7 @@ fn build_and_snapshot(
     source: String,
     screenshot_path: &Path,
 ) -> Result<()> {
-    let compiler = init_compiler(&args);
+    let compiler = init_compiler(args);
     let r = spin_on::spin_on(compiler.build_from_source(source, doc_file_path.to_path_buf()));
     r.print_diagnostics();
     if r.has_errors() {
@@ -428,7 +428,7 @@ fn build_and_snapshot(
     let component = c.create()?;
 
     // FIXME: The scale factor needs to be set before the size is set!
-    headless::set_window_scale_factor(&component.window(), scale_factor);
+    headless::set_window_scale_factor(component.window(), scale_factor);
 
     if let Some((x, y)) = size {
         component.window().set_size(i_slint_core::api::LogicalSize::new(x as f32, y as f32));

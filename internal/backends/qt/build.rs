@@ -8,7 +8,7 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(no_qt)");
 
     println!("cargo:rerun-if-env-changed=SLINT_NO_QT");
-    if std::env::var("TARGET").map_or(false, |t| t.starts_with("wasm"))
+    if std::env::var("TARGET").is_ok_and(|t| t.starts_with("wasm"))
         || std::env::var("SLINT_NO_QT").is_ok()
     {
         println!("cargo:rustc-cfg=no_qt");
@@ -27,9 +27,8 @@ fn main() {
     if !qt_version.starts_with("5.15") && !qt_version.starts_with("6.") {
         println!("cargo:rustc-cfg=no_qt");
         println!(
-            "cargo:warning=Qt {} is not supported, you need at least Qt 5.15. The Qt backend will not be functional. \
-             See https://github.com/slint-ui/slint/blob/master/docs/install_qt.md for more info",
-            qt_version
+            "cargo:warning=Qt {qt_version} is not supported, you need at least Qt 5.15. The Qt backend will not be functional. \
+             See https://github.com/slint-ui/slint/blob/master/docs/install_qt.md for more info"
         );
         return;
     }

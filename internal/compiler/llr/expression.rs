@@ -1,14 +1,17 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-use super::PropertyReference;
+use super::{
+    GlobalIdx, PropertyReference, RepeatedElementIdx, SubComponentIdx, SubComponentInstanceIdx,
+};
 use crate::expression_tree::{BuiltinFunction, MinMaxOp, OperatorClass};
 use crate::langtype::Type;
 use crate::layout::Orientation;
 use core::num::NonZeroUsize;
 use itertools::Either;
 use smol_str::SmolStr;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
+use std::rc::Rc;
 
 #[derive(Debug, Clone)]
 pub enum Expression {
@@ -77,6 +80,9 @@ pub enum Expression {
         function: PropertyReference,
         arguments: Vec<Expression>,
     },
+    ItemMemberFunctionCall {
+        function: PropertyReference,
+    },
 
     /// A BuiltinFunctionCall, but the function is not yet in the `BuiltinFunction` enum
     /// TODO: merge in BuiltinFunctionCall
@@ -135,8 +141,8 @@ pub enum Expression {
         as_model: bool,
     },
     Struct {
-        ty: Type,
-        values: HashMap<SmolStr, Expression>,
+        ty: Rc<crate::langtype::Struct>,
+        values: BTreeMap<SmolStr, Expression>,
     },
 
     EasingCurve(crate::expression_tree::EasingCurve),
@@ -169,7 +175,7 @@ pub enum Expression {
         /// The name for the local variable that contains the repeater indices
         repeater_indices: Option<SmolStr>,
         /// Either an expression of type BoxLayoutCellData, or an index to the repeater
-        elements: Vec<Either<Expression, u32>>,
+        elements: Vec<Either<Expression, RepeatedElementIdx>>,
         orientation: Orientation,
         sub_expression: Box<Expression>,
     },
@@ -238,7 +244,7 @@ impl Expression {
                 as_model: true,
             },
             Type::Struct(s) => Expression::Struct {
-                ty: ty.clone(),
+                ty: s.clone(),
                 values: s
                     .fields
                     .iter()
@@ -277,14 +283,15 @@ impl Expression {
             Self::Cast { to, .. } => to.clone(),
             Self::CodeBlock(sub) => sub.last().map_or(Type::Void, |e| e.ty(ctx)),
             Self::BuiltinFunctionCall { function, .. } => function.ty().return_type.clone(),
-            Self::CallBackCall { callback, .. } => {
-                if let Type::Callback(callback) = ctx.property_ty(callback) {
-                    callback.return_type.clone()
-                } else {
-                    Type::Invalid
-                }
-            }
+            Self::CallBackCall { callback, .. } => match ctx.property_ty(callback) {
+                Type::Callback(callback) => callback.return_type.clone(),
+                _ => Type::Invalid,
+            },
             Self::FunctionCall { function, .. } => ctx.property_ty(function).clone(),
+            Self::ItemMemberFunctionCall { function } => match ctx.property_ty(function) {
+                Type::Function(function) => function.return_type.clone(),
+                _ => Type::Invalid,
+            },
             Self::ExtraBuiltinFunctionCall { return_ty, .. } => return_ty.clone(),
             Self::PropertyAssignment { .. } => Type::Void,
             Self::ModelDataAssignment { .. } => Type::Void,
@@ -300,7 +307,7 @@ impl Expression {
             Self::ImageReference { .. } => Type::Image,
             Self::Condition { false_expr, .. } => false_expr.ty(ctx),
             Self::Array { element_ty, .. } => Type::Array(element_ty.clone().into()),
-            Self::Struct { ty, .. } => ty.clone(),
+            Self::Struct { ty, .. } => ty.clone().into(),
             Self::EasingCurve(_) => Type::Easing,
             Self::LinearGradient { .. } => Type::Brush,
             Self::RadialGradient { .. } => Type::Brush,
@@ -337,6 +344,7 @@ macro_rules! visit_impl {
             Expression::BuiltinFunctionCall { arguments, .. }
             | Expression::CallBackCall { arguments, .. }
             | Expression::FunctionCall { arguments, .. } => arguments.$iter().for_each($visitor),
+            Expression::ItemMemberFunctionCall { function: _ } => {}
             Expression::ExtraBuiltinFunctionCall { arguments, .. } => {
                 arguments.$iter().for_each($visitor)
             }
@@ -462,18 +470,21 @@ pub trait TypeResolutionContext {
 pub struct ParentCtx<'a, T = ()> {
     pub ctx: &'a EvaluationContext<'a, T>,
     // Index of the repeater within the ctx.current_sub_component
-    pub repeater_index: Option<u32>,
+    pub repeater_index: Option<RepeatedElementIdx>,
 }
 
-impl<'a, T> Clone for ParentCtx<'a, T> {
+impl<T> Clone for ParentCtx<'_, T> {
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<'a, T> Copy for ParentCtx<'a, T> {}
+impl<T> Copy for ParentCtx<'_, T> {}
 
 impl<'a, T> ParentCtx<'a, T> {
-    pub fn new(ctx: &'a EvaluationContext<'a, T>, repeater_index: Option<u32>) -> Self {
+    pub fn new(
+        ctx: &'a EvaluationContext<'a, T>,
+        repeater_index: Option<RepeatedElementIdx>,
+    ) -> Self {
         Self { ctx, repeater_index }
     }
 }
@@ -481,8 +492,8 @@ impl<'a, T> ParentCtx<'a, T> {
 #[derive(Clone)]
 pub struct EvaluationContext<'a, T = ()> {
     pub compilation_unit: &'a super::CompilationUnit,
-    pub current_sub_component: Option<&'a super::SubComponent>,
-    pub current_global: Option<&'a super::GlobalComponent>,
+    pub current_sub_component: Option<SubComponentIdx>,
+    pub current_global: Option<GlobalIdx>,
     pub generator_state: T,
     /// The repeater parent
     pub parent: Option<ParentCtx<'a, T>>,
@@ -494,7 +505,7 @@ pub struct EvaluationContext<'a, T = ()> {
 impl<'a, T> EvaluationContext<'a, T> {
     pub fn new_sub_component(
         compilation_unit: &'a super::CompilationUnit,
-        sub_component: &'a super::SubComponent,
+        sub_component: SubComponentIdx,
         generator_state: T,
         parent: Option<ParentCtx<'a, T>>,
     ) -> Self {
@@ -510,7 +521,7 @@ impl<'a, T> EvaluationContext<'a, T> {
 
     pub fn new_global(
         compilation_unit: &'a super::CompilationUnit,
-        global: &'a super::GlobalComponent,
+        global: GlobalIdx,
         generator_state: T,
     ) -> Self {
         Self {
@@ -525,6 +536,7 @@ impl<'a, T> EvaluationContext<'a, T> {
 
     pub(crate) fn property_info<'b>(&'b self, prop: &PropertyReference) -> PropertyInfoResult<'b> {
         fn match_in_sub_component<'b>(
+            cu: &'b super::CompilationUnit,
             sc: &'b super::SubComponent,
             prop: &PropertyReference,
             map: ContextMap,
@@ -533,7 +545,7 @@ impl<'a, T> EvaluationContext<'a, T> {
                 if let PropertyReference::Local { property_index, sub_component_path } = &prop {
                     let mut sc = sc;
                     for i in sub_component_path {
-                        sc = &sc.sub_components[*i].ty;
+                        sc = &cu.sub_components[sc.sub_components[*i].ty];
                     }
                     Some(&sc.properties[*property_index])
                 } else {
@@ -570,7 +582,8 @@ impl<'a, T> EvaluationContext<'a, T> {
                         };
                         let idx = sub_component_path[0];
                         return apply_analysis(match_in_sub_component(
-                            &sc.sub_components[idx].ty,
+                            cu,
+                            &cu.sub_components[sc.sub_components[idx].ty],
                             &prop2,
                             map.deeper_in_sub_component(idx),
                         ));
@@ -585,7 +598,8 @@ impl<'a, T> EvaluationContext<'a, T> {
                         };
                         let idx = sub_component_path[0];
                         return apply_analysis(match_in_sub_component(
-                            &sc.sub_components[idx].ty,
+                            cu,
+                            &cu.sub_components[sc.sub_components[idx].ty],
                             &prop2,
                             map.deeper_in_sub_component(idx),
                         ));
@@ -601,31 +615,30 @@ impl<'a, T> EvaluationContext<'a, T> {
 
         match prop {
             PropertyReference::Local { property_index, .. } => {
-                if let Some(g) = self.current_global {
-                    return PropertyInfoResult {
+                if let Some(g) = self.current_global() {
+                    PropertyInfoResult {
                         analysis: Some(&g.prop_analysis[*property_index]),
                         binding: g.init_values[*property_index]
                             .as_ref()
                             .map(|b| (b, ContextMap::Identity)),
                         animation: None,
                         property_decl: Some(&g.properties[*property_index]),
-                    };
-                } else if let Some(sc) = self.current_sub_component.as_ref() {
-                    return match_in_sub_component(sc, prop, ContextMap::Identity);
+                    }
+                } else if let Some(sc) = self.current_sub_component() {
+                    match_in_sub_component(self.compilation_unit, sc, prop, ContextMap::Identity)
                 } else {
                     unreachable!()
                 }
             }
-            PropertyReference::InNativeItem { .. } => {
-                return match_in_sub_component(
-                    self.current_sub_component.as_ref().unwrap(),
-                    prop,
-                    ContextMap::Identity,
-                );
-            }
+            PropertyReference::InNativeItem { .. } => match_in_sub_component(
+                self.compilation_unit,
+                self.current_sub_component().unwrap(),
+                prop,
+                ContextMap::Identity,
+            ),
             PropertyReference::Global { global_index, property_index } => {
                 let g = &self.compilation_unit.globals[*global_index];
-                return PropertyInfoResult {
+                PropertyInfoResult {
                     analysis: Some(&g.prop_analysis[*property_index]),
                     animation: None,
                     binding: g
@@ -634,7 +647,7 @@ impl<'a, T> EvaluationContext<'a, T> {
                         .and_then(Option::as_ref)
                         .map(|b| (b, ContextMap::InGlobal(*global_index))),
                     property_decl: Some(&g.properties[*property_index]),
-                };
+                }
             }
             PropertyReference::InParent { level, parent_reference } => {
                 let mut ctx = self;
@@ -661,18 +674,27 @@ impl<'a, T> EvaluationContext<'a, T> {
             }
         }
     }
+
+    pub fn current_sub_component(&self) -> Option<&super::SubComponent> {
+        self.current_sub_component.and_then(|i| self.compilation_unit.sub_components.get(i))
+    }
+
+    pub fn current_global(&self) -> Option<&super::GlobalComponent> {
+        self.current_global.and_then(|i| self.compilation_unit.globals.get(i))
+    }
 }
 
-impl<'a, T> TypeResolutionContext for EvaluationContext<'a, T> {
+impl<T> TypeResolutionContext for EvaluationContext<'_, T> {
     fn property_ty(&self, prop: &PropertyReference) -> &Type {
         match prop {
             PropertyReference::Local { sub_component_path, property_index } => {
-                if let Some(mut sub_component) = self.current_sub_component {
+                if let Some(mut sub_component) = self.current_sub_component() {
                     for i in sub_component_path {
-                        sub_component = &sub_component.sub_components[*i].ty;
+                        sub_component = &self.compilation_unit.sub_components
+                            [sub_component.sub_components[*i].ty];
                     }
                     &sub_component.properties[*property_index].ty
-                } else if let Some(current_global) = self.current_global {
+                } else if let Some(current_global) = self.current_global() {
                     &current_global.properties[*property_index].ty
                 } else {
                     unreachable!()
@@ -684,12 +706,13 @@ impl<'a, T> TypeResolutionContext for EvaluationContext<'a, T> {
                     return &Type::PathData;
                 }
 
-                let mut sub_component = self.current_sub_component.unwrap();
+                let mut sub_component = self.current_sub_component().unwrap();
                 for i in sub_component_path {
-                    sub_component = &sub_component.sub_components[*i].ty;
+                    sub_component =
+                        &self.compilation_unit.sub_components[sub_component.sub_components[*i].ty];
                 }
 
-                sub_component.items[*item_index as usize].ty.lookup_property(prop_name).unwrap()
+                sub_component.items[*item_index].ty.lookup_property(prop_name).unwrap()
             }
             PropertyReference::InParent { level, parent_reference } => {
                 let mut ctx = self;
@@ -702,12 +725,13 @@ impl<'a, T> TypeResolutionContext for EvaluationContext<'a, T> {
                 &self.compilation_unit.globals[*global_index].properties[*property_index].ty
             }
             PropertyReference::Function { sub_component_path, function_index } => {
-                if let Some(mut sub_component) = self.current_sub_component {
+                if let Some(mut sub_component) = self.current_sub_component() {
                     for i in sub_component_path {
-                        sub_component = &sub_component.sub_components[*i].ty;
+                        sub_component = &self.compilation_unit.sub_components
+                            [sub_component.sub_components[*i].ty];
                     }
                     &sub_component.functions[*function_index].ret_ty
-                } else if let Some(current_global) = self.current_global {
+                } else if let Some(current_global) = self.current_global() {
                     &current_global.functions[*function_index].ret_ty
                 } else {
                     unreachable!()
@@ -738,12 +762,12 @@ pub(crate) struct PropertyInfoResult<'a> {
 #[derive(Debug, Clone)]
 pub(crate) enum ContextMap {
     Identity,
-    InSubElement { path: Vec<usize>, parent: usize },
-    InGlobal(usize),
+    InSubElement { path: Vec<SubComponentInstanceIdx>, parent: usize },
+    InGlobal(GlobalIdx),
 }
 
 impl ContextMap {
-    fn deeper_in_sub_component(self, sub: usize) -> Self {
+    fn deeper_in_sub_component(self, sub: SubComponentInstanceIdx) -> Self {
         match self {
             ContextMap::Identity => ContextMap::InSubElement { parent: 0, path: vec![sub] },
             ContextMap::InSubElement { mut path, parent } => {
@@ -758,7 +782,7 @@ impl ContextMap {
         match self {
             ContextMap::Identity => p.clone(),
             ContextMap::InSubElement { path, parent } => {
-                let map_sub_path = |sub_component_path: &[usize]| -> Vec<usize> {
+                let map_sub_path = |sub_component_path: &[SubComponentInstanceIdx]| -> Vec<SubComponentInstanceIdx> {
                     path.iter().chain(sub_component_path.iter()).copied().collect()
                 };
 
@@ -840,16 +864,12 @@ impl ContextMap {
                 } else {
                     let mut e = ctx.current_sub_component.unwrap();
                     for i in path {
-                        e = &e.sub_components[*i].ty;
+                        e = ctx.compilation_unit.sub_components[e].sub_components[*i].ty;
                     }
                     EvaluationContext::new_sub_component(ctx.compilation_unit, e, (), None)
                 }
             }
-            ContextMap::InGlobal(g) => EvaluationContext::new_global(
-                ctx.compilation_unit,
-                &ctx.compilation_unit.globals[*g],
-                (),
-            ),
+            ContextMap::InGlobal(g) => EvaluationContext::new_global(ctx.compilation_unit, *g, ()),
         }
     }
 }

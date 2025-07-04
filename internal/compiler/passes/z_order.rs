@@ -74,13 +74,13 @@ fn eval_const_expr(
     span: &dyn crate::diagnostics::Spanned,
     diag: &mut BuildDiagnostics,
 ) -> Option<f64> {
-    match expression {
+    match super::ignore_debug_hooks(expression) {
         Expression::NumberLiteral(v, Unit::None) => Some(*v),
         Expression::Cast { from, .. } => eval_const_expr(from, name, span, diag),
         Expression::UnaryOp { sub, op: '-' } => eval_const_expr(sub, name, span, diag).map(|v| -v),
         Expression::UnaryOp { sub, op: '+' } => eval_const_expr(sub, name, span, diag),
         _ => {
-            diag.push_error(format!("'{}' must be an number literal", name), span);
+            diag.push_error(format!("'{name}' must be an number literal"), span);
             None
         }
     }

@@ -29,7 +29,7 @@ export { ResourceUrlMapperFunction };
 
 export type ShowDocumentCallback = (
     _uri: string,
-    _posiiton: LspPosition,
+    _position: LspPosition,
 ) => boolean;
 
 function createLanguageClient(
@@ -222,11 +222,7 @@ export class Lsp {
         style: string,
     ): Promise<Previewer> {
         if (this.#preview_connector === null) {
-            try {
-                slint_preview.run_event_loop();
-            } catch (e) {
-                // this is not an error!
-            }
+            slint_preview.run_event_loop();
 
             const params = new URLSearchParams(window.location.search);
             const experimental = params.get("SLINT_EXPERIMENTAL_FEATURES");

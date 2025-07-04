@@ -13,7 +13,7 @@
 
 /// Use the functions and classes in this namespace for in-process UI testing.
 ///
-/// This module is still experimental - it's API is subject to changes and not stabilized yet. To
+/// This module is still experimental - its API is subject to changes and not stabilized yet. To
 /// use the module, you must enable the `SLINT_FEATURE_EXPERIMENTAL=ON` and `SLINT_FEATURE_TESTING`
 /// CMake options.
 namespace slint::testing {
@@ -36,7 +36,7 @@ class ElementHandle
     explicit ElementHandle(const cbindgen_private::ElementHandle *inner) : inner(*inner) { }
 
 public:
-    /// Visits visible elements within a component and call the visitor for each of them.
+    /// Visits visible elements within a component and calls the visitor for each of them.
     ///
     /// The visitor must be a callable object that accepts an `ElementHandle` and returns either
     /// `void`, or a type that can be converted to `bool`.
@@ -44,7 +44,7 @@ public:
     ///   visited.
     /// - If the visitor returns a type that can be converted to `bool`, the visitation continues as
     ///   long as the conversion result is false; otherwise, it stops, returning that value.
-    ///   If the visitor never returns something that convertts to true, then the function returns a
+    ///   If the visitor never returns something that converts to true, then the function returns a
     ///   default constructed value;
     ///
     /// ```cpp
@@ -57,8 +57,8 @@ public:
              typename R = std::invoke_result_t<Visitor, ElementHandle>>
         requires((std::is_constructible_v<bool, R> && std::is_default_constructible_v<R>)
                  || std::is_void_v<R>)
-    static auto visit_elements(const ComponentHandle<T> &component,
-                               Visitor visitor) -> std::invoke_result_t<Visitor, ElementHandle>
+    static auto visit_elements(const ComponentHandle<T> &component, Visitor visitor)
+            -> std::invoke_result_t<Visitor, ElementHandle>
     {
         // using R = std::invoke_result_t<Visitor, ElementHandle>;
         auto vrc = component.into_dyn();
@@ -235,14 +235,7 @@ public:
     /// Returns the accessible-enabled of that element, if any.
     std::optional<bool> accessible_enabled() const
     {
-        if (auto result = get_accessible_string_property(
-                    cbindgen_private::AccessibleStringProperty::Enabled)) {
-            if (*result == "true")
-                return true;
-            else if (*result == "false")
-                return false;
-        }
-        return std::nullopt;
+        return get_accessible_bool_property(cbindgen_private::AccessibleStringProperty::Enabled);
     }
 
     /// Returns the accessible-value of that element, if any.
@@ -307,53 +300,27 @@ public:
     /// Returns the accessible-checked of that element, if any.
     std::optional<bool> accessible_checked() const
     {
-        if (auto result = get_accessible_string_property(
-                    cbindgen_private::AccessibleStringProperty::Checked)) {
-            if (*result == "true")
-                return true;
-            else if (*result == "false")
-                return false;
-        }
-        return std::nullopt;
+        return get_accessible_bool_property(cbindgen_private::AccessibleStringProperty::Checked);
     }
 
     /// Returns the accessible-checkable of that element, if any.
     std::optional<bool> accessible_checkable() const
     {
-        if (auto result = get_accessible_string_property(
-                    cbindgen_private::AccessibleStringProperty::Checkable)) {
-            if (*result == "true")
-                return true;
-            else if (*result == "false")
-                return false;
-        }
-        return std::nullopt;
+        return get_accessible_bool_property(cbindgen_private::AccessibleStringProperty::Checkable);
     }
 
     /// Returns the accessible-item-selected of that element, if any.
     std::optional<bool> accessible_item_selected() const
     {
-        if (auto result = get_accessible_string_property(
-                    cbindgen_private::AccessibleStringProperty::ItemSelected)) {
-            if (*result == "true")
-                return true;
-            else if (*result == "false")
-                return false;
-        }
-        return std::nullopt;
+        return get_accessible_bool_property(
+                cbindgen_private::AccessibleStringProperty::ItemSelected);
     }
 
     /// Returns the accessible-item-selectable of that element, if any.
     std::optional<bool> accessible_item_selectable() const
     {
-        if (auto result = get_accessible_string_property(
-                    cbindgen_private::AccessibleStringProperty::ItemSelectable)) {
-            if (*result == "true")
-                return true;
-            else if (*result == "false")
-                return false;
-        }
-        return std::nullopt;
+        return get_accessible_bool_property(
+                cbindgen_private::AccessibleStringProperty::ItemSelectable);
     }
 
     /// Returns the accessible-item-index of that element, if any.
@@ -380,6 +347,45 @@ public:
             }
         }
         return std::nullopt;
+    }
+
+    /// Returns the accessible-expanded of that element, if any.
+    std::optional<bool> accessible_expanded() const
+    {
+        return get_accessible_bool_property(cbindgen_private::AccessibleStringProperty::Expanded);
+    }
+
+    /// Returns the accessible-expandable of that element, if any.
+    std::optional<bool> accessible_expandable() const
+    {
+        return get_accessible_bool_property(cbindgen_private::AccessibleStringProperty::Expandable);
+    }
+
+    /// Returns the accessible-read-only of that element, if any.
+    std::optional<bool> accessible_read_only() const
+    {
+        return get_accessible_bool_property(cbindgen_private::AccessibleStringProperty::ReadOnly);
+    }
+
+    /// Invokes the expand accessibility action of that element
+    /// (`accessible-action-expand`).
+    void invoke_accessible_expand_action() const
+    {
+        if (inner.element_index != 0)
+            return;
+        if (auto item = private_api::upgrade_item_weak(inner.item)) {
+            union ExpandActionHelper {
+                cbindgen_private::AccessibilityAction action;
+                ExpandActionHelper()
+                {
+                    action.tag = cbindgen_private::AccessibilityAction::Tag::Expand;
+                }
+                ~ExpandActionHelper() { }
+
+            } action;
+            item->item_tree.vtable()->accessibility_action(item->item_tree.borrow(), item->index,
+                                                           &action.action);
+        }
     }
 
     /// Sets the accessible-value of that element.
@@ -506,6 +512,18 @@ private:
                                                                      item->index, what, &result)) {
                 return result;
             }
+        }
+        return std::nullopt;
+    }
+
+    std::optional<bool>
+    get_accessible_bool_property(cbindgen_private::AccessibleStringProperty what) const
+    {
+        if (auto result = get_accessible_string_property(what)) {
+            if (*result == "true")
+                return true;
+            else if (*result == "false")
+                return false;
         }
         return std::nullopt;
     }

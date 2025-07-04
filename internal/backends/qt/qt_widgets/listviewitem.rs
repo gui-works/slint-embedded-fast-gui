@@ -37,6 +37,7 @@ impl Item for NativeStandardListViewItem {
         self: Pin<&Self>,
         orientation: Orientation,
         _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
     ) -> LayoutInfo {
         let index: i32 = self.index();
         let item = self.item();
@@ -79,7 +80,7 @@ impl Item for NativeStandardListViewItem {
 
     fn input_event_filter_before_children(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
@@ -88,7 +89,7 @@ impl Item for NativeStandardListViewItem {
 
     fn input_event(
         self: Pin<&Self>,
-        _event: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &i_slint_core::items::ItemRc,
     ) -> InputEventResult {
@@ -192,6 +193,19 @@ impl Item for NativeStandardListViewItem {
                 qApp->style()->drawControl(QStyle::CE_ItemViewItem, &option, painter->get(), widget);
             }
         });
+    }
+
+    fn bounding_rect(
+        self: core::pin::Pin<&Self>,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+        geometry: LogicalRect,
+    ) -> LogicalRect {
+        geometry
+    }
+
+    fn clips_children(self: core::pin::Pin<&Self>) -> bool {
+        false
     }
 }
 

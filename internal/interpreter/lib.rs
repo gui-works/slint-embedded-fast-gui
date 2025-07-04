@@ -84,8 +84,12 @@ mod dynamic_type;
 mod eval;
 mod eval_layout;
 mod global_component;
-#[cfg(feature = "highlight")]
+#[cfg(feature = "internal-highlight")]
 pub mod highlight;
+#[cfg(feature = "internal-json")]
+pub mod json;
+#[cfg(feature = "internal-live-reload")]
+pub mod live_reload;
 mod value_model;
 
 #[doc(inline)]

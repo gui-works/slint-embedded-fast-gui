@@ -167,7 +167,7 @@ impl<'id> TypeInfo<'id> {
     ///
     /// Safety, the instance must have been created by `TypeInfo::create_instance`
     unsafe fn delete_instance(instance: *mut Instance) {
-        let mem_layout = (*instance).type_info.mem_layout;
+        let mem_layout = (&(*instance).type_info).mem_layout;
         Self::drop_in_place(instance);
         let mem = instance as *mut u8;
         std::alloc::dealloc(mem, mem_layout);
@@ -192,9 +192,9 @@ impl<'id> Instance<'id> {
     }
 }
 
-impl<'id> core::fmt::Debug for Instance<'id> {
+impl core::fmt::Debug for Instance<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Instance({:p})", self)
+        write!(f, "Instance({self:p})")
     }
 }
 
@@ -216,7 +216,7 @@ impl<'id> InstanceBox<'id> {
     }
 }
 
-impl<'id> Drop for InstanceBox<'id> {
+impl Drop for InstanceBox<'_> {
     fn drop(&mut self) {
         unsafe { TypeInfo::delete_instance(self.0.as_mut()) }
     }

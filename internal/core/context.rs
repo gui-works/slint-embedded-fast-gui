@@ -3,14 +3,11 @@
 
 use crate::api::PlatformError;
 use crate::platform::{EventLoopProxy, Platform};
-#[cfg(all(not(feature = "std"), feature = "unsafe-single-threaded"))]
-use crate::thread_local;
 use crate::Property;
-#[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 
-thread_local! {
+crate::thread_local! {
     pub(crate) static GLOBAL_CONTEXT : once_cell::unsync::OnceCell<SlintContext>
         = const { once_cell::unsync::OnceCell::new() }
 }
@@ -56,7 +53,7 @@ impl SlintContext {
     }
 
     /// Return an event proxy
-    // FIXME: Make EvenLoopProxy clonable, and maybe wrap in a struct
+    // FIXME: Make EvenLoopProxy cloneable, and maybe wrap in a struct
     pub fn event_loop_proxy(&self) -> Option<Box<dyn EventLoopProxy>> {
         self.0.platform.new_event_loop_proxy()
     }

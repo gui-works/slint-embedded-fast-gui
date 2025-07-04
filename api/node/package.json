@@ -1,6 +1,6 @@
 {
   "name": "slint-ui",
-  "version": "1.9.2",
+  "version": "1.13.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "homepage": "https://github.com/slint-ui/slint",
@@ -20,16 +20,15 @@
   ],
   "description": "Slint is a declarative GUI toolkit to build native user interfaces for desktop and embedded applications.",
   "devDependencies": {
-    "@ava/typescript": "5.0.0",
-    "@biomejs/biome": "1.9.4",
+    "@ava/typescript": "6.0.0",
+    "@biomejs/biome": "2.0.6",
     "@types/capture-console": "1.0.5",
     "@types/node": "20.16.10",
-    "ava": "6.2.0",
+    "ava": "6.4.0",
     "capture-console": "1.0.2",
     "jimp": "1.6.0",
-    "ts-node": "10.9.2",
-    "typedoc": "0.27",
-    "typescript": "5.2.2"
+    "typedoc": "0.28.7",
+    "typescript": "5.8.3"
   },
   "engines": {
     "node": ">= 10"
@@ -37,29 +36,30 @@
   "scripts": {
     "artifacts": "napi artifacts",
     "compile": "tsc --build",
-    "build": "napi build --platform --release --js rust-module.cjs --dts rust-module.d.ts -c binaries.json",
-    "build:debug": "napi build --platform --js rust-module.cjs --dts rust-module.d.ts -c binaries.json && pnpm compile",
-    "build:testing": "napi build --platform --js rust-module.cjs --dts rust-module.d.ts -c binaries.json --features testing && pnpm compile",
+    "build": "napi build --platform --release --js rust-module.cjs --dts rust-module.d.cts -c binaries.json",
+    "build:debug": "napi build --platform --js rust-module.cjs --dts rust-module.d.cts -c binaries.json && pnpm compile",
+    "build:testing": "napi build --platform --js rust-module.cjs --dts rust-module.d.cts -c binaries.json --features testing && pnpm compile",
     "install": "node build-on-demand.mjs",
     "docs": "pnpm build && typedoc --hideGenerator --readme cover.md typescript/index.ts && cargo about generate thirdparty.hbs -o docs/thirdparty.html",
+    "docs:debug": "pnpm build:debug && typedoc --hideGenerator --readme cover.md typescript/index.ts",
     "check": "biome check",
     "format": "biome format",
     "format:fix": "biome format --write",
     "lint": "biome lint",
     "lint:fix": "biome lint --fix",
-    "test": "ava"
+    "test": "tsc --build __test__/tsconfig.json && ava"
   },
   "ava": {
-    "extensions": {
-      "mts": "module"
+    "typescript": {
+      "rewritePaths": {
+        "__test__/": "build/"
+      },
+      "compile": false,
+      "extensions": [
+        "mts"
+      ]
     },
-    "nodeArguments": [
-      "--loader=ts-node/esm"
-    ],
     "timeout": "2m",
-    "environmentVariables": {
-      "TS_NODE_PROJECT": "./__test__/tsconfig.json"
-    },
     "workerThreads": false
   },
   "dependencies": {

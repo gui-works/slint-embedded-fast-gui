@@ -50,9 +50,9 @@ struct Cli {
 fn main() -> std::io::Result<()> {
     let args = Cli::parse();
 
-    let output = args.output.unwrap_or_else(|| {
-        format!("{}.po", args.domain.as_ref().map(String::as_str).unwrap_or("messages")).into()
-    });
+    let output = args
+        .output
+        .unwrap_or_else(|| format!("{}.po", args.domain.as_deref().unwrap_or("messages")).into());
 
     let mut messages = if args.join_existing {
         polib::po_file::parse(&output)
@@ -71,7 +71,7 @@ fn main() -> std::io::Result<()> {
             content_transfer_encoding: "8bit".into(),
             language: String::new(),
             plural_rules: Default::default(),
-            // "Report-Msgid-Bugs-To: {address}" addess = output_details.bugs_address
+            // "Report-Msgid-Bugs-To: {address}" address = output_details.bugs_address
         };
 
         Messages::new(metadata)

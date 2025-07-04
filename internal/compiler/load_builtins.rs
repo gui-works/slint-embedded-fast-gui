@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::expression_tree::{BuiltinFunction, Expression};
+use crate::expression_tree::Expression;
 use crate::langtype::{
     BuiltinElement, BuiltinPropertyDefault, BuiltinPropertyInfo, DefaultSizeBinding, ElementType,
     Function, NativeClass, Type,
@@ -29,7 +29,7 @@ pub(crate) fn load_builtins(register: &mut TypeRegister) {
         let vec = diag.to_string_vec();
         #[cfg(feature = "display-diagnostics")]
         diag.print();
-        panic!("Error parsing the builtin elements: {:?}", vec);
+        panic!("Error parsing the builtin elements: {vec:?}");
     }
 
     assert_eq!(node.kind(), crate::parser::SyntaxKind::Document);
@@ -147,29 +147,33 @@ pub(crate) fn load_builtins(register: &mut TypeRegister) {
             Global,
             NativeParent(Rc<BuiltinElement>),
         }
-        let base = if c.child_text(SyntaxKind::Identifier).map_or(false, |t| t == "global") {
+        let base = if c.child_text(SyntaxKind::Identifier).is_some_and(|t| t == "global") {
             Base::Global
         } else if let Some(base) = e.QualifiedName() {
             let base = QualifiedTypeName::from_node(base).to_smolstr();
             let base = natives.get(&base).unwrap().clone();
+            // because they are not taken from if we inherit from it
+            assert!(
+                base.additional_accepted_child_types.is_empty() && !base.additional_accept_self
+            );
             n.parent = Some(base.native_class.clone());
             Base::NativeParent(base)
         } else {
             Base::None
         };
 
-        let member_functions = e
-            .Function()
-            .map(|f| {
-                let name = identifier_text(&f.DeclaredIdentifier()).unwrap();
-                (name.clone(), BuiltinFunction::ItemMemberFunction(name))
-            })
-            .collect::<Vec<_>>();
-        n.properties.extend(
-            member_functions.iter().map(|(name, fun)| {
-                (name.clone(), BuiltinPropertyInfo::new(Type::Function(fun.ty())))
-            }),
-        );
+        n.properties.extend(e.Function().map(|f| {
+            let name = identifier_text(&f.DeclaredIdentifier()).unwrap();
+            let return_type = f.ReturnType().map_or(Type::Void, |p| {
+                object_tree::type_from_node(p.Type(), *diag.borrow_mut(), register)
+            });
+            (
+                name,
+                BuiltinPropertyInfo::new(Type::Function(
+                    Function { return_type, args: vec![], arg_names: vec![] }.into(),
+                )),
+            )
+        }));
 
         let mut builtin = BuiltinElement::new(Rc::new(n));
         builtin.is_global = matches!(base, Base::Global);
@@ -180,7 +184,6 @@ pub(crate) fn load_builtins(register: &mut TypeRegister) {
         properties
             .extend(builtin.native_class.properties.iter().map(|(k, v)| (k.clone(), v.clone())));
 
-        builtin.member_functions.extend(member_functions);
         builtin.disallow_global_types_as_child_elements =
             parse_annotation("disallow_global_types_as_child_elements", &e).is_some();
         builtin.is_non_item_type = parse_annotation("is_non_item_type", &e).is_some();
@@ -190,15 +193,20 @@ pub(crate) fn load_builtins(register: &mut TypeRegister) {
             .map(|size_type| match size_type.as_deref() {
                 Some("expands_to_parent_geometry") => DefaultSizeBinding::ExpandsToParentGeometry,
                 Some("implicit_size") => DefaultSizeBinding::ImplicitSize,
-                other => panic!("invalid default size binding {:?}", other),
+                other => panic!("invalid default size binding {other:?}"),
             })
             .unwrap_or(DefaultSizeBinding::None);
         builtin.additional_accepted_child_types = e
             .SubElement()
-            .map(|s| {
+            .filter_map(|s| {
                 let a = identifier_text(&s.Element().QualifiedName().unwrap()).unwrap();
-                let t = natives[&a].clone();
-                (a, ElementType::Builtin(t))
+                if a == builtin.native_class.class_name {
+                    builtin.additional_accept_self = true;
+                    None
+                } else {
+                    let t = natives[&a].clone();
+                    Some((a, t))
+                }
             })
             .collect();
         if let Some(builtin_name) = exports.get(&id) {
@@ -218,8 +226,6 @@ pub(crate) fn load_builtins(register: &mut TypeRegister) {
                 register.add(glob);
             }
         } else {
-            // because they are not taken from if we inherit from it
-            assert!(builtin.additional_accepted_child_types.is_empty());
             natives.insert(id, Rc::new(builtin));
         }
     }
@@ -233,7 +239,7 @@ pub(crate) fn load_builtins(register: &mut TypeRegister) {
         let vec = diag.to_string_vec();
         #[cfg(feature = "display-diagnostics")]
         diag.print();
-        panic!("Error loading the builtin elements: {:?}", vec);
+        panic!("Error loading the builtin elements: {vec:?}");
     }
 }
 
@@ -253,7 +259,7 @@ fn compiled(
         let vec = diag.to_string_vec();
         #[cfg(feature = "display-diagnostics")]
         diag.print();
-        panic!("Error parsing the builtin elements: {:?}", vec);
+        panic!("Error parsing the builtin elements: {vec:?}");
     }
     e
 }

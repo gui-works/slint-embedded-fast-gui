@@ -41,6 +41,9 @@ pub fn generate_item_indices(component: &Rc<Component>) {
     for p in component.popup_windows.borrow().iter() {
         generate_item_indices(&p.component)
     }
+    for c in component.menu_item_tree.borrow().iter() {
+        generate_item_indices(c);
+    }
 }
 
 struct Helper {
@@ -62,19 +65,6 @@ impl crate::generator::ItemTreeBuilder for Helper {
             if let crate::langtype::ElementType::Component(c) = &item.borrow().base_type {
                 generate_item_indices(c);
             }
-        }
-        self.current_item_index += 1;
-    }
-
-    fn push_component_placeholder_item(
-        &mut self,
-        item: &crate::object_tree::ElementRc,
-        _container_count: u32,
-        _parent_index: u32,
-        component_state: &Self::SubComponentState,
-    ) {
-        if !component_state {
-            item.borrow().item_index.set(self.current_item_index).unwrap();
         }
         self.current_item_index += 1;
     }

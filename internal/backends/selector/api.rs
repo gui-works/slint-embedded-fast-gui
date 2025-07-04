@@ -1,6 +1,13 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
+#![warn(missing_docs)]
+
+/*!
+This module contains types that are public and re-exported in the slint-rs as well as the slint-interpreter crate as public API,
+in particular the `BackendSelector` type.
+*/
+
 use alloc::boxed::Box;
 use alloc::{format, string::String};
 
@@ -9,7 +16,7 @@ use i_slint_core::graphics::{RequestedGraphicsAPI, RequestedOpenGLVersion};
 
 #[i_slint_core_macros::slint_doc]
 /// Use the BackendSelector to configure one of Slint's built-in [backends with a renderer](slint:backends_and_renderers)
-/// to accomodate specific needs of your application. This is a programmatic substitute for
+/// to accommodate specific needs of your application. This is a programmatic substitute for
 /// the `SLINT_BACKEND` environment variable.
 ///
 /// For example, to configure Slint to use a renderer that supports OpenGL ES 3.0, configure
@@ -21,23 +28,29 @@ use i_slint_core::graphics::{RequestedGraphicsAPI, RequestedOpenGLVersion};
 ///     eprintln!("Error selecting backend with OpenGL ES support: {err}");
 /// }
 /// ```
+#[derive(Default)]
 pub struct BackendSelector {
     requested_graphics_api: Option<RequestedGraphicsAPI>,
     backend: Option<String>,
     renderer: Option<String>,
     selected: bool,
+    #[cfg(feature = "unstable-winit-030")]
+    winit_window_attributes_hook: Option<
+        Box<
+            dyn Fn(
+                i_slint_backend_winit::winit::window::WindowAttributes,
+            ) -> i_slint_backend_winit::winit::window::WindowAttributes,
+        >,
+    >,
+    #[cfg(feature = "unstable-winit-030")]
+    winit_event_loop_builder: Option<i_slint_backend_winit::EventLoopBuilder>,
 }
 
 impl BackendSelector {
     /// Creates a new BackendSelector.
     #[must_use]
-    pub fn new() -> BackendSelector {
-        BackendSelector {
-            requested_graphics_api: None,
-            backend: None,
-            renderer: None,
-            selected: false,
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Adds the requirement to the selector that the backend must render with OpenGL ES
@@ -93,6 +106,73 @@ impl BackendSelector {
         self
     }
 
+    #[i_slint_core_macros::slint_doc]
+    /// Adds the requirement to the selector that the backend must render using [WGPU](http://wgpu.rs).
+    /// Use this when you integrate other WGPU-based renderers with a Slint UI.
+    ///
+    /// *Note*: This function is behind the [`unstable-wgpu-24` feature flag](slint:rust:slint/docs/cargo_features/#backends)
+    ///         and may be removed or changed in future minor releases, as new major WGPU releases become available.
+    ///
+    /// See also the [`slint::wgpu_24`](slint:rust:slint/wgpu_24) module.
+    #[cfg(feature = "unstable-wgpu-24")]
+    #[must_use]
+    pub fn require_wgpu_24(
+        mut self,
+        configuration: i_slint_core::graphics::wgpu_24::WGPUConfiguration,
+    ) -> Self {
+        self.requested_graphics_api = Some(RequestedGraphicsAPI::WGPU24(configuration));
+        self
+    }
+
+    #[i_slint_core_macros::slint_doc]
+    /// Configures this builder to use the specified winit hook that will be called before a Window is created.
+    ///
+    /// It can be used to adjust settings of window that will be created.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// let mut backend = slint::BackendSelector::new()
+    ///     .with_winit_window_attributes_hook(|attributes| attributes.with_content_protected(true))
+    ///     .select()
+    ///     .unwrap();
+    /// ```
+    ///
+    /// *Note*: This function is behind the [`unstable-winit-030` feature flag](slint:rust:slint/docs/cargo_features/#backends)
+    ///         and may be removed or changed in future minor releases, as new major Winit releases become available.
+    ///
+    /// See also the [`slint::winit_030`](slint:rust:slint/winit_030) module
+    #[must_use]
+    #[cfg(feature = "unstable-winit-030")]
+    pub fn with_winit_window_attributes_hook(
+        mut self,
+        hook: impl Fn(
+                i_slint_backend_winit::winit::window::WindowAttributes,
+            ) -> i_slint_backend_winit::winit::window::WindowAttributes
+            + 'static,
+    ) -> Self {
+        self.winit_window_attributes_hook = Some(Box::new(hook));
+        self
+    }
+
+    #[i_slint_core_macros::slint_doc]
+    /// Configures this builder to use the specified winit event loop builder when creating the event
+    /// loop.
+    ///
+    /// *Note*: This function is behind the [`unstable-winit-030` feature flag](slint:rust:slint/docs/cargo_features/#backends)
+    ///         and may be removed or changed in future minor releases, as new major Winit releases become available.
+    ///
+    /// See also the [`slint::winit_030`](slint:rust:slint/winit_030) module
+    #[must_use]
+    #[cfg(feature = "unstable-winit-030")]
+    pub fn with_winit_event_loop_builder(
+        mut self,
+        event_loop_builder: i_slint_backend_winit::EventLoopBuilder,
+    ) -> Self {
+        self.winit_event_loop_builder = Some(event_loop_builder);
+        self
+    }
+
     /// Adds the requirement that the selected renderer must match the given name. This is
     /// equivalent to setting the `SLINT_BACKEND=name` environment variable and requires
     /// that the corresponding renderer feature is enabled. For example, to select the Skia renderer,
@@ -123,7 +203,32 @@ impl BackendSelector {
     fn select_internal(&mut self) -> Result<(), PlatformError> {
         self.selected = true;
 
-        let backend_name = self.backend.as_deref().unwrap_or(super::DEFAULT_BACKEND_NAME);
+        #[cfg(any(
+            feature = "i-slint-backend-qt",
+            feature = "i-slint-backend-winit",
+            feature = "i-slint-backend-linuxkms"
+        ))]
+        if self.backend.is_none() || self.renderer.is_none() {
+            let backend_config = std::env::var("SLINT_BACKEND").unwrap_or_default();
+            let backend_config = backend_config.to_lowercase();
+            let (backend, renderer) = super::parse_backend_env_var(backend_config.as_str());
+            if !backend.is_empty() {
+                self.backend.get_or_insert_with(|| backend.to_owned());
+            }
+            if !renderer.is_empty() {
+                self.renderer.get_or_insert_with(|| renderer.to_owned());
+            }
+        }
+
+        let backend_name = self.backend.as_deref().unwrap_or_else(|| {
+            // Only the winit backend supports graphics API requests right now, so prefer that over
+            // aborting.
+            #[cfg(feature = "i-slint-backend-winit")]
+            if self.requested_graphics_api.is_some() {
+                return "winit";
+            }
+            super::DEFAULT_BACKEND_NAME
+        });
 
         let backend: Box<dyn i_slint_core::platform::Platform> = match backend_name {
             #[cfg(all(feature = "i-slint-backend-linuxkms", target_os = "linux"))]
@@ -150,6 +255,18 @@ impl BackendSelector {
                     None => builder,
                 };
 
+                #[cfg(feature = "unstable-winit-030")]
+                let builder = match self.winit_window_attributes_hook.take() {
+                    Some(hook) => builder.with_window_attributes_hook(hook),
+                    None => builder,
+                };
+
+                #[cfg(feature = "unstable-winit-030")]
+                let builder = match self.winit_event_loop_builder.take() {
+                    Some(event_loop_builder) => builder.with_event_loop_builder(event_loop_builder),
+                    None => builder,
+                };
+
                 Box::new(builder.build()?)
             }
             #[cfg(feature = "i-slint-backend-qt")]
@@ -167,7 +284,7 @@ impl BackendSelector {
                 }
                 Box::new(i_slint_backend_qt::Backend::new())
             }
-            requested_backend @ _ => {
+            requested_backend => {
                 return Err(format!(
                     "{requested_backend} backend requested but it is not available"
                 )
@@ -175,8 +292,7 @@ impl BackendSelector {
             }
         };
 
-        i_slint_core::platform::set_platform(backend)
-            .map_err(|set_platform_error| PlatformError::SetPlatformError(set_platform_error))
+        i_slint_core::platform::set_platform(backend).map_err(PlatformError::SetPlatformError)
     }
 }
 

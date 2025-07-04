@@ -70,7 +70,7 @@ pub fn compile_paths(
                         Ok(binding) => binding,
                         Err(e) => {
                             diag.push_error(
-                                format!("Error parsing SVG commands ({e:?})"),
+                                format!("Error parsing SVG commands ({e})"),
                                 &commands_expr,
                             );
                             return;
@@ -101,15 +101,7 @@ pub fn compile_paths(
                 let element_name =
                     &child.borrow().base_type.as_builtin().native_class.class_name.clone();
 
-                if let Some(path_element) = element_types.get(element_name) {
-                    let element_type = match path_element {
-                        ElementType::Builtin(b) => b.clone(),
-                        _ => panic!(
-                            "Incorrect type registry -- expected built-in type for path element {}",
-                            element_name
-                        ),
-                    };
-
+                if let Some(element_type) = element_types.get(element_name).cloned() {
                     if child.borrow().repeated.is_some() {
                         diag.push_error(
                             "Path elements are not supported with `for`-`in` syntax, yet (https://github.com/slint-ui/slint/issues/754)".into(),
@@ -152,7 +144,7 @@ fn compile_path_from_string_literal(
     let path = builder.build();
 
     let event_enum = crate::typeregister::BUILTIN.with(|e| e.enums.PathEvent.clone());
-    let point_type = Type::Struct(Rc::new(Struct {
+    let point_type = Rc::new(Struct {
         fields: IntoIterator::into_iter([
             (SmolStr::new_static("x"), Type::Float32),
             (SmolStr::new_static("y"), Type::Float32),
@@ -161,7 +153,7 @@ fn compile_path_from_string_literal(
         name: Some("slint::private_api::Point".into()),
         node: None,
         rust_attributes: None,
-    }));
+    });
 
     let mut points = Vec::new();
     let events = path

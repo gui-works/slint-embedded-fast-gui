@@ -17,54 +17,31 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref || github.run_id }}
   cancel-in-progress: true
 
+env:
+    CARGO_INCREMENTAL: false
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 jobs:
-    format_lint_typecheck:
+    format_fix:
         runs-on: ubuntu-24.04
-        env:
-            CARGO_INCREMENTAL: false
+        timeout-minutes: 15
         steps:
             - uses: actions/checkout@v4
-            - uses: pnpm/action-setup@v4.0.0
+            - uses: jdx/mise-action@v2
               with:
-                version: 9.11.0
-            - uses: actions/setup-node@v4
-              with:
-                node-version: 20
-            - uses: ./.github/actions/install-linux-dependencies
-            - uses: ./.github/actions/setup-rust
-              with:
-                  toolchain: nightly
-                  components: rustfmt
-                  target: aarch64-linux-android
-            - name: Install wasm-pack
-              run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh    
-            - name: Setup Biome CLI
-              uses: biomejs/setup-biome@v2                  
-            - name: Rust format
-              run: cargo fmt --
-            - name: C++ format
-              run: find -iname \*.h -o -iname \*.cpp | xargs clang-format -i
-            - name: Run biome for top-level json config itself
-              run: biome format biome.json
-            - name: Format, Lint on npm projects
-              run: |
-                  pnpm install --frozen-lockfile
-                  pnpm format:fix
-                  pnpm lint
-            - name: Check license headers
-              run: cargo xtask check_license_headers --fix-it
+                log_level: debug
+            - name: Run fixes
+              run: mise run --force --jobs=1 'ci:autofix:fix'
             - name: Suggest format changes
-              uses: autofix-ci/action@ff86a557419858bb967097bfc916833f5647fa8c
-            - name: Build wasm-interpreter before type check
-              working-directory: tools/slintpad
-              run: pnpm build:wasm_interpreter
-            - name: Build wasm-lsp before type check
-              working-directory: editors/vscode
-              run: pnpm build:wasm_lsp
-            - name: Typecheck on npm projects
-              run: |
-                  pnpm type-check
-            - run: sudo apt-get install pipx
-            - run: pipx install reuse
-            - name: Check reuse compliance
-              run: cargo xtask check_reuse_compliance    
+              uses: autofix-ci/action@635ffb0c9798bd160680f18fd73371e355b85f27
+
+    lint_typecheck:
+        runs-on: ubuntu-24.04
+        timeout-minutes: 15
+        steps:
+            - uses: actions/checkout@v4
+            - uses: jdx/mise-action@v2
+              with:
+                log_level: debug
+            - name: Run lints
+              run: mise run --force --jobs=1 'ci:autofix:lint'

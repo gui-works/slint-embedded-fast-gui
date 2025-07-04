@@ -11,7 +11,7 @@ use i_slint_core::graphics::euclid::num::Zero;
 use i_slint_core::graphics::euclid::{self, Vector2D};
 use i_slint_core::graphics::ApproxEq;
 use i_slint_core::item_rendering::{
-    CachedRenderingData, ItemCache, ItemRenderer, RenderImage, RenderText,
+    CachedRenderingData, ItemCache, ItemRenderer, ItemRendererFeatures, RenderImage, RenderText,
 };
 use i_slint_core::items::{
     ImageFit, ImageRendering, ItemRc, Layer, Opacity, RenderingResult, TextStrokeStyle,
@@ -36,6 +36,7 @@ pub struct SkiaItemRenderer<'a> {
     pub canvas: &'a skia_safe::Canvas,
     pub scale_factor: ScaleFactor,
     pub window: &'a i_slint_core::api::Window,
+    surface: Option<&'a dyn crate::Surface>,
     state_stack: Vec<RenderState>,
     current_state: RenderState,
     image_cache: &'a ItemCache<Option<skia_safe::Image>>,
@@ -47,6 +48,7 @@ impl<'a> SkiaItemRenderer<'a> {
     pub fn new(
         canvas: &'a skia_safe::Canvas,
         window: &'a i_slint_core::api::Window,
+        surface: Option<&'a dyn crate::Surface>,
         image_cache: &'a ItemCache<Option<skia_safe::Image>>,
         path_cache: &'a ItemCache<Option<(Vector2D<f32, PhysicalPx>, skia_safe::Path)>>,
         box_shadow_cache: &'a mut SkiaBoxShadowCache,
@@ -55,6 +57,7 @@ impl<'a> SkiaItemRenderer<'a> {
             canvas,
             scale_factor: ScaleFactor::new(window.scale_factor()),
             window,
+            surface,
             state_stack: vec![],
             current_state: RenderState { alpha: 1.0, translation: Default::default() },
             image_cache,
@@ -121,7 +124,8 @@ impl<'a> SkiaItemRenderer<'a> {
             Brush::RadialGradient(g) => {
                 let (colors, pos): (Vec<_>, Vec<_>) =
                     g.stops().map(|s| (to_skia_color(&s.color), s.position)).unzip();
-                let circle_scale = width.max(height) / 2.;
+                let circle_scale =
+                    0.5 * (width.get() * width.get() + height.get() * height.get()).sqrt();
 
                 paint.set_dither(true);
 
@@ -132,7 +136,7 @@ impl<'a> SkiaItemRenderer<'a> {
                     Some(&*pos),
                     TileMode::Clamp,
                     skia_safe::gradient_shader::Flags::INTERPOLATE_COLORS_IN_PREMUL,
-                    skia_safe::Matrix::scale((circle_scale.get(), circle_scale.get()))
+                    skia_safe::Matrix::scale((circle_scale, circle_scale))
                         .post_translate((width.get() / 2., height.get() / 2.))
                         as &skia_safe::Matrix,
                 )
@@ -193,6 +197,7 @@ impl<'a> SkiaItemRenderer<'a> {
                 if tiling != Default::default() { ImageFit::Preserve } else { item.image_fit() },
                 self.scale_factor,
                 self.canvas,
+                self.surface,
             )
             .and_then(|skia_image| {
                 let brush = item.colorize();
@@ -295,7 +300,7 @@ impl<'a> SkiaItemRenderer<'a> {
             let children_rect = i_slint_core::properties::evaluate_no_tracking(|| {
                 item_rc.geometry().union(
                     &i_slint_core::item_rendering::item_children_bounding_rect(
-                        &item_rc.item_tree(),
+                        item_rc.item_tree(),
                         item_rc.index() as isize,
                         &current_clip,
                     ),
@@ -334,7 +339,8 @@ impl<'a> SkiaItemRenderer<'a> {
 
             let mut sub_renderer = SkiaItemRenderer::new(
                 canvas,
-                &self.window,
+                self.window,
+                self.surface,
                 self.image_cache,
                 self.path_cache,
                 self.box_shadow_cache,
@@ -342,27 +348,13 @@ impl<'a> SkiaItemRenderer<'a> {
 
             i_slint_core::item_rendering::render_item_children(
                 &mut sub_renderer,
-                &item_rc.item_tree(),
+                item_rc.item_tree(),
                 item_rc.index() as isize,
+                &WindowInner::from_pub(self.window).window_adapter(),
             );
 
             Some(surface.image_snapshot())
         })
-    }
-
-    /// Draws a `Rectangle` using the `GLItemRenderer`.
-    pub fn draw_rect(&mut self, size: LogicalSize, brush: Brush) {
-        let geometry = PhysicalRect::from(size * self.scale_factor);
-        if geometry.is_empty() {
-            return;
-        }
-
-        let paint =
-            match self.brush_to_paint(brush, geometry.width_length(), geometry.height_length()) {
-                Some(paint) => paint,
-                None => return,
-            };
-        self.canvas.draw_rect(to_skia_rect(&geometry), &paint);
     }
 
     fn pixel_align_origin(&self) -> Option<skia_safe::canvas::AutoRestoredCanvas<'_>> {
@@ -375,7 +367,7 @@ impl<'a> SkiaItemRenderer<'a> {
         target_point.x = target_point.x.round();
         target_point.y = target_point.y.round();
 
-        let restore_point = skia_safe::AutoCanvasRestore::guard(&self.canvas, true);
+        let restore_point = skia_safe::AutoCanvasRestore::guard(self.canvas, true);
 
         self.canvas.translate(device_to_local.map_point(target_point));
 
@@ -383,14 +375,28 @@ impl<'a> SkiaItemRenderer<'a> {
     }
 }
 
-impl<'a> ItemRenderer for SkiaItemRenderer<'a> {
+impl ItemRenderer for SkiaItemRenderer<'_> {
     fn draw_rectangle(
         &mut self,
-        rect: Pin<&i_slint_core::items::Rectangle>,
+        rect: Pin<&dyn i_slint_core::item_rendering::RenderRectangle>,
         _self_rc: &i_slint_core::items::ItemRc,
         size: LogicalSize,
+        _cache: &CachedRenderingData,
     ) {
-        self.draw_rect(size, rect.background());
+        let geometry = PhysicalRect::from(size * self.scale_factor);
+        if geometry.is_empty() {
+            return;
+        }
+
+        let paint = match self.brush_to_paint(
+            rect.background(),
+            geometry.width_length(),
+            geometry.height_length(),
+        ) {
+            Some(paint) => paint,
+            None => return,
+        };
+        self.canvas.draw_rect(to_skia_rect(&geometry), &paint);
     }
 
     fn draw_border_rectangle(
@@ -470,6 +476,16 @@ impl<'a> ItemRenderer for SkiaItemRenderer<'a> {
         }
     }
 
+    fn draw_window_background(
+        &mut self,
+        _rect: Pin<&dyn i_slint_core::item_rendering::RenderRectangle>,
+        _self_rc: &ItemRc,
+        _size: LogicalSize,
+        _cache: &CachedRenderingData,
+    ) {
+        // The background is drawn directly by FemtoVG renderer (via clear_color, if necessary).
+    }
+
     fn draw_image(
         &mut self,
         image: Pin<&dyn RenderImage>,
@@ -487,7 +503,7 @@ impl<'a> ItemRenderer for SkiaItemRenderer<'a> {
     fn draw_text(
         &mut self,
         text: Pin<&dyn RenderText>,
-        _self_rc: &i_slint_core::items::ItemRc,
+        self_rc: &i_slint_core::items::ItemRc,
         size: LogicalSize,
         _cache: &CachedRenderingData,
     ) {
@@ -500,7 +516,7 @@ impl<'a> ItemRenderer for SkiaItemRenderer<'a> {
 
         let string = text.text();
         let string = string.as_str();
-        let font_request = text.font_request(WindowInner::from_pub(self.window));
+        let font_request = text.font_request(self_rc);
 
         let paint = match self.brush_to_paint(text.color(), max_width, max_height) {
             Some(paint) => paint,
@@ -570,15 +586,15 @@ impl<'a> ItemRenderer for SkiaItemRenderer<'a> {
 
         match (stroke_style, stroke_layout) {
             (TextStrokeStyle::Outside, Some((stroke_layout, stroke_layout_top_left))) => {
-                stroke_layout.paint(&mut self.canvas, to_skia_point(stroke_layout_top_left));
-                layout.paint(&mut self.canvas, to_skia_point(layout_top_left));
+                stroke_layout.paint(self.canvas, to_skia_point(stroke_layout_top_left));
+                layout.paint(self.canvas, to_skia_point(layout_top_left));
             }
             (TextStrokeStyle::Center, Some((stroke_layout, stroke_layout_top_left))) => {
-                layout.paint(&mut self.canvas, to_skia_point(layout_top_left));
-                stroke_layout.paint(&mut self.canvas, to_skia_point(stroke_layout_top_left));
+                layout.paint(self.canvas, to_skia_point(layout_top_left));
+                stroke_layout.paint(self.canvas, to_skia_point(stroke_layout_top_left));
             }
             _ => {
-                layout.paint(&mut self.canvas, to_skia_point(layout_top_left));
+                layout.paint(self.canvas, to_skia_point(layout_top_left));
             }
         };
     }
@@ -586,7 +602,7 @@ impl<'a> ItemRenderer for SkiaItemRenderer<'a> {
     fn draw_text_input(
         &mut self,
         text_input: Pin<&i_slint_core::items::TextInput>,
-        _self_rc: &i_slint_core::items::ItemRc,
+        self_rc: &i_slint_core::items::ItemRc,
         size: LogicalSize,
     ) {
         let max_width = size.width_length() * self.scale_factor;
@@ -596,8 +612,7 @@ impl<'a> ItemRenderer for SkiaItemRenderer<'a> {
             return;
         }
 
-        let font_request =
-            text_input.font_request(&WindowInner::from_pub(&self.window).window_adapter());
+        let font_request = text_input.font_request(self_rc);
 
         let visual_representation = text_input.visual_representation(None);
         let paint =
@@ -641,7 +656,7 @@ impl<'a> ItemRenderer for SkiaItemRenderer<'a> {
             selection.as_ref(),
         );
 
-        layout.paint(&mut self.canvas, to_skia_point(layout_top_left));
+        layout.paint(self.canvas, to_skia_point(layout_top_left));
 
         if let Some(cursor_position) = visual_representation.cursor_position {
             let cursor_rect = super::textlayout::cursor_rect(
@@ -727,17 +742,24 @@ impl<'a> ItemRenderer for SkiaItemRenderer<'a> {
 
         self.canvas.translate((physical_offset.x, physical_offset.y));
 
+        let anti_alias = path.anti_alias();
+
         if let Some(mut fill_paint) =
             self.brush_to_paint(path.fill(), geometry.width_length(), geometry.height_length())
         {
-            fill_paint.set_anti_alias(true);
+            fill_paint.set_anti_alias(anti_alias);
             self.canvas.draw_path(&skpath, &fill_paint);
         }
         if let Some(mut border_paint) =
             self.brush_to_paint(path.stroke(), geometry.width_length(), geometry.height_length())
         {
-            border_paint.set_anti_alias(true);
+            border_paint.set_anti_alias(anti_alias);
             border_paint.set_stroke_width((path.stroke_width() * self.scale_factor).get());
+            border_paint.set_stroke_cap(match path.stroke_line_cap() {
+                i_slint_core::items::LineCap::Butt => skia_safe::PaintCap::Butt,
+                i_slint_core::items::LineCap::Round => skia_safe::PaintCap::Round,
+                i_slint_core::items::LineCap::Square => skia_safe::PaintCap::Square,
+            });
             border_paint.set_stroke(true);
             self.canvas.draw_path(&skpath, &border_paint);
         }
@@ -922,6 +944,7 @@ impl<'a> ItemRenderer for SkiaItemRenderer<'a> {
             ImageFit::Fill,
             self.scale_factor,
             self.canvas,
+            self.surface,
         );
 
         let skia_image = match skia_image {
@@ -956,10 +979,13 @@ impl<'a> ItemRenderer for SkiaItemRenderer<'a> {
             self.state_stack.push(self.current_state);
             self.current_state.alpha = 1.0;
 
+            let window_adapter = WindowInner::from_pub(self.window).window_adapter();
+
             i_slint_core::item_rendering::render_item_children(
                 self,
-                &item_rc.item_tree(),
+                item_rc.item_tree(),
                 item_rc.index() as isize,
+                &window_adapter,
             );
 
             self.current_state = self.state_stack.pop().unwrap();
@@ -998,10 +1024,10 @@ pub fn to_skia_rect(rect: &PhysicalRect) -> skia_safe::Rect {
 
 pub fn to_skia_rrect(rect: &PhysicalRect, radius: &PhysicalBorderRadius) -> skia_safe::RRect {
     if let Some(radius) = radius.as_uniform() {
-        skia_safe::RRect::new_rect_xy(to_skia_rect(&rect), radius, radius)
+        skia_safe::RRect::new_rect_xy(to_skia_rect(rect), radius, radius)
     } else {
         skia_safe::RRect::new_rect_radii(
-            to_skia_rect(&rect),
+            to_skia_rect(rect),
             &[
                 skia_safe::Point::new(radius.top_left, radius.top_left),
                 skia_safe::Point::new(radius.top_right, radius.top_right),
@@ -1010,6 +1036,10 @@ pub fn to_skia_rrect(rect: &PhysicalRect, radius: &PhysicalBorderRadius) -> skia
             ],
         )
     }
+}
+
+impl ItemRendererFeatures for SkiaItemRenderer<'_> {
+    const SUPPORTS_TRANSFORMATIONS: bool = true;
 }
 
 pub fn to_skia_point(point: PhysicalPoint) -> skia_safe::Point {

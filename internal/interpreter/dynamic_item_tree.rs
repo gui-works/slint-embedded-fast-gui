@@ -8,7 +8,7 @@ use core::ptr::NonNull;
 use dynamic_type::{Instance, InstanceBox};
 use i_slint_compiler::expression_tree::{Expression, NamedReference};
 use i_slint_compiler::langtype::Type;
-use i_slint_compiler::object_tree::ElementRc;
+use i_slint_compiler::object_tree::{ElementRc, TransitionDirection};
 use i_slint_compiler::{diagnostics::BuildDiagnostics, object_tree::PropertyDeclaration};
 use i_slint_compiler::{generator, object_tree, parser, CompilerConfiguration};
 use i_slint_core::accessibility::{
@@ -17,10 +17,8 @@ use i_slint_core::accessibility::{
 use i_slint_core::api::LogicalPosition;
 use i_slint_core::component_factory::ComponentFactory;
 use i_slint_core::item_tree::{
-    IndexRange, ItemTree, ItemTreeRef, ItemTreeRefPin, ItemTreeVTable, ItemTreeWeak,
-};
-use i_slint_core::item_tree::{
-    ItemRc, ItemTreeNode, ItemVisitorRefMut, ItemVisitorVTable, ItemWeak, TraversalOrder,
+    IndexRange, ItemRc, ItemTree, ItemTreeNode, ItemTreeRef, ItemTreeRefPin, ItemTreeVTable,
+    ItemTreeWeak, ItemVisitorRefMut, ItemVisitorVTable, ItemWeak, TraversalOrder,
     VisitChildrenResult,
 };
 use i_slint_core::items::{
@@ -28,8 +26,8 @@ use i_slint_core::items::{
 };
 use i_slint_core::layout::{BoxLayoutCellData, LayoutInfo, Orientation};
 use i_slint_core::lengths::{LogicalLength, LogicalRect};
-use i_slint_core::model::RepeatedItemTree;
-use i_slint_core::model::Repeater;
+use i_slint_core::menus::MenuFromItemTree;
+use i_slint_core::model::{ModelRc, RepeatedItemTree, Repeater};
 use i_slint_core::platform::PlatformError;
 use i_slint_core::properties::{ChangeTracker, InterpolatedPropertyValue};
 use i_slint_core::rtti::{self, AnimatedBindingKind, FieldOffset, PropertyInfo};
@@ -50,6 +48,8 @@ use std::{pin::Pin, rc::Rc};
 pub const SPECIAL_PROPERTY_INDEX: &str = "$index";
 pub const SPECIAL_PROPERTY_MODEL_DATA: &str = "$model_data";
 
+pub(crate) type CallbackHandler = Box<dyn Fn(&[Value]) -> Value>;
+
 pub struct ItemTreeBox<'id> {
     instance: InstanceBox<'id>,
     description: Rc<ItemTreeDescription<'id>>,
@@ -57,7 +57,7 @@ pub struct ItemTreeBox<'id> {
 
 impl<'id> ItemTreeBox<'id> {
     /// Borrow this instance as a `Pin<ItemTreeRef>`
-    pub fn borrow(&self) -> ItemTreeRefPin {
+    pub fn borrow(&self) -> ItemTreeRefPin<'_> {
         self.borrow_instance().borrow()
     }
 
@@ -81,7 +81,7 @@ impl<'id> ItemTreeBox<'id> {
     }
 }
 
-type ErasedItemTreeBoxWeak = vtable::VWeak<ItemTreeVTable, ErasedItemTreeBox>;
+pub(crate) type ErasedItemTreeBoxWeak = vtable::VWeak<ItemTreeVTable, ErasedItemTreeBox>;
 
 pub(crate) struct ItemWithinItemTree {
     offset: usize,
@@ -94,7 +94,7 @@ impl ItemWithinItemTree {
     pub(crate) unsafe fn item_from_item_tree(
         &self,
         mem: *const u8,
-    ) -> Pin<vtable::VRef<ItemVTable>> {
+    ) -> Pin<vtable::VRef<'_, ItemVTable>> {
         Pin::new_unchecked(vtable::VRef::from_raw(
             NonNull::from(self.rtti.vtable),
             NonNull::new(mem.add(self.offset) as _).unwrap(),
@@ -118,6 +118,8 @@ pub(crate) struct RepeaterWithinItemTree<'par_id, 'sub_id> {
     pub(crate) model: Expression,
     /// Offset of the `Repeater`
     offset: FieldOffset<Instance<'par_id>, Repeater<ErasedItemTreeBox>>,
+    /// Whether this is a `if` or a `for`
+    is_conditional: bool,
 }
 
 impl RepeatedItemTree for ErasedItemTreeBox {
@@ -139,11 +141,7 @@ impl RepeatedItemTree for ErasedItemTreeBox {
         self.run_setup_code();
     }
 
-    fn listview_layout(
-        self: Pin<&Self>,
-        offset_y: &mut LogicalLength,
-        viewport_width: Pin<&Property<LogicalLength>>,
-    ) {
+    fn listview_layout(self: Pin<&Self>, offset_y: &mut LogicalLength) -> LogicalLength {
         generativity::make_guard!(guard);
         let s = self.unerase(guard);
 
@@ -157,7 +155,7 @@ impl RepeatedItemTree for ErasedItemTreeBox {
         )
         .expect("cannot set y");
 
-        let h: f32 = crate::eval::load_property(
+        let h: LogicalLength = crate::eval::load_property(
             s.borrow_instance(),
             &geom.height.element(),
             geom.height.name(),
@@ -166,22 +164,8 @@ impl RepeatedItemTree for ErasedItemTreeBox {
         .try_into()
         .expect("height not the right type");
 
-        let w: f32 = crate::eval::load_property(
-            s.borrow_instance(),
-            &geom.width.element(),
-            geom.width.name(),
-        )
-        .expect("missing width")
-        .try_into()
-        .expect("width not the right type");
-
-        let h = LogicalLength::new(h);
-        let w = LogicalLength::new(w);
         *offset_y += h;
-        let vp_w = viewport_width.get();
-        if vp_w < w {
-            viewport_width.set(w);
-        }
+        LogicalLength::new(self.borrow().as_ref().layout_info(Orientation::Horizontal).min)
     }
 
     fn box_layout_data(self: Pin<&Self>, o: Orientation) -> BoxLayoutCellData {
@@ -203,11 +187,11 @@ impl ItemTree for ErasedItemTreeBox {
         self.borrow().as_ref().layout_info(orientation)
     }
 
-    fn get_item_tree(self: Pin<&Self>) -> Slice<ItemTreeNode> {
+    fn get_item_tree(self: Pin<&Self>) -> Slice<'_, ItemTreeNode> {
         get_item_tree(self.get_ref().borrow())
     }
 
-    fn get_item_ref(self: Pin<&Self>, index: u32) -> Pin<ItemRef> {
+    fn get_item_ref(self: Pin<&Self>, index: u32) -> Pin<ItemRef<'_>> {
         // We're having difficulties transferring the lifetime to a pinned reference
         // to the other ItemTreeVTable with the same life time. So skip the vtable
         // indirection and call our implementation directly.
@@ -305,8 +289,6 @@ pub(crate) struct ComponentExtraData {
     pub(crate) globals: OnceCell<crate::global_component::GlobalStorage>,
     pub(crate) self_weak: OnceCell<ErasedItemTreeBoxWeak>,
     pub(crate) embedding_position: OnceCell<(ItemTreeWeak, u32)>,
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) canvas_id: OnceCell<String>,
 }
 
 struct ErasedRepeaterWithinComponent<'id>(RepeaterWithinItemTree<'id, 'static>);
@@ -424,14 +406,18 @@ pub struct ItemTreeDescription<'id> {
 
     /// The type loader, which will be available only on the top-most `ItemTreeDescription`.
     /// All other `ItemTreeDescription`s have `None` here.
-    #[cfg(feature = "highlight")]
+    #[cfg(feature = "internal-highlight")]
     pub(crate) type_loader:
         std::cell::OnceCell<std::rc::Rc<i_slint_compiler::typeloader::TypeLoader>>,
     /// The type loader, which will be available only on the top-most `ItemTreeDescription`.
     /// All other `ItemTreeDescription`s have `None` here.
-    #[cfg(feature = "highlight")]
+    #[cfg(feature = "internal-highlight")]
     pub(crate) raw_type_loader:
         std::cell::OnceCell<Option<std::rc::Rc<i_slint_compiler::typeloader::TypeLoader>>>,
+
+    pub(crate) debug_handler: std::cell::RefCell<
+        Rc<dyn Fn(Option<&i_slint_compiler::diagnostics::SourceLocation>, &str)>,
+    >,
 }
 
 #[derive(Clone, derive_more::From)]
@@ -450,7 +436,13 @@ impl PopupMenuDescription {
 
 fn internal_properties_to_public<'a>(
     prop_iter: impl Iterator<Item = (&'a SmolStr, &'a PropertyDeclaration)> + 'a,
-) -> impl Iterator<Item = (SmolStr, i_slint_compiler::langtype::Type)> + 'a {
+) -> impl Iterator<
+    Item = (
+        SmolStr,
+        i_slint_compiler::langtype::Type,
+        i_slint_compiler::object_tree::PropertyVisibility,
+    ),
+> + 'a {
     prop_iter.filter(|(_, v)| v.expose_in_public_api).map(|(s, v)| {
         let name = v
             .node
@@ -461,7 +453,7 @@ fn internal_properties_to_public<'a>(
             })
             .map(|n| n.to_smolstr())
             .unwrap_or_else(|| s.to_smolstr());
-        (name, v.property_type.clone())
+        (name, v.property_type.clone(), v.visibility)
     })
 }
 
@@ -470,15 +462,13 @@ pub enum WindowOptions {
     #[default]
     CreateNewWindow,
     UseExistingWindow(WindowAdapterRc),
-    #[cfg(target_arch = "wasm32")]
-    CreateWithCanvasId(String),
     Embed {
         parent_item_tree: ItemTreeWeak,
         parent_item_tree_index: u32,
     },
 }
 
-impl<'id> ItemTreeDescription<'id> {
+impl ItemTreeDescription<'_> {
     /// The name of this Component as written in the .slint file
     pub fn id(&self) -> &str {
         self.original.id.as_str()
@@ -489,7 +479,13 @@ impl<'id> ItemTreeDescription<'id> {
     /// We try to preserve the dashes and underscore as written in the property declaration
     pub fn properties(
         &self,
-    ) -> impl Iterator<Item = (SmolStr, i_slint_compiler::langtype::Type)> + '_ {
+    ) -> impl Iterator<
+        Item = (
+            SmolStr,
+            i_slint_compiler::langtype::Type,
+            i_slint_compiler::object_tree::PropertyVisibility,
+        ),
+    > + '_ {
         internal_properties_to_public(self.public_properties.iter())
     }
 
@@ -507,10 +503,18 @@ impl<'id> ItemTreeDescription<'id> {
     pub fn global_properties(
         &self,
         name: &str,
-    ) -> Option<impl Iterator<Item = (SmolStr, i_slint_compiler::langtype::Type)> + '_> {
+    ) -> Option<
+        impl Iterator<
+                Item = (
+                    SmolStr,
+                    i_slint_compiler::langtype::Type,
+                    i_slint_compiler::object_tree::PropertyVisibility,
+                ),
+            > + '_,
+    > {
         let g = self.compiled_globals.as_ref().expect("Root component should have globals");
         g.exported_globals_by_name
-            .get(crate::normalize_identifier(name).as_ref())
+            .get(&crate::normalize_identifier(name))
             .and_then(|global_idx| g.compiled_globals.get(*global_idx))
             .map(|global| internal_properties_to_public(global.public_properties()))
     }
@@ -568,7 +572,6 @@ impl<'id> ItemTreeDescription<'id> {
     ///
     /// Returns an error if the instance does not corresponds to this ItemTreeDescription,
     /// or if the property with this name does not exist in this component
-    #[allow(unused)]
     pub fn set_binding(
         &self,
         component: ItemTreeRefPin,
@@ -624,7 +627,7 @@ impl<'id> ItemTreeDescription<'id> {
         &self,
         component: Pin<ItemTreeRef>,
         name: &str,
-        handler: Box<dyn Fn(&[Value]) -> Value>,
+        handler: CallbackHandler,
     ) -> Result<(), ()> {
         if !core::ptr::eq((&self.ct) as *const _, component.get_vtable() as *const _) {
             return Err(());
@@ -640,33 +643,8 @@ impl<'id> ItemTreeDescription<'id> {
             generativity::make_guard!(guard);
             // Safety: we just verified that the component has the right vtable
             let c = unsafe { InstanceRef::from_pin_ref(component, guard) };
-            generativity::make_guard!(guard);
-            let element = alias.element();
-            match eval::enclosing_component_instance_for_element(
-                &element,
-                &eval::ComponentInstance::InstanceRef(c),
-                guard,
-            ) {
-                eval::ComponentInstance::InstanceRef(enclosing_component) => {
-                    let description = enclosing_component.description;
-                    let item_info = &description.items[element.borrow().id.as_str()];
-                    let item =
-                        unsafe { item_info.item_from_item_tree(enclosing_component.as_ptr()) };
-                    if let Some(callback) = item_info.rtti.callbacks.get(alias.name().as_str()) {
-                        callback.set_handler(item, handler)
-                    } else if let Some(callback_offset) =
-                        description.custom_callbacks.get(alias.name())
-                    {
-                        let callback = callback_offset.apply(&*enclosing_component.instance);
-                        callback.set_handler(handler)
-                    } else {
-                        return Err(());
-                    }
-                }
-                eval::ComponentInstance::GlobalComponent(glob) => {
-                    return glob.as_ref().set_callback_handler(alias.name(), handler);
-                }
-            }
+            let inst = eval::ComponentInstance::InstanceRef(c);
+            eval::set_callback_handler(&inst, &alias.element(), alias.name(), handler)?
         } else {
             let x = self.custom_callbacks.get(name).ok_or(())?;
             let sig = x.apply(unsafe { &*(component.as_ptr() as *const dynamic_type::Instance) });
@@ -725,8 +703,21 @@ impl<'id> ItemTreeDescription<'id> {
         let g = extra_data.globals.get().unwrap().get(global_name).clone();
         g.ok_or(())
     }
+
+    pub fn recursively_set_debug_handler(
+        &self,
+        handler: Rc<dyn Fn(Option<&i_slint_compiler::diagnostics::SourceLocation>, &str)>,
+    ) {
+        *self.debug_handler.borrow_mut() = handler.clone();
+
+        for r in &self.repeater {
+            generativity::make_guard!(guard);
+            r.unerase(guard).item_tree_to_repeat.recursively_set_debug_handler(handler.clone());
+        }
+    }
 }
 
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 extern "C" fn visit_children_item(
     component: ItemTreeRefPin,
     index: isize,
@@ -875,7 +866,7 @@ pub async fn load(
     }
 
     let diag = BuildDiagnostics::default();
-    #[cfg(feature = "highlight")]
+    #[cfg(feature = "internal-highlight")]
     let (path, mut diag, loader, raw_type_loader) =
         i_slint_compiler::load_root_file_with_raw_type_loader(
             &path,
@@ -885,7 +876,7 @@ pub async fn load(
             compiler_config,
         )
         .await;
-    #[cfg(not(feature = "highlight"))]
+    #[cfg(not(feature = "internal-highlight"))]
     let (path, mut diag, loader) =
         i_slint_compiler::load_root_file(&path, &path, source, diag, compiler_config).await;
     if diag.has_errors() {
@@ -899,9 +890,9 @@ pub async fn load(
         };
     }
 
-    #[cfg(feature = "highlight")]
+    #[cfg(feature = "internal-highlight")]
     let loader = Rc::new(loader);
-    #[cfg(feature = "highlight")]
+    #[cfg(feature = "internal-highlight")]
     let raw_type_loader = raw_type_loader.map(Rc::new);
 
     let doc = loader.get_document(&path).unwrap();
@@ -934,7 +925,7 @@ pub async fn load(
             false,
             guard,
         );
-        #[cfg(feature = "highlight")]
+        #[cfg(feature = "internal-highlight")]
         {
             let _ = it.type_loader.set(loader.clone());
             let _ = it.raw_type_loader.set(raw_type_loader.clone());
@@ -1006,7 +997,10 @@ fn generate_rtti() -> HashMap<&'static str, Rc<ItemRTTI>> {
             rtti_for::<Rotate>(),
             rtti_for::<Opacity>(),
             rtti_for::<Layer>(),
+            rtti_for::<DragArea>(),
+            rtti_for::<DropArea>(),
             rtti_for::<ContextMenu>(),
+            rtti_for::<MenuItem>(),
         ]
         .iter()
         .cloned(),
@@ -1044,7 +1038,7 @@ pub(crate) fn generate_item_tree<'id>(
     //dbg!(&*component.root_element.borrow());
 
     thread_local! {
-        static RTTI: Lazy<HashMap<&'static str, Rc<ItemRTTI>>> = Lazy::new(|| generate_rtti());
+        static RTTI: Lazy<HashMap<&'static str, Rc<ItemRTTI>>> = Lazy::new(generate_rtti);
     }
 
     struct TreeBuilder<'id> {
@@ -1059,7 +1053,7 @@ pub(crate) fn generate_item_tree<'id>(
         change_callbacks: Vec<(NamedReference, Expression)>,
         popup_menu_description: PopupMenuDescription,
     }
-    impl<'id> generator::ItemTreeBuilder for TreeBuilder<'id> {
+    impl generator::ItemTreeBuilder for TreeBuilder<'_> {
         type SubComponentState = ();
 
         fn push_repeated_item(
@@ -1075,6 +1069,7 @@ pub(crate) fn generate_item_tree<'id>(
             let base_component = item.base_type.as_component();
             self.repeater_names.insert(item.id.clone(), self.repeater.len());
             generativity::make_guard!(guard);
+            let repeated_element_info = item.repeated.as_ref().unwrap();
             self.repeater.push(
                 RepeaterWithinItemTree {
                     item_tree_to_repeat: generate_item_tree(
@@ -1085,22 +1080,11 @@ pub(crate) fn generate_item_tree<'id>(
                         guard,
                     ),
                     offset: self.type_builder.add_field_type::<Repeater<ErasedItemTreeBox>>(),
-                    model: item.repeated.as_ref().unwrap().model.clone(),
+                    model: repeated_element_info.model.clone(),
+                    is_conditional: repeated_element_info.is_conditional_element,
                 }
                 .into(),
             );
-        }
-
-        fn push_component_placeholder_item(
-            &mut self,
-            item: &i_slint_compiler::object_tree::ElementRc,
-            container_count: u32,
-            parent_index: u32,
-            _component_state: &Self::SubComponentState,
-        ) {
-            self.tree_array
-                .push(ItemTreeNode::DynamicTree { index: container_count, parent_index });
-            self.original_elements.push(item.clone());
         }
 
         fn push_native_item(
@@ -1240,14 +1224,14 @@ pub(crate) fn generate_item_tree<'id>(
             Type::Bool => property_info::<bool>(),
             Type::ComponentFactory => property_info::<ComponentFactory>(),
             Type::Struct(s)
-                if s.name.as_ref().map_or(false, |name| name.ends_with("::StateInfo")) =>
+                if s.name.as_ref().is_some_and(|name| name.ends_with("::StateInfo")) =>
             {
                 property_info::<i_slint_core::properties::StateInfo>()
             }
             Type::Struct(_) => property_info::<Value>(),
             Type::Array(_) => property_info::<Value>(),
             Type::Easing => property_info::<i_slint_core::animations::EasingCurve>(),
-            Type::Percent => property_info::<f32>(),
+            Type::Percent => animated_property_info::<f32>(),
             Type::Enumeration(e) => {
                 macro_rules! match_enum_type {
                     ($( $(#[$enum_doc:meta])* enum $Name:ident { $($body:tt)* })*) => {
@@ -1276,7 +1260,7 @@ pub(crate) fn generate_item_tree<'id>(
             | Type::Model
             | Type::PathData
             | Type::UnitProduct(_)
-            | Type::ElementReference => panic!("bad type {:?}", ty),
+            | Type::ElementReference => panic!("bad type {ty:?}"),
         })
     }
 
@@ -1350,7 +1334,7 @@ pub(crate) fn generate_item_tree<'id>(
         .collect();
 
     // only the public exported component needs the public property list
-    let public_properties = if !component.parent_element.upgrade().is_some() {
+    let public_properties = if component.parent_element.upgrade().is_none() {
         component.root_element.borrow().property_declarations.clone()
     } else {
         Default::default()
@@ -1398,10 +1382,13 @@ pub(crate) fn generate_item_tree<'id>(
         timers,
         popup_ids: std::cell::RefCell::new(HashMap::new()),
         popup_menu_description: builder.popup_menu_description,
-        #[cfg(feature = "highlight")]
+        #[cfg(feature = "internal-highlight")]
         type_loader: std::cell::OnceCell::new(),
-        #[cfg(feature = "highlight")]
+        #[cfg(feature = "internal-highlight")]
         raw_type_loader: std::cell::OnceCell::new(),
+        debug_handler: std::cell::RefCell::new(Rc::new(|_, text| {
+            i_slint_core::debug_log!("{text}")
+        })),
     };
 
     Rc::new(t)
@@ -1443,16 +1430,22 @@ pub fn animation_for_property(
                     let state = eval::eval_expression(&state_ref, &mut context);
                     let state_info: i_slint_core::properties::StateInfo = state.try_into().unwrap();
                     for a in &animations {
-                        if (a.is_out && a.state_id == state_info.previous_state)
-                            || (!a.is_out && a.state_id == state_info.current_state)
-                        {
-                            return (
-                                eval::new_struct_with_bindings(
-                                    &a.animation.borrow().bindings,
-                                    &mut context,
-                                ),
-                                state_info.change_time,
-                            );
+                        let is_previous_state = a.state_id == state_info.previous_state;
+                        let is_current_state = a.state_id == state_info.current_state;
+                        match (a.direction, is_previous_state, is_current_state) {
+                            (TransitionDirection::In, false, true)
+                            | (TransitionDirection::Out, true, false)
+                            | (TransitionDirection::InOut, false, true)
+                            | (TransitionDirection::InOut, true, false) => {
+                                return (
+                                    eval::new_struct_with_bindings(
+                                        &a.animation.borrow().bindings,
+                                        &mut context,
+                                    ),
+                                    state_info.change_time,
+                                );
+                            }
+                            _ => {}
                         }
                     }
                     Default::default()
@@ -1532,11 +1525,6 @@ pub fn instantiate(
         }
         let extra_data = description.extra_data_offset.apply(instance_ref.as_ref());
         extra_data.globals.set(globals).ok().unwrap();
-
-        #[cfg(target_arch = "wasm32")]
-        if let Some(WindowOptions::CreateWithCanvasId(canvas_id)) = window_options {
-            extra_data.canvas_id.set(canvas_id.clone()).unwrap();
-        }
     }
 
     if let Some(WindowOptions::Embed { parent_item_tree, parent_item_tree_index }) = window_options
@@ -1605,7 +1593,7 @@ pub fn instantiate(
                 &elem.borrow().enclosing_component.upgrade().unwrap().root_element,
             );
             let elem = elem.borrow();
-            let is_const = binding.analysis.as_ref().map_or(false, |a| a.is_const);
+            let is_const = binding.analysis.as_ref().is_some_and(|a| a.is_const);
 
             let property_type = elem.lookup_property(prop_name).property_type;
             if let Type::Function { .. } = property_type {
@@ -1630,14 +1618,14 @@ pub fn instantiate(
                                 Box::new(make_callback_eval_closure(expr, &self_weak)),
                             );
                         } else {
-                            panic!("unknown callback {}", prop_name)
+                            panic!("unknown callback {prop_name}")
                         }
                     }
                 }
             } else if let Some(PropertiesWithinComponent { offset, prop: prop_info, .. }) =
                 description.custom_properties.get(prop_name).filter(|_| is_root)
             {
-                let is_state_info = matches!(property_type, Type::Struct (s) if s.name.as_ref().map_or(false, |name| name.ends_with("::StateInfo")));
+                let is_state_info = matches!(property_type, Type::Struct (s) if s.name.as_ref().is_some_and(|name| name.ends_with("::StateInfo")));
                 if is_state_info {
                     let prop = Pin::new_unchecked(
                         &*(instance_ref.as_ptr().add(*offset)
@@ -1724,14 +1712,24 @@ pub fn instantiate(
         let repeater = rep_in_comp.offset.apply_pin(instance_ref.instance);
         let expr = rep_in_comp.model.clone();
         let model_binding_closure = make_binding_eval_closure(expr, &self_weak);
-        repeater.set_model_binding(move || {
-            let m = model_binding_closure();
-            i_slint_core::model::ModelRc::new(crate::value_model::ValueModel::new(m))
-        });
+        if rep_in_comp.is_conditional {
+            let bool_model = Rc::new(crate::value_model::BoolModel::default());
+            repeater.set_model_binding(move || {
+                let v = model_binding_closure();
+                bool_model.set_value(v.try_into().expect("condition model is bool"));
+                ModelRc::from(bool_model.clone())
+            });
+        } else {
+            repeater.set_model_binding(move || {
+                let m = model_binding_closure();
+                if let Value::Model(m) = m {
+                    m.clone()
+                } else {
+                    ModelRc::new(crate::value_model::ValueModel::new(m))
+                }
+            });
+        }
     }
-
-    update_timers(instance_ref);
-
     self_rc
 }
 
@@ -1782,7 +1780,7 @@ impl ErasedItemTreeBox {
         )
     }
 
-    pub fn borrow(&self) -> ItemTreeRefPin {
+    pub fn borrow(&self) -> ItemTreeRefPin<'_> {
         // Safety: it is safe to access self.0 here because the 'id lifetime does not leak
         self.0.borrow()
     }
@@ -1839,6 +1837,7 @@ impl ErasedItemTreeBox {
                 .set(v)
                 .unwrap_or_else(|_| panic!("run_setup_code called twice?"));
         }
+        update_timers(instance_ref);
     }
 }
 impl<'id> From<ItemTreeBox<'id>> for ErasedItemTreeBox {
@@ -1861,6 +1860,7 @@ pub fn get_repeater_by_name<'a, 'id>(
     (rep_in_comp.offset.apply_pin(instance_ref.instance), rep_in_comp.item_tree_to_repeat.clone())
 }
 
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 extern "C" fn layout_info(component: ItemTreeRefPin, orientation: Orientation) -> LayoutInfo {
     generativity::make_guard!(guard);
     // This is fine since we can only be called with a component that with our vtable which is a ItemTreeDescription
@@ -1891,6 +1891,7 @@ extern "C" fn layout_info(component: ItemTreeRefPin, orientation: Orientation) -
     result
 }
 
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 unsafe extern "C" fn get_item_ref(component: ItemTreeRefPin, index: u32) -> Pin<ItemRef> {
     let tree = get_item_tree(component);
     match &tree[index as usize] {
@@ -1906,6 +1907,7 @@ unsafe extern "C" fn get_item_ref(component: ItemTreeRefPin, index: u32) -> Pin<
     }
 }
 
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 extern "C" fn get_subtree_range(component: ItemTreeRefPin, index: u32) -> IndexRange {
     generativity::make_guard!(guard);
     let instance_ref = unsafe { InstanceRef::from_pin_ref(component, guard) };
@@ -1935,6 +1937,7 @@ extern "C" fn get_subtree_range(component: ItemTreeRefPin, index: u32) -> IndexR
     }
 }
 
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 extern "C" fn get_subtree(
     component: ItemTreeRefPin,
     index: u32,
@@ -1973,6 +1976,7 @@ extern "C" fn get_subtree(
     }
 }
 
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 extern "C" fn get_item_tree(component: ItemTreeRefPin) -> Slice<ItemTreeNode> {
     generativity::make_guard!(guard);
     let instance_ref = unsafe { InstanceRef::from_pin_ref(component, guard) };
@@ -1980,6 +1984,7 @@ extern "C" fn get_item_tree(component: ItemTreeRefPin) -> Slice<ItemTreeNode> {
     unsafe { core::mem::transmute::<&[ItemTreeNode], &[ItemTreeNode]>(tree) }.into()
 }
 
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 extern "C" fn subtree_index(component: ItemTreeRefPin) -> usize {
     generativity::make_guard!(guard);
     let instance_ref = unsafe { InstanceRef::from_pin_ref(component, guard) };
@@ -1990,6 +1995,7 @@ extern "C" fn subtree_index(component: ItemTreeRefPin) -> usize {
     }
 }
 
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 unsafe extern "C" fn parent_node(component: ItemTreeRefPin, result: &mut ItemWeak) {
     generativity::make_guard!(guard);
     let instance_ref = InstanceRef::from_pin_ref(component, guard);
@@ -2029,6 +2035,7 @@ unsafe extern "C" fn parent_node(component: ItemTreeRefPin, result: &mut ItemWea
     }
 }
 
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 unsafe extern "C" fn embed_component(
     component: ItemTreeRefPin,
     parent_component: &ItemTreeWeak,
@@ -2059,6 +2066,7 @@ unsafe extern "C" fn embed_component(
     extra_data.embedding_position.set((parent_component.clone(), parent_item_tree_index)).is_ok()
 }
 
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 extern "C" fn item_geometry(component: ItemTreeRefPin, item_index: u32) -> LogicalRect {
     generativity::make_guard!(guard);
     let instance_ref = unsafe { InstanceRef::from_pin_ref(component, guard) };
@@ -2081,6 +2089,7 @@ extern "C" fn item_geometry(component: ItemTreeRefPin, item_index: u32) -> Logic
 
 // silence the warning despite `AccessibleRole` is a `#[non_exhaustive]` enum from another crate.
 #[allow(improper_ctypes_definitions)]
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 extern "C" fn accessible_role(component: ItemTreeRefPin, item_index: u32) -> AccessibleRole {
     generativity::make_guard!(guard);
     let instance_ref = unsafe { InstanceRef::from_pin_ref(component, guard) };
@@ -2099,6 +2108,7 @@ extern "C" fn accessible_role(component: ItemTreeRefPin, item_index: u32) -> Acc
     }
 }
 
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 extern "C" fn accessible_string_property(
     component: ItemTreeRefPin,
     item_index: u32,
@@ -2107,7 +2117,7 @@ extern "C" fn accessible_string_property(
 ) -> bool {
     generativity::make_guard!(guard);
     let instance_ref = unsafe { InstanceRef::from_pin_ref(component, guard) };
-    let prop_name = format!("accessible-{}", what);
+    let prop_name = format!("accessible-{what}");
     let nr = instance_ref.description.original_elements[item_index as usize]
         .borrow()
         .accessibility_props
@@ -2128,6 +2138,7 @@ extern "C" fn accessible_string_property(
     }
 }
 
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 extern "C" fn accessibility_action(
     component: ItemTreeRefPin,
     item_index: u32,
@@ -2152,6 +2163,7 @@ extern "C" fn accessibility_action(
         AccessibilityAction::Default => perform("accessible-action-default", &[]),
         AccessibilityAction::Decrement => perform("accessible-action-decrement", &[]),
         AccessibilityAction::Increment => perform("accessible-action-increment", &[]),
+        AccessibilityAction::Expand => perform("accessible-action-expand", &[]),
         AccessibilityAction::ReplaceSelectedText(_a) => {
             //perform("accessible-action-replace-selected-text", &[Value::String(a.clone())])
             i_slint_core::debug_log!("AccessibilityAction::ReplaceSelectedText not implemented in interpreter's accessibility_action");
@@ -2162,6 +2174,7 @@ extern "C" fn accessibility_action(
     };
 }
 
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 extern "C" fn supported_accessibility_actions(
     component: ItemTreeRefPin,
     item_index: u32,
@@ -2173,7 +2186,7 @@ extern "C" fn supported_accessibility_actions(
         .accessibility_props
         .0
         .keys()
-        .filter_map(|x| x.strip_prefix("acessible-action-"))
+        .filter_map(|x| x.strip_prefix("accessible-action-"))
         .fold(SupportedAccessibilityAction::default(), |acc, value| {
             SupportedAccessibilityAction::from_name(&i_slint_compiler::generator::to_pascal_case(
                 value,
@@ -2184,6 +2197,7 @@ extern "C" fn supported_accessibility_actions(
     val
 }
 
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 extern "C" fn item_element_infos(
     component: ItemTreeRefPin,
     item_index: u32,
@@ -2198,6 +2212,7 @@ extern "C" fn item_element_infos(
     true
 }
 
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 extern "C" fn window_adapter(
     component: ItemTreeRefPin,
     do_create: bool,
@@ -2212,6 +2227,7 @@ extern "C" fn window_adapter(
     }
 }
 
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 unsafe extern "C" fn drop_in_place(component: vtable::VRefMut<ItemTreeVTable>) -> vtable::Layout {
     let instance_ptr = component.as_ptr() as *mut Instance<'static>;
     let layout = (*instance_ptr).type_info().layout();
@@ -2219,6 +2235,7 @@ unsafe extern "C" fn drop_in_place(component: vtable::VRefMut<ItemTreeVTable>) -
     layout.into()
 }
 
+#[cfg_attr(not(feature = "ffi"), i_slint_core_macros::remove_extern)]
 unsafe extern "C" fn dealloc(_vtable: &ItemTreeVTable, ptr: *mut u8, layout: vtable::Layout) {
     std::alloc::dealloc(ptr, layout.try_into().unwrap());
 }
@@ -2308,12 +2325,7 @@ impl<'a, 'id> InstanceRef<'a, 'id> {
                 let extra_data = description.extra_data_offset.apply(instance);
                 let window_adapter = // We are the root: Create a window adapter
                     i_slint_backend_selector::with_platform(|_b| {
-                        #[cfg(not(target_arch = "wasm32"))]
                         return _b.create_window_adapter();
-                        #[cfg(target_arch = "wasm32")]
-                        i_slint_backend_winit::create_gl_window_with_canvas_id(
-                            extra_data.canvas_id.get().map_or("canvas", |s| s.as_str()),
-                        )
                     })?;
 
                 let comp_rc = extra_data.self_weak.get().unwrap().upgrade().unwrap();
@@ -2373,11 +2385,11 @@ impl<'a, 'id> InstanceRef<'a, 'id> {
 
     pub fn toplevel_instance<'id2>(
         &self,
-        guard: generativity::Guard<'id2>,
+        _guard: generativity::Guard<'id2>,
     ) -> InstanceRef<'a, 'id2> {
         generativity::make_guard!(guard2);
         if let Some(parent) = self.parent_instance(guard2) {
-            let tl = parent.toplevel_instance(guard);
+            let tl = parent.toplevel_instance(_guard);
             // assuming that the parent lives at least for lifetime 'a.
             // FIXME: this may not be sound
             unsafe { std::mem::transmute::<InstanceRef<'_, 'id2>, InstanceRef<'a, 'id2>>(tl) }
@@ -2429,6 +2441,7 @@ pub fn show_popup(
             pos,
             close_policy,
             parent_item,
+            false,
         ),
     );
     inst.run_setup_code();
@@ -2444,6 +2457,29 @@ pub fn close_popup(
     {
         WindowInner::from_pub(parent_window_adapter.window()).close_popup(current_id);
     }
+}
+
+pub fn make_menu_item_tree(
+    menu_item_tree: &Rc<object_tree::Component>,
+    enclosing_component: &InstanceRef,
+) -> MenuFromItemTree {
+    generativity::make_guard!(guard);
+    let mit_compiled = generate_item_tree(
+        menu_item_tree,
+        None,
+        enclosing_component.description.popup_menu_description.clone(),
+        false,
+        guard,
+    );
+    let mit_inst = instantiate(
+        mit_compiled.clone(),
+        Some(enclosing_component.self_weak().get().unwrap().clone()),
+        None,
+        None,
+        Default::default(),
+    );
+    mit_inst.run_setup_code();
+    MenuFromItemTree::new(vtable::VRc::into_dyn(mit_inst))
 }
 
 pub fn update_timers(instance: InstanceRef) {

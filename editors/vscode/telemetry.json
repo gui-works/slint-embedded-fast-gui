@@ -5,7 +5,7 @@
                 "classification": "EndUserPseudonymizedInformation",
                 "purpose": "FeatureInsight",
                 "comment": "The programming languages used in the project"
-            }			
+            }
 		},
         "lsp-panic": {
             "version": {
@@ -22,6 +22,23 @@
                 "classification": "CallstackOrException",
                 "purpose": "PerformanceAndHealth",
                 "comment": "The location of the panic in the slint-lsp code"
+            }
+        },
+        "live-preview-stats": {
+            "preview_opened": {
+                "classification": "PublicNonPersonalData",
+                "purpose": "PerformanceAndHealth",
+                "comment": "Times the live preview has been opened"
+            },
+            "property_changed": {
+                "classification": "PublicNonPersonalData",
+                "purpose": "PerformanceAndHealth",
+                "comment": "Times a value in the property tab has been changed"
+            },
+            "data_json_changed": {
+                "classification": "PublicNonPersonalData",
+                "purpose": "PerformanceAndHealth",
+                "comment": "Times a property in the data tab has been changed"
             }
         }
     },
@@ -51,7 +68,7 @@
             "purpose": "FeatureInsight",
             "comment": "The platform/OS the extension is running on"
         },
-        "commmon.language": {
+        "common.language": {
             "classification": "SystemMetaData",
             "purpose": "FeatureInsight",
             "comment": "The user's language as reported by VS Code"

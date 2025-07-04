@@ -161,7 +161,7 @@ fn lower_transitions_in_element(
 
             let t = TransitionPropertyAnimation {
                 state_id: *state,
-                is_out: transition.is_out,
+                direction: transition.direction,
                 animation,
             };
             props.entry(p).or_insert_with(|| (span.clone(), vec![])).1.push(t);
@@ -216,12 +216,14 @@ fn expression_for_property(element: &ElementRc, name: &str) -> ExpressionForProp
             let mut expr = e.expression.clone();
             if !matches!(expr, Expression::Invalid) {
                 if in_base {
-                    // Check that the expresison is valid in the new scope
+                    // Check that the expression is valid in the new scope
                     let mut has_invalid = false;
                     expr.visit_recursive_mut(&mut |ex| match ex {
-                        Expression::CallbackReference(nr, _)
-                        | Expression::PropertyReference(nr)
-                        | Expression::FunctionReference(nr, _) => {
+                        Expression::PropertyReference(nr)
+                        | Expression::FunctionCall {
+                            function: Callable::Callback(nr) | Callable::Function(nr),
+                            ..
+                        } => {
                             let e = nr.element();
                             if Rc::ptr_eq(&e, &elem) {
                                 *nr = NamedReference::new(element, nr.name().clone());

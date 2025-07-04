@@ -4,8 +4,12 @@
 export { Button } from "button.slint";
 export { NativeStyleMetrics as StyleMetrics }
 export { NativePalette as Palette }
+export { MenuBarItem, MenuBar, MenuFrame, MenuItem } from "menu.slint";
 
 export { ScrollView } from "scrollview.slint";
 export { LineEdit } from "lineedit.slint";
 
-export component ListItem inherits NativeStandardListViewItem {}
+export component ListItem inherits NativeStandardListViewItem {
+    accessible-role: list-item;
+    accessible-label: root.item.text;
+}

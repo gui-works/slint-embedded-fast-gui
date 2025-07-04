@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Display;
 use std::rc::Rc;
 
@@ -123,7 +123,7 @@ impl Display for Type {
                         if i > 0 {
                             write!(f, ",")?;
                         }
-                        write!(f, "{}", arg)?;
+                        write!(f, "{arg}")?;
                     }
                     write!(f, ")")?
                 }
@@ -137,7 +137,7 @@ impl Display for Type {
                     if i > 0 {
                         write!(f, ",")?;
                     }
-                    write!(f, "{}", arg)?;
+                    write!(f, "{arg}")?;
                 }
                 write!(f, ") -> {}", function.return_type)
             }
@@ -154,23 +154,8 @@ impl Display for Type {
             Type::Image => write!(f, "image"),
             Type::Bool => write!(f, "bool"),
             Type::Model => write!(f, "model"),
-            Type::Array(t) => write!(f, "[{}]", t),
-            Type::Struct(t) => {
-                if let Some(name) = &t.name {
-                    if let Some(separator_pos) = name.rfind("::") {
-                        // write the slint type and not the native type
-                        write!(f, "{}", &name[separator_pos + 2..])
-                    } else {
-                        write!(f, "{}", name)
-                    }
-                } else {
-                    write!(f, "{{ ")?;
-                    for (k, v) in &t.fields {
-                        write!(f, "{}: {},", k, v)?;
-                    }
-                    write!(f, "}}")
-                }
-            }
+            Type::Array(t) => write!(f, "[{t}]"),
+            Type::Struct(t) => write!(f, "{t}"),
             Type::PathData => write!(f, "pathdata"),
             Type::Easing => write!(f, "easing"),
             Type::Brush => write!(f, "brush"),
@@ -194,6 +179,12 @@ impl Display for Type {
             Type::ElementReference => write!(f, "element ref"),
             Type::LayoutCache => write!(f, "layout cache"),
         }
+    }
+}
+
+impl From<Rc<Struct>> for Type {
+    fn from(value: Rc<Struct>) -> Self {
+        Self::Struct(value)
     }
 }
 
@@ -338,11 +329,13 @@ impl Type {
 }
 
 #[derive(Debug, Clone)]
-
 pub enum BuiltinPropertyDefault {
     None,
     Expr(Expression),
-    Fn(fn(&crate::object_tree::ElementRc) -> Expression),
+    /// When materializing a property of this type, it will be initialized with an Expression that depends on the ElementRc
+    WithElement(fn(&crate::object_tree::ElementRc) -> Expression),
+    /// The property is actually not a property but a builtin function
+    BuiltinFunction(BuiltinFunction),
 }
 
 impl BuiltinPropertyDefault {
@@ -350,7 +343,10 @@ impl BuiltinPropertyDefault {
         match self {
             BuiltinPropertyDefault::None => None,
             BuiltinPropertyDefault::Expr(expression) => Some(expression.clone()),
-            BuiltinPropertyDefault::Fn(init_expr) => Some(init_expr(elem)),
+            BuiltinPropertyDefault::WithElement(init_expr) => Some(init_expr(elem)),
+            BuiltinPropertyDefault::BuiltinFunction(..) => {
+                unreachable!("can't get an expression for functions")
+            }
         }
     }
 }
@@ -376,6 +372,16 @@ impl BuiltinPropertyInfo {
 
     pub fn is_native_output(&self) -> bool {
         matches!(self.property_visibility, PropertyVisibility::InOut | PropertyVisibility::Output)
+    }
+}
+
+impl From<BuiltinFunction> for BuiltinPropertyInfo {
+    fn from(function: BuiltinFunction) -> Self {
+        Self {
+            ty: Type::Function(function.ty()),
+            default_value: BuiltinPropertyDefault::BuiltinFunction(function),
+            property_visibility: PropertyVisibility::Public,
+        }
     }
 }
 
@@ -420,14 +426,7 @@ impl ElementType {
                 match b.properties.get(resolved_name.as_ref()) {
                     None => {
                         if b.is_non_item_type {
-                            PropertyLookupResult {
-                                resolved_name,
-                                property_type: Type::Invalid,
-                                property_visibility: PropertyVisibility::Private,
-                                declared_pure: None,
-                                is_local_to_component: false,
-                                is_in_direct_base: false,
-                            }
+                            PropertyLookupResult::invalid(resolved_name)
                         } else {
                             crate::typeregister::reserved_property(name)
                         }
@@ -439,6 +438,10 @@ impl ElementType {
                         declared_pure: None,
                         is_local_to_component: false,
                         is_in_direct_base: false,
+                        builtin_function: match &p.default_value {
+                            BuiltinPropertyDefault::BuiltinFunction(f) => Some(f.clone()),
+                            _ => None,
+                        },
                     },
                 }
             }
@@ -457,16 +460,10 @@ impl ElementType {
                     declared_pure: None,
                     is_local_to_component: false,
                     is_in_direct_base: false,
+                    builtin_function: None,
                 }
             }
-            _ => PropertyLookupResult {
-                resolved_name: Cow::Borrowed(name),
-                property_type: Type::Invalid,
-                property_visibility: PropertyVisibility::Private,
-                declared_pure: None,
-                is_local_to_component: false,
-                is_in_direct_base: false,
-            },
+            _ => PropertyLookupResult::invalid(Cow::Borrowed(name)),
         }
     }
 
@@ -480,6 +477,7 @@ impl ElementType {
                         .borrow()
                         .property_declarations
                         .iter()
+                        .filter(|(_, d)| d.visibility != PropertyVisibility::Private)
                         .map(|(k, d)| (k.clone(), d.property_type.clone())),
                 );
                 r
@@ -495,29 +493,39 @@ impl ElementType {
     }
 
     /// This function looks at the element and checks whether it can have Elements of type `name` as children.
-    /// It returns an Error if that is not possible or an Option of the ElementType if it is.
-    /// The option is unset when the compiler does not know the type well enough to avoid further
-    /// probing.
-    pub fn accepts_child_element(
+    /// In addition to what `accepts_child_element` does, this method also probes the type of `name`.
+    /// It returns an Error if that is not possible or an `ElementType` if it is.
+    pub fn lookup_type_for_child_element(
         &self,
         name: &str,
         tr: &TypeRegister,
-    ) -> Result<Option<ElementType>, String> {
+    ) -> Result<ElementType, String> {
         match self {
-            Self::Component(component) if component.child_insertion_point.borrow().is_none() => {
-                let base_type = component.root_element.borrow().base_type.clone();
-                if base_type == tr.empty_type() {
-                    return Err(format!("'{}' cannot have children. Only components with @children can have children", component.id));
-                }
-                return base_type.accepts_child_element(name, tr);
+            Self::Component(component) => {
+                let base_type = match &*component.child_insertion_point.borrow() {
+                    Some(insert_in) => insert_in.parent.borrow().base_type.clone(),
+                    None => {
+                        let base_type = component.root_element.borrow().base_type.clone();
+                        if base_type == tr.empty_type() {
+                            return Err(format!("'{}' cannot have children. Only components with @children can have children", component.id));
+                        }
+                        base_type
+                    }
+                };
+                base_type.lookup_type_for_child_element(name, tr)
             }
             Self::Builtin(builtin) => {
-                if let Some(child_type) = builtin.additional_accepted_child_types.get(name) {
-                    return Ok(Some(child_type.clone()));
-                }
                 if builtin.disallow_global_types_as_child_elements {
+                    if let Some(child_type) = builtin.additional_accepted_child_types.get(name) {
+                        return Ok(child_type.clone().into());
+                    } else if builtin.additional_accept_self && name == builtin.native_class.class_name {
+                        return Ok(builtin.clone().into());
+                    }
                     let mut valid_children: Vec<_> =
                         builtin.additional_accepted_child_types.keys().cloned().collect();
+                    if builtin.additional_accept_self {
+                        valid_children.push(builtin.native_class.class_name.clone());
+                    }
                     valid_children.sort();
 
                     let err = if valid_children.is_empty() {
@@ -530,72 +538,37 @@ impl ElementType {
                             valid_children.join(" ")
                         )
                     };
-
                     return Err(err);
                 }
+                let err = match tr.lookup_element(name) {
+                    Err(e) => e,
+                    Ok(t) => {
+                        if !tr.expose_internal_types
+                            && matches!(&t, Self::Builtin(e) if e.is_internal)
+                        {
+                            format!("Unknown element '{name}'. (The type exists as an internal type, but cannot be accessed in this scope)")
+                        } else {
+                            return Ok(t);
+                        }
+                    }
+                };
+                if let Some(child_type) = builtin.additional_accepted_child_types.get(name) {
+                    return Ok(child_type.clone().into());
+                } else if builtin.additional_accept_self && name == builtin.native_class.class_name {
+                    return Ok(builtin.clone().into());
+                }
+                match tr.lookup(name) {
+                    Type::Invalid => Err(err),
+                    ty => Err(format!("'{ty}' cannot be used as an element")),
+                }
             }
-            _ => {}
-        };
-        Ok(None)
-    }
-
-    /// This function looks at the element and checks whether it can have Elements of type `name` as children.
-    /// In addition to what `accepts_child_element` does, this method also probes the type of `name`.
-    /// It returns an Error if that is not possible or an `ElementType` if it is.
-    pub fn lookup_type_for_child_element(
-        &self,
-        name: &str,
-        tr: &TypeRegister,
-    ) -> Result<ElementType, String> {
-        if let Some(ct) = self.accepts_child_element(name, tr)? {
-            return Ok(ct);
-        }
-
-        tr.lookup_element(name).and_then(|t| {
-            if !tr.expose_internal_types && matches!(&t, Self::Builtin(e) if e.is_internal) {
-                Err(format!("Unknown element '{}'. (The type exist as an internal type, but cannot be accessed in this scope)", name))
-            } else {
-                Ok(t)
-            }
-        }).map_err(|s| {
-            match tr.lookup(name)  {
-                Type::Invalid => s,
-                ty => format!("'{ty}' cannot be used as an element")
-            }
-        })
-    }
-
-    pub fn lookup_member_function(&self, name: &str) -> Option<BuiltinFunction> {
-        match self {
-            Self::Builtin(builtin) => builtin
-                .member_functions
-                .get(name)
-                .cloned()
-                .or_else(|| crate::typeregister::reserved_member_function(name)),
-            Self::Component(component) => {
-                component.root_element.borrow().base_type.lookup_member_function(name)
-            }
-            _ => None,
-        }
-    }
-
-    pub fn collect_contextual_types(
-        &self,
-        context_restricted_types: &mut HashMap<SmolStr, HashSet<SmolStr>>,
-    ) {
-        let builtin = match self {
-            Self::Builtin(ty) => ty,
-            _ => return,
-        };
-        for (accepted_child_type_name, accepted_child_type) in
-            builtin.additional_accepted_child_types.iter()
-        {
-            context_restricted_types
-                .entry(accepted_child_type_name.clone())
-                .or_default()
-                .insert(builtin.native_class.class_name.clone());
-
-            accepted_child_type.collect_contextual_types(context_restricted_types);
+            _ => tr.lookup_element(name).and_then(|t| {
+                if !tr.expose_internal_types && matches!(&t, Self::Builtin(e) if e.is_internal) {
+                    Err(format!("Unknown element '{name}'. (The type exists as an internal type, but cannot be accessed in this scope)"))
+                } else {
+                    Ok(t)
+                }
+            })
         }
     }
 
@@ -670,7 +643,7 @@ pub struct NativeClass {
 
 impl NativeClass {
     pub fn new(class_name: &str) -> Self {
-        let cpp_vtable_getter = format!("SLINT_GET_ITEM_VTABLE({}VTable)", class_name);
+        let cpp_vtable_getter = format!("SLINT_GET_ITEM_VTABLE({class_name}VTable)");
         Self {
             class_name: class_name.into(),
             cpp_vtable_getter,
@@ -731,12 +704,15 @@ pub struct BuiltinElement {
     pub name: SmolStr,
     pub native_class: Rc<NativeClass>,
     pub properties: BTreeMap<SmolStr, BuiltinPropertyInfo>,
-    pub additional_accepted_child_types: HashMap<SmolStr, ElementType>,
+    /// Additional builtin element that can be accepted as child of this element
+    /// (example `Tab` in `TabWidget`, `Row` in `GridLayout` and the path elements in `Path`)
+    pub additional_accepted_child_types: HashMap<SmolStr, Rc<BuiltinElement>>,
+    /// `Self` is conceptually in `additional_accepted_child_types` (which it can't otherwise that'd make a Rc loop)
+    pub additional_accept_self: bool,
     pub disallow_global_types_as_child_elements: bool,
     /// Non-item type do not have reserved properties (x/width/rowspan/...) added to them  (eg: PropertyAnimation)
     pub is_non_item_type: bool,
     pub accepts_focus: bool,
-    pub member_functions: HashMap<SmolStr, BuiltinFunction>,
     pub is_global: bool,
     pub default_size_binding: DefaultSizeBinding,
     /// When true this is an internal type not shown in the auto-completion
@@ -755,10 +731,13 @@ pub struct PropertyLookupResult<'a> {
     pub property_type: Type,
     pub property_visibility: PropertyVisibility,
     pub declared_pure: Option<bool>,
-    /// True if the property is part of the the current component (for visibility purposes)
+    /// True if the property is part of the current component (for visibility purposes)
     pub is_local_to_component: bool,
-    /// True if the property in the direct base of the component (for visibility purposes)
+    /// True if the property in the direct base of the component (for protected visibility purposes)
     pub is_in_direct_base: bool,
+
+    /// If the property is a builtin function
+    pub builtin_function: Option<BuiltinFunction>,
 }
 
 impl<'a> PropertyLookupResult<'a> {
@@ -774,6 +753,18 @@ impl<'a> PropertyLookupResult<'a> {
                 | (PropertyVisibility::Input, true)
                 | (PropertyVisibility::Output, false)
         )
+    }
+
+    pub fn invalid(resolved_name: Cow<'a, str>) -> Self {
+        Self {
+            resolved_name,
+            property_type: Type::Invalid,
+            property_visibility: PropertyVisibility::Private,
+            declared_pure: None,
+            is_local_to_component: false,
+            is_in_direct_base: false,
+            builtin_function: None,
+        }
     }
 }
 
@@ -796,6 +787,25 @@ pub struct Struct {
     pub node: Option<syntax_nodes::ObjectType>,
     /// derived
     pub rust_attributes: Option<Vec<SmolStr>>,
+}
+
+impl Display for Struct {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(name) = &self.name {
+            if let Some(separator_pos) = name.rfind("::") {
+                // write the slint type and not the native type
+                write!(f, "{}", &name[separator_pos + 2..])
+            } else {
+                write!(f, "{name}")
+            }
+        } else {
+            write!(f, "{{ ")?;
+            for (k, v) in &self.fields {
+                write!(f, "{k}: {v},")?;
+            }
+            write!(f, "}}")
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

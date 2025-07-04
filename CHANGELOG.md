@@ -3,37 +3,288 @@
 # Changelog
 All notable changes to this project are documented in this file.
 
-## 1.9.2 - Unreleased
+## [1.13.0] - Unreleased
+
+### Rust
+
+ - Minimum Supported Rust Version (MSRV) is 1.85
+
+### Node.js API
+
+ - Fixed panic when attempting to convert brushes to colors.
+
+## [1.12.1] - 2025-06-25
 
 ### General
 
- - Improved support for bazel build
- - Expose PopupWindow in the accessibility tree
- - Fixed support for older android version (Android 6)
- - Fixed Flickable hard to scroll when starting slow (#7152)
+ - Fixed invalid code gen with return statements. (#8723)
+ - Updated `muda` dependency to avoid outdated and insecure `gtk` dependency to appear in the `Cargo.lock` file even if it was not used. (#7800)
+ - Fixed memory leaks and crash in change callbacks (#8768, #8741)
+ - winit: Fixed window constraints (min, max, pref) not being applied sometimes (#8765)
+ - No longer generate unused structs in the generated code to avoid warnings with Rust 1.89
 
 ### Slint Language
 
- - Added `AccessibleRole::tab-panel` and fixed accessibility on TabWidget (#7270)
- - Better error recovery when element name is missing.
- - Added warning when a type name overwrite another.
+ - Enums without value cause compilation errors (instead of panics)
+ - Fixed runtime and compile errors when accessing the `Platform` global from within other globals. (#8777)
 
-### Widgets
+### Node.js API
 
- - Fixed StandardButton not focusable (#7230)
+ - Added packages for Windows on ARM.
 
 ### C++
 
- - Updated corrosion dependency, fixing build with Rustup 1.28
+ - Fixed compilation of `PopupWindow::show()` in changed callbacks. (#8710)
+
+### LSP and Tooling
+
+ - Added binaries for Windows on ARM (VS Code extension, slint-lsp binaries).
+ - Fixed potential crashes due to stack overflows on Windows.
+ - live-preview: Lazily compute palette to speedup the UI.
+
+## [1.12.0] - 2025-06-16
+
+### General
+
+ - Added `renderer-femtovg-wgpu` (Rust) / `SLINT_FEATURE_RENDERER_FEMTOVG_WGPU` (CMake) as new rendering option,
+   based on [WGPU](https://wgpu.rs/).
+ - Fixed `Window::default-font` not working in the live preview.
+ - Initial iOS support.
+ - FemtoVG: Fixed extra space of the `\n` char in text rendering (#7970).
+ - Android: Commit the preedit text when focus change (#8668).
+ - Winit: Added support for SVG icons in the window title.
+ - Winit: Fixed blinking window icon on Windows (#7994).
+ - Updated AccessKit.
+
+### Slint Language
+
+ - Fixed detection of binding loops that apply to the `Window` itself.
+ - Added `Math.exp` and `Math.ln`.
+ - Added `Platform.style-name` and `Platform.os` properties to permit style and OS dependent code.
+ - Fixed changed callback on private global properties (#8269).
+ - Added `ContextMenuArea::enabled`.
+ - Fixed Slint compilation error for comparison of types that can't be compared with less or greater operator.
+ - `Flickable` now keeps in bounds when geometry changes (#2227, #7487).
+ - Added `in-out` transition in states.
+ - Added `focus-gained` and `focus-lost` callback to `FocusScope`.
+ - Added a `FocusReason` argument to the `FocusScope` callbacks.
+ - Fixed `TextInput` to selects its content when focused with the keyboard on Windows and Linux.
+ - Fixed `TextInput` to no longer be focusable if disabled.
+
+### Widgets
+
+ - Fixed `ScrollView` scrollbar actions not triggering `scrolled` callback (#8170).
+ - `GroupBox`: Added `content-padding` property (#8314).
+ - `TextEdit`/`LineEdit`: Disable context menu action when the widget is disabled or read-only.
+ - `ScrollView`: Added `mouse-drag-pan-enabled` property (#8512).
+
+### Rust
+
+ - Added `unstable-winit-030` feature along with `slint::winit_030` module in the API to provide access
+   to winit APIs.
+ - Added `unstable-wgpu-24` feature along with `slint::wgpu_24` module to enable Slint <> WGPU interoperatiblity.
+ - Made `Debug` impl of `PlatformError` show the display string.
+ - slint-build: Implement `Clone` for `CompilerConfiguration`.
+ - slint-interpreter: Fixed `From<ModelRc> for slint_interpreter::Value` to return a model that supports `set_row_data`.
+
+### C++
+
+ - Made generated code more robust when in namespaces regarding forward declaration.
+ - Added a few asserts to ensure the code is run in the right thread.
+ - Don't crash when `Model::row_data` returns `nullopt`.
+ - Rust 1.85 is now required to compile from source.
+
+### Python
+
+ - Upgraded to Pyo3 0.25.
+ - Added iOS Simulator and Device wheels.
+
+### LSP and Tooling
+
+ - live preview: Do not apply live data changes after "Reload".
+ - live preview: Added telemetry events.
+ - live preview: support Palette names in color picker.
+ - live-preview: Added a console panel with complation error and `debug(...)` messages.
+ - figma-inspector: Enables the export of design tokens (variables for colors, numbers, strings, and booleans).
+   direct from your Figma files.
+ - figma-inspector: Inspected components now can include design token variable reference for convenient pasting into slint files..
+
+## [1.11.0] - 2025-04-23
+
+### General
+
+ - Fixed compilation failure with mingw by disabling jemalloc.
+ - Fixed non-square radial gradients. (#7899)
+ - Fixed timer starting before property initialization is complete in the interpreter. (#7848)
+ - Fixed ctrl/cmd swap in wasm in macOS browsers. (#7477)
+ - Fixed panic in accesskit when opening popups. (#7854)
+ - Software renderer: fixed drawing background of rotated screen.
+ - Software renderer: Fixed overflow for font bigger than 256px. (#7936)
+ - Skia renderer: Changed default on Windows to use the software renderer, instead of Direct3D.
+ - Skia renderer: Fixed artifacts when using the partial renderer. (#8066)
+
+### Slint Language
+
+ - Added `float.to-fixed()` and `float.to-precision()`.
+ - Added `string.to-lowercase()` and `string.to-uppercase()`.
+ - Fixed change handler on an aliased property. (#7784, #7747)
+ - Fixed compiler panic when one branch of the `if` statement is not a void expression. (#7864)
+ - Fixed `@children` as sibling to `Timer` or `PopupWindow`. (#7887)
+ - Deprecated alias to global callbacks and make it an error when setting it, instead of a panic. (#7806)
+ - Conditional element no longer re-instantiates if the condition gets dirty without changing. (#3953)
+ - Fixed crash if a component get destroyed when a function or callback of it is running. (#7880)
+ - `Color.hsv()`: The hue value now wraps instead of clamping between 0 and 360. e.g. a hue of `480` would wrap as expected to `120`.
+   Previously any value equal or greater than 360 would cause the function to output pure black. In the unlikely case an app relied
+   on this keep an eye out as a color will now show up instead of black.
+ - Fixed reading from `MenuItem::title` properties. (#8080, #8090)
+ - Fixed inconsistencies when accessing arrays at negative indices. (#8222)
+ - Allow trailing commas in import statements. (#4922)
+
+### Widgets
+
+ - Fixed horizontal tab stretch with material style.
+ - `ScrollView`: Fixed scroll thumb size on small sizes. (#7809)
+ - `MenuBar` reacts to hover event when the menu is open. (#7822)
+ - Added `MenuSeparator` sub-element in `Menu`. (#7790)
+ - Added `MenuItem::enabled`.
+ - Added `StandardButton::primary`.
+
+### C++
+
+ - Allow vendored corrosion by using find_package to search for it. (#7797)
+ - Optimize memory usage avoiding creating dependencies for constant properties.
+ - Fixed overflow when subtracting unsigned in the Slint language.
+ - esp-idf: select `slint::Rgb8Pixel` by default when `CONFIG_BSP_LCD_COLOR_FORMAT_RGB888` is set.
+ - Added support for overriding the translation domain via a CMake target property.
+ - Fixed `Math.mod` with negative numbers.
+ - Fixed segfault when calling `Model::row_changed` right after `Model::reset`. (#8021)
+ - Added `notify_` prefix to the `Model` protected function, and deprecated old names. (#3888)
+
+### LSP and Tooling
+
+ - live-preview: Show why no live data is present. (#7783)
+ - live-preview: New brush/color input widgets.
+ - live-preview: Focus the right widget when the preview is reloaded. (#4055)
+ - live-preview: Persist the live data when the preview is reloaded.
+ - live-preview: Improve std-widget use detection. (#8086)
+ - live-preview: Added a table to edit model in the data tab.
+ - live-preview: Fixed preview of menu bar on platforms with native menu bar.
+ - viewer: Support gradients in json data. (#7913)
+
+## [1.10.0] - 2025-02-28
+
+### General
+
+ - Minimum Supported Rust Version (MSRV) is 1.82.
+ - Android: Fixed build with newer JDK.
+ - Winit backend: Fixed panic when `PopupWindow` is opened while AccessKit is active.
+ - Skia renderer: Added support for partial rendering when using software rendering.
+ - Qt backend: Fixed crash at exit with Qt 5.8. (#7570)
+ - Qt backend: Fixed the Escape key not closing `PopupWindow`. (#7332)
+ - Software renderer: Fixed support for changing the `Window` background.
+ - Software renderer: Added support for pre-rendering glyphs with signed distance fields.
+
+### Slint Language
+
+ - Elements of a `for` loop now only get re-created if the model is changed, not if it is only dirty. (#7245)
+ - Binding loops involving the condition of a `if` in a layout are now detected. (#7126)
+ - Added  `.is-empty` and `.character-count` accessor to the string type.
+ - Added `ContextMenu` and `MenuBar`.
+ - Fixed panic change callbacks used with unused properties. (#7316)
+ - Added `Path::stroke-line-cap` property. (#4676)
+ - Special sub elements such as `Row`, `Tab` or `MenuItem` are now accepted in `@children`.
+ - Accessibility: Added `accessible-expandable`, `accessible-expanded`, and `accessible-readonly` properties and `accessible-action-expand` callback.
+ - Accessibility: Added `AccessibleRole.image` role.
+ - Made `forward-focus` in a `PopupWindow` to focus a widget when a popup is open. (#7529)
+ - Added `TextInput::page-height` to support PageUp and PageDown shortcuts.
+ - Fixed panic when using gradient backgrounds with `Window`.
+
+### Widgets
+
+ - Fixed `StandardListView` not always getting the focus.
+ - Fixed panic when accessing "negative" items if there are hidden elements in the `ListView`.
+ - Fixed positions of elements in a `ListView` with millions of items. (3700)
+ - `ListView`: adapt the viewport's width based on the minimum-width of delegate.
+ - `Slider`: React to Home and End keys.
+ - `ComboBox`: Improved accessibility.
+ - `ComboBox`: Don't change selected item on mouse wheel, unless it has focus. (#5929)
+ - `StandardTableView`: Added missing properties from `ListView`. (#7543)
+ - `LineEdit`/`TextEdit`: Added a context menu with copy/paste/select all.
+
+### Rust
+
+ - Upgraded image crate to 0.25, added a new `image-default-formats` cargo feature to enable all image formats.
+ - Ignore pedantic and nursery clippy warnings in generated code.
+ - Fixed edition 2024 warnings in generated code.
+ - Fixed `Sync` and `Send` bounds on `SharedVector`, `SharedString`, and `Weak`.
+ - Removed the requirement that for `VecModel<T>::default()` `T` has to implement `Default`.
+ - Implement `Default` for `BackendSelector`.
+
+### C++
+
+ - esp-idf: Added support for RGB8 rendering.
+ - esp-idf: Rename `SlintPlatformConfiguration`'s `color_swap_16` to `byte_swap`.
+ - esp-idf: Deprecated old version of `slint_esp_init` and restored 1.6 behavior with regards to color swapping.
+ - Fixed bundled translation without custom backend.
+
+### LSP and Tooling
+
+ - live-preview: Fix loading the library path config
+ - live-preview (macOS): Add a Window menu with keep the window on top
+ - live-preview: selection popup no longer contains invisible or clipped items
+ - live-preview: fix editing of translated string.
+ - LSP: no longer suggest private properties in auto-completion
+ - LSP: add ability to rename properties and globals
+ - Simple Figma inspector plugin
+ - Use jemalloc as default allocator for our binaries
+ - VSCode extension: Removed the status bar item for the preview
+
+## [1.9.2] - 2025-01-13
+
+### General
+
+ - Improved support for building Slint with Bazel.
+ - Expose `PopupWindow` in the accessibility tree.
+ - Fixed support for older android versions (Android 6).
+ - Fixed `Flickable` not scrolling when starting slow (#7152).
+ - LinuxKMS backend: Fix support for triple-buffering with DRM outputs.
+ - Fixed panic with FemtoVG and Skia renderers for certain drop shadows.
+ - Fixed closing `PopupWindow` when the click opens another `PopupWindow` (#7322).
+ - Fixed `popup.close()` not working in the interpreter (#7318).
+
+### Slint Language
+
+ - Added `AccessibleRole::tab-panel` and fixed accessibility on `TabWidget` (#7270)
+ - Added `AccessibleRole::groupbox` and fixed accessibility on `GroupBox`
+ - Better error recovery when element name is missing.
+ - Added warning when a type name overwrites another.
+ - Added `Path::anti-alias` property.
+ - Fixed compiler panic with  `Row{ @children }`.
+ - Skip UTF-8 Byte order mark (BOM) at the beginning of a file (#7291).
+
+### Widgets
+
+ - Fixed `StandardButton` not being focusable (#7230).
+
+### C++
+
+ - Updated corrosion dependency, fixing build with Rustup 1.28.
+ - Added armhf/arm64 Linux binary packages to release.
+
+### Rust
+
+ - Added `Window::try_dispatch_event` which is a non-panicking version of `dispatch_event`.
 
 ### Tools
 
- - LSP: Fix ranges in textDocument/documentSymbol
- - Binary packages: Disabled Qt backend
- - LSP: fixed panic in autocompletion of file patch with unicode
- - Viewer: struct are now supported in callback argument (passed as JSON) (#7206)
+ - Binary packages: Disabled Qt backend.
+ - LSP: Fix ranges in textDocument/documentSymbol.
+ - LSP: Fixed panic in autocompletion of file patch with unicode.
+ - LSP: Added ability to rename struct and enums.
+ - LSP: Fixed error reporting when opening the live-preview fails (#7255).
+ - Viewer: struct are now supported in callback argument (passed as JSON) (#7206).
 
-## 1.9.1 - 2024-12-21
+## [1.9.1] - 2024-12-21
 
 ### General
 
@@ -42,7 +293,7 @@ All notable changes to this project are documented in this file.
  - Fixed build on https://docs.rs/slint
  - Live-preview: Improvements of the filter in selection popup
 
-## 1.9.0 - 2024-12-18
+## [1.9.0] - 2024-12-18
 
 ### General
 
@@ -152,7 +403,7 @@ All notable changes to this project are documented in this file.
  - Skia: Fixed opacity not being applied to box shadows correctly. (#6359)
 
 
-## 1.8.0 - 2024-09-23
+## [1.8.0] - 2024-09-23
 
 ### Slint language
 
@@ -169,7 +420,7 @@ All notable changes to this project are documented in this file.
    to the size of the Flickable instead of that of the viewport (#4163)
  - Path: Fix compiler panic when accessing path.commands in expressions (#5564)
  - The `mod` function was changed to always return a positive value (#6178)
- - Added `AccesssibleRole.list-item` and used it where relevant
+ - Added `AccessibleRole.list-item` and used it where relevant
  - Added `PointerEventButton.back` and `PointerEventButton.forward` (#6043)
 
 ### Widgets
@@ -246,7 +497,7 @@ All notable changes to this project are documented in this file.
 
  - `debug()` is now consistently routed through Platform's `debug_log`, meaning it uses stderr by default instead of stdout previously with C++ and Rust code generator. (#5718)
  - Comparison between float is now using less precision so to float compare equal if they are approximately the same.
- - Conversion from float to a `int` property now always truncates (instead of rounding with the interpreter, or being inconsistant with the code generators)
+ - Conversion from float to a `int` property now always truncates (instead of rounding with the interpreter, or being inconsistent with the code generators)
 
 ### Widgets
 
@@ -303,8 +554,8 @@ All notable changes to this project are documented in this file.
 ### General
 
  - Several compiler bugfixes. (#5260, #5246, #5220, #5259, #5249, #5430)
- - Android: fix cursor handle being visible despite inut loses focus. (#5233)
- - Android: fix keyboard poping up when application moved to foreground without input focus. (#5235)
+ - Android: fix cursor handle being visible despite input loses focus. (#5233)
+ - Android: fix keyboard popping up when application moved to foreground without input focus. (#5235)
  - Gettext translation: clear internal gettext cache when changing translations at runtime.
  - Winit backend: Fixed setting the size with set_size before showing the window. (#6489)
  - Winit backend: upgraded to winit 0.30, accesskit 0.16, glutin.
@@ -517,7 +768,7 @@ All notable changes to this project are documented in this file.
  - C++: Permit passing a value to VectorModel::set_vector by value (#4491)
  - slint-viewer: re-render after reloading when using software renderer.
  - Fixed panic in the software renderer when using the Qt style.
- - Rust: fix slint-build's formater when source contains `\"` in a string. (#4520)
+ - Rust: fix slint-build's formatter when source contains `\"` in a string. (#4520)
 
 ## [1.4.0] - 2024-01-31
 
@@ -531,7 +782,7 @@ All notable changes to this project are documented in this file.
  - Fixed TextInput on Plasma/Wayland receiving many empty events causing selection to be cleared (#4148)
  - Added API to programmatically show a window in fullscreen mode (C++/Rust: `Window::set_fullscreen(bool)`, Node.js: `window.fullscreen`).
  - Added API to keep the event loop alive when the last window is closed (#1499). (Rust: `slint::run_event_loop_until_quit()`; C++: argument to `slint::run_event_loop()`; Node: argument to `runEventLoop`).
- - Fixed linear gradiant rendering in non square rectangles (#3730).
+ - Fixed linear gradient rendering in non square rectangles (#3730).
  - LinuxKMS backend: Added support rendering output rotation via the `SLINT_KMS_ROTATION` environment variable.
  - LinuxKMS backend: Added support for `backend-linuxkms-noseat` feature to compile without libseat.
  - LinuxKMS backend: Added support for software rendering with Skia.
@@ -618,7 +869,7 @@ All notable changes to this project are documented in this file.
 
 ### Slint Language
 
- - Added `clamp` function that takes a `value`, `minimum` and `maxium` and will return
+ - Added `clamp` function that takes a `value`, `minimum` and `maximum` and will return
    `maximum` if `value > maximum`, `minimum` if `value < minimum` or `value` otherwise.
  - Throw Slint error when returning no value when one is expected instead of generating invalid code. (#3962)
  - Fixed compiler panic when a component is called `Window`. (#3916)
@@ -968,7 +1219,7 @@ All notable changes to this project are documented in this file.
 
  - The old syntax that declares component with `:=` is now deprecated
  - `Flickable`: don't forward events if the flickable is dragged in a direction that can be dragged, even if at the bounds.
- - The `TextEdit` and `LineEdit` elements now correctly handle double click and tripple click to select words or lines,
+ - The `TextEdit` and `LineEdit` elements now correctly handle double click and triple click to select words or lines,
    as well as support for the "primary" clipboard on X11 and wayland (select to copy, and middle click to paste).
 
 ### Rust
@@ -1472,7 +1723,7 @@ as well as the [Rust migration guide for the `sixtyfps` crate](api/rs/slint/migr
  - `Slider` now has a `changed` callback.
  - Added `TabWidget` widget.
  - Rust: `sixtyfps::Image` can now be constructed from image data provided by `sixtyfps::SharedPixelBuffer`.
-   This enables integrating with other low-level software rendering or the the popular Rust image crate.
+   This enables integrating with other low-level software rendering or the popular Rust image crate.
  - VSCode extension: added an option to specify command line arguments for the LSP.
 
 ### Fixed
@@ -1699,3 +1950,8 @@ as well as the [Rust migration guide for the `sixtyfps` crate](api/rs/slint/migr
 [1.8.0]: https://github.com/slint-ui/slint/releases/tag/v1.8.0
 [1.9.0]: https://github.com/slint-ui/slint/releases/tag/v1.9.0
 [1.9.1]: https://github.com/slint-ui/slint/releases/tag/v1.9.1
+[1.9.2]: https://github.com/slint-ui/slint/releases/tag/v1.9.2
+[1.10.0]: https://github.com/slint-ui/slint/releases/tag/v1.10.0
+[1.11.0]: https://github.com/slint-ui/slint/releases/tag/v1.11.0
+[1.12.0]: https://github.com/slint-ui/slint/releases/tag/v1.12.0
+[1.12.1]: https://github.com/slint-ui/slint/releases/tag/v1.12.1

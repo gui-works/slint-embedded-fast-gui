@@ -25,7 +25,7 @@ fn widget_library() -> &'static [(&'static str, &'static BuiltinDirectory<'stati
     )?;
 
     for style in cargo_manifest_dir.join(&library_dir).read_dir()?.filter_map(Result::ok) {
-        if !style.file_type().map_or(false, |f| f.is_dir()) {
+        if !style.file_type().is_ok_and(|f| f.is_dir()) {
             continue;
         }
         let path = style.path();
@@ -46,11 +46,11 @@ fn widget_library() -> &'static [(&'static str, &'static BuiltinDirectory<'stati
 
 fn process_style(cargo_manifest_dir: &Path, path: &Path) -> std::io::Result<String> {
     let library_files: Vec<PathBuf> = cargo_manifest_dir
-        .join(&path)
+        .join(path)
         .read_dir()?
         .filter_map(Result::ok)
         .filter(|entry| {
-            entry.file_type().map_or(false, |f| !f.is_dir())
+            entry.file_type().is_ok_and(|f| !f.is_dir())
                 && entry
                     .path()
                     .extension()
@@ -71,7 +71,7 @@ fn process_style(cargo_manifest_dir: &Path, path: &Path) -> std::io::Result<Stri
             format!(
                 "&BuiltinFile {{path: r#\"{}\"# , contents: include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), r#\"/{}\"#))}}",
                 file.file_name().unwrap().to_string_lossy(),
-                file.strip_prefix(&cargo_manifest_dir).unwrap().display()
+                file.strip_prefix(cargo_manifest_dir).unwrap().display()
             )
         })
         .collect::<Vec<_>>()

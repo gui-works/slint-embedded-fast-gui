@@ -5,6 +5,8 @@ title: Custom Controls
 description: Custom Controls
 ---
 
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+import LangRefLink from '/src/components/LangRefLink.astro';
 
 # Custom Control Introduction
 
@@ -76,8 +78,8 @@ In Slint, `-` and `_` are equivalent and interchangeable in all identifiers.
 This is different in native code: Most programming languages forbid `-` in
 identifiers, so `-` is replaced with `_`.
 
-<details data-snippet-language="rust">
-<summary>Rust code</summary>
+<Tabs syncKey="dev-language">
+<TabItem label="Rust">
 
 For technical reasons, this example uses `export {Recipe}` in the `slint!` macro.
 In real code, you can put the whole Slint code in the `slint!` macro, or use
@@ -105,7 +107,7 @@ a setter (`set_counter`) for each accessible property of the root element of the
 `Recipe` component. It also generates a function for each accessible callback,
 like in this case `on_button_pressed`.
 
-The `Recipe` struct implements the [`slint::ComponentHandle`] trait. A component
+The `Recipe` struct implements the <LangRefLink lang="rust-slint" relpath="trait.ComponentHandle.html">`slint::ComponentHandle`</LangRefLink> trait. A component
 manages a strong and a weak reference count, similar to an `Rc`.
 We call the `as_weak` function to get a weak handle to the component, which we
 can move into the callback.
@@ -113,10 +115,10 @@ can move into the callback.
 We can't use a strong handle here, because that would form a cycle: The component
 handle has ownership of the callback, which itself has ownership of the
 closure's captured variables.
-</details>
 
-<details data-snippet-language="cpp">
-<summary>C++ code</summary>
+</TabItem>
+<TabItem label="C++">
+
 In C++ you can write
 
 ```cpp
@@ -143,7 +145,33 @@ for each accessible callback in `Recipe`. In this case we will have `get_counter
 `set_counter` to access the `counter` property and `on_button_pressed` to
 set up the callback.
 
-</details>
+</TabItem>
+
+<TabItem label="Python">
+
+In Python, you can write:
+
+
+```python
+import slint
+
+class App(slint.loader.recipe.Recipe):
+    @slint.callback
+    def button_pressed(self):
+        value = self.counter
+        value = value + 1
+        self.counter = value
+
+app = App()
+app.run()
+```
+
+The Slint auto-loader provides a `Recipe` class originating from `recipe.slint`, which is subclassed.
+The `Recipe` class provides the `counter` property, and the `@slint.callback` decorator connects the
+`button_pressed` method with the `button-pressed` callback.
+
+</TabItem>
+</Tabs>
 
 ## Use Property Bindings to Synchronize Controls
 
@@ -437,38 +465,12 @@ export component Recipe inherits Window {
     }
 }
 ```
+<Tabs syncKey="dev-language">
+<TabItem label="Rust">
 
-<details  data-snippet-language="rust">
-<summary>Rust code</summary>
 In Rust you can set the callback like this:
 
 ```rust
-slint::slint!{
-import { HorizontalBox, VerticalBox, LineEdit } from "std-widgets.slint";
-
-export global Logic {
-    pure callback to-upper-case(string) -> string;
-    // You can collect other global properties here
-}
-
-export component Recipe inherits Window {
-    VerticalBox {
-        input := LineEdit {
-            text: "Text to be transformed";
-        }
-        HorizontalBox {
-            Text { text: "Transformed:"; }
-            // Callback invoked in binding expression
-            Text {
-                text: {
-                    Logic.to-upper-case(input.text);
-                }
-            }
-        }
-    }
-}
-}
-
 fn main() {
     let recipe = Recipe::new().unwrap();
     recipe.global::<Logic>().on_to_upper_case(|string| {
@@ -477,9 +479,8 @@ fn main() {
     // ...
 }
 ```
-</details>
-
-<details  data-snippet-language="cpp">
+</TabItem>
+<TabItem label="C++">
 <summary>C++ code</summary>
 In C++ you can set the callback like this:
 
@@ -495,10 +496,10 @@ int main(int argc, char **argv)
     // ...
 }
 ```
-</details>
+</TabItem>
+<TabItem label="NodeJS">
 
-<details  data-snippet-language="javascript">
-<summary>JavaScript code</summary>
+
 In JavaScript you can set the callback like this:
 
 ```js
@@ -510,7 +511,23 @@ recipe.Logic.to_upper_case = (str) => {
 };
 // ...
 ```
-</details>
+</TabItem>
+<TabItem label="Python">
+
+In Python, the callback is associated with the `global_name` parameter of the `@slint.callback` decorator:
+
+```python
+import slint
+
+class App(slint.loader.recipe.Recipe):
+    @slint.callback(global_name="Logic")
+    def to_upper_case(&self, value: str) -> str:
+        return value.upper()
+
+# ...
+```
+</TabItem>
+</Tabs>
 
 # Custom Widgets
 

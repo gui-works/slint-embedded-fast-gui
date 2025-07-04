@@ -5,6 +5,16 @@
 The build instructions are in the [building.md](./building.md) file.
 The testing instructions are in the [testing.md](./testing.md) file.
 
+## Environment Setup
+
+[`mise-en-place`](https://mise.jdx.dev/) can be used to install the necessary
+development tooling. After installing `mise` and registering `mise` with your
+shell, go into your git checkout directory and `mise trust -a` the configuration
+we ship. Afterwards `mise install` makes all the necessary tooling available.
+
+Even if you do not want to use mise: `.mise/config.toml` contains a handy list of tools
+to make available.
+
 ## Repository structures
 
 ### `helper_crates`
@@ -131,7 +141,7 @@ As a first step, let's rebase our changes to make sure that there are no conflic
 git rebase origin/master
 ```
 
-This might run through without stoppping. If there are merge conflicts to be resolved, `git rebase` will stop
+This might run through without stopping. If there are merge conflicts to be resolved, `git rebase` will stop
 and let you fix it. For instructions how to resolve the conflicts and continue, see [Resolving merge conflicts after a Git rebase](https://docs.github.com/en/get-started/using-git/resolving-merge-conflicts-after-a-git-rebase).
 
 When your branch is rebased, proceed to squash the fixup commits. Start an interactive rebase that starts at the base commit:

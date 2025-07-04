@@ -1,7 +1,6 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-#[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 use core::ops::Range;
 
@@ -108,7 +107,7 @@ impl<'a> ShapeBoundaries<'a> {
     }
 }
 
-impl<'a> Iterator for ShapeBoundaries<'a> {
+impl Iterator for ShapeBoundaries<'_> {
     type Item = usize;
 
     #[cfg(feature = "unicode-script")]
@@ -253,7 +252,7 @@ fn test_shape_boundaries_script_change() {
 }
 
 #[cfg(test)]
-impl<'a> TextShaper for &rustybuzz::Face<'a> {
+impl TextShaper for &rustybuzz::Face<'_> {
     type LengthPrimitive = f32;
     type Length = f32;
     fn shape_text<GlyphStorage: std::iter::Extend<Glyph<f32>>>(
@@ -292,7 +291,7 @@ impl<'a> TextShaper for &rustybuzz::Face<'a> {
 }
 
 #[cfg(test)]
-impl<'a> FontMetrics<f32> for &rustybuzz::Face<'a> {
+impl FontMetrics<f32> for &rustybuzz::Face<'_> {
     fn ascent(&self) -> f32 {
         self.ascender() as _
     }

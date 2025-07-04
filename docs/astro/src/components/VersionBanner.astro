@@ -1,7 +1,6 @@
 ---
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: MIT
-import type { Props } from "@astrojs/starlight/props";
 ---
 <script>
   // Define types
@@ -28,10 +27,10 @@ import type { Props } from "@astrojs/starlight/props";
       // Logic for showing banners based on version comparison
       if (currentVersion) {
         const compareToPreferred = latestVersion && compareVersions(latestVersion, currentVersion);
-        
+
         const olderVersionElem = document.getElementById('older-version');
         const devVersionElem = document.getElementById('development-snapshot');
-        
+
         if (olderVersionElem && compareToPreferred && compareToPreferred > 0) {
           olderVersionElem.hidden = false;
         } else if (olderVersionElem) {

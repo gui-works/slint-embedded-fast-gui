@@ -20,11 +20,12 @@ function sideBorder() {
             border-left-style: solid;
             border-color: #2479f4;
             border-top-left-radius: 0.4rem;
-            border-bottom-left-radius: 0.4rem; 
+            border-bottom-left-radius: 0.4rem;
+            pointer-events: none;
         }
         `,
         hooks: {
-            postprocessRenderedBlock: async (context) => {
+            postprocessRenderedBlock: (context) => {
                 if (
                     context.renderData.blockAst.children[1].properties
                         .dataLanguage !== "slint"
@@ -79,7 +80,7 @@ function languageLabel() {
         }
         `,
         hooks: {
-            postprocessRenderedBlock: async (context) => {
+            postprocessRenderedBlock: (context) => {
                 const language =
                     context.renderData.blockAst.children[1].properties
                         .dataLanguage;
@@ -140,7 +141,7 @@ function workersPlaygroundButton() {
             }
         `,
         hooks: {
-            postprocessRenderedBlock: async (context) => {
+            postprocessRenderedBlock: (context) => {
                 if (!context.codeBlock.meta.includes("playground")) {
                     return;
                 }
@@ -187,7 +188,10 @@ export default {
     shiki: {
         langs: [
             JSON.parse(
-                fs.readFileSync("src/misc/Slint-tmLanguage.json", "utf-8"),
+                fs.readFileSync(
+                    "../../editors/vscode/slint.tmLanguage.json",
+                    "utf-8",
+                ),
             ),
         ],
     },

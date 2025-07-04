@@ -184,6 +184,10 @@ struct Property
     {
     }
 
+    const T &get_internal() const { return value; }
+
+    void set_constant() const { cbindgen_private::slint_property_set_constant(&inner); }
+
 private:
     cbindgen_private::PropertyHandleOpaque inner;
     mutable T value {};
@@ -205,6 +209,15 @@ Property<float>::set_animated_value(const float &new_value,
                                     const cbindgen_private::PropertyAnimation &animation_data) const
 {
     cbindgen_private::slint_property_set_animated_value_float(&inner, value, new_value,
+                                                              &animation_data);
+}
+
+template<>
+inline void
+Property<Color>::set_animated_value(const Color &new_value,
+                                    const cbindgen_private::PropertyAnimation &animation_data) const
+{
+    cbindgen_private::slint_property_set_animated_value_color(&inner, value, new_value,
                                                               &animation_data);
 }
 

@@ -311,14 +311,15 @@ mod grid_internal {
         spacing: Coord,
         size: Option<Coord>,
     ) -> Vec<LayoutData> {
-        let mut num = 0;
+        let mut num = 0usize;
         for cell in data {
-            num = num.max(cell.col_or_row + cell.span);
+            num = num.max(cell.col_or_row as usize + cell.span.max(1) as usize);
         }
         if num < 1 {
             return Default::default();
         }
-        let mut layout_data = alloc::vec![grid_internal::LayoutData { stretch: 1., ..Default::default() }; num as usize];
+        let mut layout_data =
+            alloc::vec![grid_internal::LayoutData { stretch: 1., ..Default::default() }; num];
         let mut has_spans = false;
         for cell in data {
             let constraint = &cell.constraint;
@@ -683,7 +684,7 @@ pub fn reorder_dialog_button_layout(cells: &mut [GridLayoutCellData], roles: &[D
         std::env::var("XDG_CURRENT_DESKTOP")
             .ok()
             .and_then(|v| v.as_bytes().first().copied())
-            .map_or(false, |x| x.to_ascii_uppercase() == b'K')
+            .is_some_and(|x| x.eq_ignore_ascii_case(&b'K'))
     }
     #[cfg(not(feature = "std"))]
     let is_kde = || true;
@@ -733,7 +734,7 @@ pub(crate) mod ffi {
 
     use super::*;
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_solve_grid_layout(
         data: &GridLayoutData,
         result: &mut SharedVector<Coord>,
@@ -741,7 +742,7 @@ pub(crate) mod ffi {
         *result = super::solve_grid_layout(data)
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_grid_layout_info(
         cells: Slice<GridLayoutCellData>,
         spacing: Coord,
@@ -750,7 +751,7 @@ pub(crate) mod ffi {
         super::grid_layout_info(cells, spacing, padding)
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_solve_box_layout(
         data: &BoxLayoutData,
         repeater_indexes: Slice<u32>,
@@ -759,7 +760,7 @@ pub(crate) mod ffi {
         *result = super::solve_box_layout(data, repeater_indexes)
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     /// Return the LayoutInfo for a BoxLayout with the given cells.
     pub extern "C" fn slint_box_layout_info(
         cells: Slice<BoxLayoutCellData>,
@@ -770,7 +771,7 @@ pub(crate) mod ffi {
         super::box_layout_info(cells, spacing, padding, alignment)
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     /// Return the LayoutInfo for a BoxLayout with the given cells.
     pub extern "C" fn slint_box_layout_info_ortho(
         cells: Slice<BoxLayoutCellData>,
@@ -783,7 +784,7 @@ pub(crate) mod ffi {
     ///
     /// Safety: `cells` must be a pointer to a mutable array of cell data, the array must have at
     /// least `roles.len()` elements.
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn slint_reorder_dialog_button_layout(
         cells: *mut GridLayoutCellData,
         roles: Slice<DialogButtonRole>,

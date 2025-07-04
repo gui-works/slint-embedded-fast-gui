@@ -31,6 +31,7 @@ macro_rules! test_example {
 }
 
 test_example!(example_printerdemo, "demos/printerdemo/ui/printerdemo.slint");
+test_example!(example_usecases, "demos/usecases/ui/app.slint");
 test_example!(example_memory, "examples/memory/memory.slint");
 test_example!(example_slide_puzzle, "examples/slide_puzzle/slide_puzzle.slint");
 test_example!(example_todo, "examples/todo/ui/todo.slint");
@@ -39,6 +40,12 @@ test_example!(example_fancy_demo, "examples/fancy_demo/main.slint");
 test_example!(example_bash_sysinfo, "examples/bash/sysinfo.slint");
 test_example!(example_carousel, "examples/carousel/ui/carousel_demo.slint");
 test_example!(example_iot_dashboard, "examples/iot-dashboard/main.slint");
+test_example!(example_dial, "examples/dial/dial.slint");
+test_example!(example_sprite_sheet, "examples/sprite-sheet/demo.slint");
+test_example!(example_fancy_switches, "examples/fancy-switches/demo.slint");
+test_example!(example_home_automation, "demos/home-automation/ui/demo.slint");
+test_example!(example_energy_monitor, "demos/energy-monitor/ui/desktop_window.slint");
+test_example!(example_weather, "demos/weather-demo/ui/main.slint");
 
 fn main() {
     println!("Nothing to see here, please run me through cargo test :)");

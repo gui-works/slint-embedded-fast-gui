@@ -1,6 +1,15 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
+export global G {
+    in-out property <bool> tArunning: true;
+}
+
+component Bug8541 {
+    out property <bool> bar: true;
+}
+
+
 component SubCompo {
 
     out property <string> r;
@@ -10,6 +19,7 @@ component SubCompo {
         Timer {
             interval: 1s;
             triggered => { r += "A"; }
+            running <=> G.tArunning;
         }
         Timer {
             interval: 1.502s;
@@ -17,7 +27,7 @@ component SubCompo {
         }
         for l in ["c", "d"] : Rectangle {
             Timer {
-                interval: 3.0003s;
+                interval: 3s;
                 triggered => { r += l; }
             }
         }
@@ -46,18 +56,20 @@ export component TestCase inherits Window {
     }
     out property <bool> test: vl.max-width == 0;
 
+    bug8541 := Bug8541 {}
+
     Rectangle {
         tm2 := Timer {
             running: false;
             interval: tm2duration * 1ms;
-            triggered => { result += "2"; }
+            triggered => { if bug8541.bar { result += "2"; } }
         }
     }
 
     Rectangle {
         oops := Timer {
             interval: -5ms;
-            triggered => { result += "oops"; }
+            triggered => { result += "oops"; debug(s.absolute-position.x) }
         }
         s := SubCompo {  }
     }
@@ -105,6 +117,11 @@ for _ in 0..20 {
     slint_testing::mock_elapsed_time(500);
 }
 assert_eq!(instance.get_second_result(), "ABAcdABAABAcdABAAcdBAABAcd");
+instance.global::<G<'_>>().set_tArunning(false);
+for _ in 0..20 {
+    slint_testing::mock_elapsed_time(500);
+}
+assert_eq!(instance.get_second_result(), "ABAcdABAABAcdABAAcdBAABAcdBcdBBcdBcdB");
 ```
 
 ```cpp
@@ -147,6 +164,12 @@ for (int i = 0; i < 20; ++i) {
     slint_testing::mock_elapsed_time(500);
 }
 assert_eq(instance.get_second_result(), "ABAcdABAABAcdABAAcdBAABAcd");
+
+instance.global<G>().set_tArunning(false);
+for (int i = 0; i < 20; ++i) {
+    slint_testing::mock_elapsed_time(500);
+}
+assert_eq(instance.get_second_result(), "ABAcdABAABAcdABAAcdBAABAcdBcdBBcdBcdB");
 ```
 
 ```js
@@ -188,5 +211,11 @@ for (var i = 0; i < 20; ++i) {
     slintlib.private_api.mock_elapsed_time(500);
 }
 assert.equal(instance.second_result, "ABAcdABAABAcdABAAcdBAABAcd");
+
+instance.G.tArunning = false;
+for (var i = 0; i < 20; ++i) {
+    slintlib.private_api.mock_elapsed_time(500);
+}
+assert.equal(instance.second_result, "ABAcdABAABAcdABAAcdBAABAcdBcdBBcdBcdB");
 ```
 */

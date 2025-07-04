@@ -24,7 +24,7 @@ mod key_generated;
 
 #[cfg(no_qt)]
 mod ffi {
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_qt_get_widget(
         _: &i_slint_core::window::WindowAdapterRc,
     ) -> *mut std::ffi::c_void {
@@ -243,8 +243,11 @@ impl i_slint_core::platform::Platform for Backend {
                                 rust!(Slint_call_event_holder [fnbox: *mut dyn FnOnce() as "TraitObject"] {
                                    let b = Box::from_raw(fnbox);
                                    b();
+                                   // in case the callback started a new timer
+                                   crate::qt_window::restart_timer();
                                 });
                             }
+
                        }
                    };
                 }};
@@ -306,5 +309,23 @@ impl i_slint_core::platform::Platform for Backend {
             cpp::cpp! {[] -> u32 as "int" { return qApp->doubleClickInterval(); }}
         };
         core::time::Duration::from_millis(duration_ms as u64)
+    }
+}
+
+/// This helper trait can be used to obtain access to a pointer to a QtWidget for a given
+/// [`slint::Window`](slint:rust:slint/struct.window).")]
+#[cfg(not(no_qt))]
+pub trait QtWidgetAccessor {
+    fn qt_widget_ptr(&self) -> Option<std::ptr::NonNull<()>>;
+}
+
+#[cfg(not(no_qt))]
+impl QtWidgetAccessor for i_slint_core::api::Window {
+    fn qt_widget_ptr(&self) -> Option<std::ptr::NonNull<()>> {
+        i_slint_core::window::WindowInner::from_pub(self)
+            .window_adapter()
+            .internal(i_slint_core::InternalToken)
+            .and_then(|wa| wa.as_any().downcast_ref::<qt_window::QtWindow>())
+            .map(qt_window::QtWindow::widget_ptr)
     }
 }

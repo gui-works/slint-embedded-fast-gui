@@ -8,9 +8,24 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::num::NonZeroUsize;
 use std::rc::Rc;
+use typed_index_collections::TiVec;
 
-// Index in the `SubComponent::properties`
-pub type PropertyIndex = usize;
+#[derive(
+    Debug, Clone, Copy, derive_more::Into, derive_more::From, Hash, PartialEq, Eq, PartialOrd, Ord,
+)]
+pub struct PropertyIdx(usize);
+#[derive(Debug, Clone, Copy, derive_more::Into, derive_more::From, Hash, PartialEq, Eq)]
+pub struct FunctionIdx(usize);
+#[derive(Debug, Clone, Copy, derive_more::Into, derive_more::From)]
+pub struct SubComponentIdx(usize);
+#[derive(Debug, Clone, Copy, derive_more::Into, derive_more::From, Hash, PartialEq, Eq)]
+pub struct GlobalIdx(usize);
+#[derive(Debug, Clone, Copy, derive_more::Into, derive_more::From, Hash, PartialEq, Eq)]
+pub struct SubComponentInstanceIdx(usize);
+#[derive(Debug, Clone, Copy, derive_more::Into, derive_more::From, Hash, PartialEq, Eq)]
+pub struct ItemInstanceIdx(usize);
+#[derive(Debug, Clone, Copy, derive_more::Into, derive_more::From, Hash, PartialEq, Eq)]
+pub struct RepeatedElementIdx(usize);
 
 #[derive(Debug, Clone, derive_more::Deref)]
 pub struct MutExpression(RefCell<Expression>);
@@ -41,7 +56,7 @@ pub struct BindingExpression {
     /// When true, we can initialize the property with `set` otherwise, `set_binding` must be used
     pub is_constant: bool,
     /// When true, the expression is a "state binding".  Despite the type of the expression being a integer
-    /// the property is of type StateInfo and the `set_state_binding` ned to be used on the property
+    /// the property is of type StateInfo and the `set_state_binding` need to be used on the property
     pub is_state_info: bool,
 
     /// The amount of time this binding is used
@@ -52,13 +67,13 @@ pub struct BindingExpression {
 #[derive(Debug)]
 pub struct GlobalComponent {
     pub name: SmolStr,
-    pub properties: Vec<Property>,
-    pub functions: Vec<Function>,
+    pub properties: TiVec<PropertyIdx, Property>,
+    pub functions: TiVec<FunctionIdx, Function>,
     /// One entry per property
-    pub init_values: Vec<Option<BindingExpression>>,
+    pub init_values: TiVec<PropertyIdx, Option<BindingExpression>>,
     // maps property to its changed callback
-    pub change_callbacks: BTreeMap<usize, MutExpression>,
-    pub const_properties: Vec<bool>,
+    pub change_callbacks: BTreeMap<PropertyIdx, MutExpression>,
+    pub const_properties: TiVec<PropertyIdx, bool>,
     pub public_properties: PublicProperties,
     pub private_properties: PrivateProperties,
     /// true if we should expose the global in the generated API
@@ -70,7 +85,7 @@ pub struct GlobalComponent {
     pub is_builtin: bool,
 
     /// Analysis for each properties
-    pub prop_analysis: Vec<crate::object_tree::PropertyAnalysis>,
+    pub prop_analysis: TiVec<PropertyIdx, crate::object_tree::PropertyAnalysis>,
 }
 
 impl GlobalComponent {
@@ -86,18 +101,22 @@ impl GlobalComponent {
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum PropertyReference {
     /// A property relative to this SubComponent
-    Local { sub_component_path: Vec<usize>, property_index: PropertyIndex },
+    Local { sub_component_path: Vec<SubComponentInstanceIdx>, property_index: PropertyIdx },
     /// A property in a Native item
-    InNativeItem { sub_component_path: Vec<usize>, item_index: u32, prop_name: String },
+    InNativeItem {
+        sub_component_path: Vec<SubComponentInstanceIdx>,
+        item_index: ItemInstanceIdx,
+        prop_name: String,
+    },
     /// The properties is a property relative to a parent ItemTree (`level` level deep)
     InParent { level: NonZeroUsize, parent_reference: Box<PropertyReference> },
     /// The property within a GlobalComponent
-    Global { global_index: usize, property_index: usize },
+    Global { global_index: GlobalIdx, property_index: PropertyIdx },
 
     /// A function in a sub component.
-    Function { sub_component_path: Vec<usize>, function_index: usize },
+    Function { sub_component_path: Vec<SubComponentInstanceIdx>, function_index: FunctionIdx },
     /// A function in a global.
-    GlobalFunction { global_index: usize, function_index: usize },
+    GlobalFunction { global_index: GlobalIdx, function_index: FunctionIdx },
 }
 
 #[derive(Debug, Default)]
@@ -132,23 +151,24 @@ pub struct ListViewInfo {
     // In the repeated component context
     pub prop_y: PropertyReference,
     // In the repeated component context
-    pub prop_width: PropertyReference,
-    // In the repeated component context
     pub prop_height: PropertyReference,
 }
 
 #[derive(Debug)]
 pub struct RepeatedElement {
     pub model: MutExpression,
-    /// Within the sub_tree's root component
-    pub index_prop: Option<PropertyIndex>,
-    /// Within the sub_tree's root component
-    pub data_prop: Option<PropertyIndex>,
+    /// Within the sub_tree's root component. None for `if`
+    pub index_prop: Option<PropertyIdx>,
+    /// Within the sub_tree's root component. None for `if`
+    pub data_prop: Option<PropertyIdx>,
     pub sub_tree: ItemTree,
     /// The index of the item node in the parent tree
     pub index_in_tree: u32,
 
     pub listview: Option<ListViewInfo>,
+
+    /// Access through this in case of the element being a `is_component_placeholder`
+    pub container_item_index: Option<ItemInstanceIdx>,
 }
 
 #[derive(Debug)]
@@ -156,7 +176,7 @@ pub struct ComponentContainerElement {
     /// The index of the `ComponentContainer` in the enclosing components `item_tree` array
     pub component_container_item_tree_index: u32,
     /// The index of the `ComponentContainer` item in the enclosing components `items` array
-    pub component_container_items_index: u32,
+    pub component_container_items_index: ItemInstanceIdx,
     /// The index to a dynamic tree node where the component is supposed to be embedded at
     pub component_placeholder_item_tree_index: u32,
 }
@@ -180,11 +200,9 @@ impl std::fmt::Debug for Item {
 
 #[derive(Debug)]
 pub struct TreeNode {
-    pub sub_component_path: Vec<usize>,
-    /// Either an index in the items or repeater, depending on (repeated || component_container)
-    pub item_index: u32,
-    pub repeated: bool,
-    pub component_container: bool,
+    pub sub_component_path: Vec<SubComponentInstanceIdx>,
+    /// Either an index in the items, or the local dynamic index for repeater or component container
+    pub item_index: itertools::Either<ItemInstanceIdx, u32>,
     pub children: Vec<TreeNode>,
     pub is_accessible: bool,
 }
@@ -235,14 +253,16 @@ impl TreeNode {
 #[derive(Debug)]
 pub struct SubComponent {
     pub name: SmolStr,
-    pub properties: Vec<Property>,
-    pub functions: Vec<Function>,
-    pub items: Vec<Item>,
-    pub repeated: Vec<RepeatedElement>,
+    pub properties: TiVec<PropertyIdx, Property>,
+    pub functions: TiVec<FunctionIdx, Function>,
+    pub items: TiVec<ItemInstanceIdx, Item>,
+    pub repeated: TiVec<RepeatedElementIdx, RepeatedElement>,
     pub component_containers: Vec<ComponentContainerElement>,
     pub popup_windows: Vec<PopupWindow>,
+    /// The MenuItem trees. The index is stored in a Expression::NumberLiteral in the arguments of BuiltinFunction::ShowPopupMenu and BuiltinFunction::SetupNativeMenuBar
+    pub menu_item_trees: Vec<ItemTree>,
     pub timers: Vec<Timer>,
-    pub sub_components: Vec<SubComponentInstance>,
+    pub sub_components: TiVec<SubComponentInstanceIdx, SubComponentInstance>,
     /// The initial value or binding for properties.
     /// This is ordered in the order they must be set.
     pub property_init: Vec<(PropertyReference, BindingExpression)>,
@@ -280,6 +300,7 @@ pub struct PopupMenu {
     pub item_tree: ItemTree,
     pub sub_menu: PropertyReference,
     pub activated: PropertyReference,
+    pub close: PropertyReference,
     pub entries: PropertyReference,
 }
 
@@ -299,29 +320,29 @@ pub struct PropAnalysis {
 
 impl SubComponent {
     /// total count of repeater, including in sub components
-    pub fn repeater_count(&self) -> u32 {
+    pub fn repeater_count(&self, cu: &CompilationUnit) -> u32 {
         let mut count = (self.repeated.len() + self.component_containers.len()) as u32;
         for x in self.sub_components.iter() {
-            count += x.ty.repeater_count();
+            count += cu.sub_components[x.ty].repeater_count(cu);
         }
         count
     }
 
     /// total count of items, including in sub components
-    pub fn child_item_count(&self) -> u32 {
+    pub fn child_item_count(&self, cu: &CompilationUnit) -> u32 {
         let mut count = self.items.len() as u32;
         for x in self.sub_components.iter() {
-            count += x.ty.child_item_count();
+            count += cu.sub_components[x.ty].child_item_count(cu);
         }
         count
     }
 
     /// Return if a local property is used. (unused property shouldn't be generated)
-    pub fn prop_used(&self, prop: &PropertyReference) -> bool {
+    pub fn prop_used(&self, prop: &PropertyReference, cu: &CompilationUnit) -> bool {
         if let PropertyReference::Local { property_index, sub_component_path } = prop {
             let mut sc = self;
             for i in sub_component_path {
-                sc = &sc.sub_components[*i].ty;
+                sc = &cu.sub_components[sc.sub_components[*i].ty];
             }
             if sc.properties[*property_index].use_count.get() == 0 {
                 return false;
@@ -331,30 +352,18 @@ impl SubComponent {
     }
 }
 
+#[derive(Debug)]
 pub struct SubComponentInstance {
-    pub ty: Rc<SubComponent>,
+    pub ty: SubComponentIdx,
     pub name: SmolStr,
     pub index_in_tree: u32,
     pub index_of_first_child_in_tree: u32,
     pub repeater_offset: u32,
 }
 
-impl std::fmt::Debug for SubComponentInstance {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SubComponentInstance")
-            // only dump ty.name, not the whole structure
-            .field("ty", &self.ty.name)
-            .field("name", &self.name)
-            .field("index_in_tree", &self.index_in_tree)
-            .field("index_of_first_child_in_tree", &self.index_of_first_child_in_tree)
-            .field("repeater_offset", &self.repeater_offset)
-            .finish()
-    }
-}
-
 #[derive(Debug)]
 pub struct ItemTree {
-    pub root: SubComponent,
+    pub root: SubComponentIdx,
     pub tree: TreeNode,
     /// This tree has a parent. e.g: it is a Repeater or a PopupWindow whose property can access
     /// the parent ItemTree.
@@ -373,12 +382,15 @@ pub struct PublicComponent {
 #[derive(Debug)]
 pub struct CompilationUnit {
     pub public_components: Vec<PublicComponent>,
-    pub sub_components: Vec<Rc<SubComponent>>,
-    pub globals: Vec<GlobalComponent>,
+    /// Storage for all sub-components
+    pub sub_components: TiVec<SubComponentIdx, SubComponent>,
+    /// The sub-components that are not item-tree root
+    pub used_sub_components: Vec<SubComponentIdx>,
+    pub globals: TiVec<GlobalIdx, GlobalComponent>,
     pub popup_menu: Option<PopupMenu>,
     pub has_debug_info: bool,
     #[cfg(feature = "bundle-translations")]
-    pub translations: Option<super::translations::Translations>,
+    pub translations: Option<crate::translations::Translations>,
 }
 
 impl CompilationUnit {
@@ -388,37 +400,41 @@ impl CompilationUnit {
     ) {
         fn visit_component<'a>(
             root: &'a CompilationUnit,
-            c: &'a SubComponent,
+            c: SubComponentIdx,
             visitor: &mut dyn FnMut(&'a SubComponent, &EvaluationContext<'_>),
             parent: Option<ParentCtx<'_>>,
         ) {
             let ctx = EvaluationContext::new_sub_component(root, c, (), parent);
-            visitor(c, &ctx);
-            for (idx, r) in c.repeated.iter().enumerate() {
+            let sc = &root.sub_components[c];
+            visitor(sc, &ctx);
+            for (idx, r) in sc.repeated.iter_enumerated() {
                 visit_component(
                     root,
-                    &r.sub_tree.root,
+                    r.sub_tree.root,
                     visitor,
-                    Some(ParentCtx::new(&ctx, Some(idx as u32))),
+                    Some(ParentCtx::new(&ctx, Some(idx))),
                 );
             }
-            for popup in &c.popup_windows {
+            for popup in &sc.popup_windows {
                 visit_component(
                     root,
-                    &popup.item_tree.root,
+                    popup.item_tree.root,
                     visitor,
                     Some(ParentCtx::new(&ctx, None)),
                 );
             }
+            for menu_tree in &sc.menu_item_trees {
+                visit_component(root, menu_tree.root, visitor, Some(ParentCtx::new(&ctx, None)));
+            }
         }
-        for c in &self.sub_components {
-            visit_component(self, c, visitor, None);
+        for c in &self.used_sub_components {
+            visit_component(self, *c, visitor, None);
         }
         for p in &self.public_components {
-            visit_component(self, &p.item_tree.root, visitor, None);
+            visit_component(self, p.item_tree.root, visitor, None);
         }
         if let Some(p) = &self.popup_menu {
-            visit_component(self, &p.item_tree.root, visitor, None);
+            visit_component(self, p.item_tree.root, visitor, None);
         }
     }
 
@@ -445,8 +461,8 @@ impl CompilationUnit {
                 visitor(e, ctx);
             }
         });
-        for g in &self.globals {
-            let ctx = EvaluationContext::new_global(self, g, ());
+        for (idx, g) in self.globals.iter_enumerated() {
+            let ctx = EvaluationContext::new_global(self, idx, ());
             for e in g.init_values.iter().filter_map(|x| x.as_ref()) {
                 visitor(&e.expression, &ctx)
             }

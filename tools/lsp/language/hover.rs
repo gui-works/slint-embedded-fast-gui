@@ -1,8 +1,10 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
-use super::token_info::TokenInfo;
-use crate::common::DocumentCache;
+use crate::common::{
+    self,
+    token_info::{token_info, TokenInfo},
+};
 use crate::util;
 use i_slint_compiler::langtype::{ElementType, Type};
 use i_slint_compiler::object_tree::ElementRc;
@@ -10,8 +12,11 @@ use i_slint_compiler::parser::SyntaxToken;
 use itertools::Itertools as _;
 use lsp_types::{Hover, HoverContents, MarkupContent};
 
-pub fn get_tooltip(document_cache: &mut DocumentCache, token: SyntaxToken) -> Option<Hover> {
-    let token_info = crate::language::token_info::token_info(document_cache, token.clone())?;
+pub fn get_tooltip(
+    document_cache: &mut common::DocumentCache,
+    token: SyntaxToken,
+) -> Option<Hover> {
+    let token_info = token_info(document_cache, token.clone())?;
     let contents = match token_info {
         TokenInfo::Type(ty) => from_plain_text(ty.to_string()),
         TokenInfo::ElementType(e) => match e {
@@ -47,7 +52,9 @@ pub fn get_tooltip(document_cache: &mut DocumentCache, token: SyntaxToken) -> Op
             value: format!("![{0}]({0})", path.to_string_lossy()),
         },
         // Todo: this can happen when there is some syntax error
-        TokenInfo::LocalProperty(_) | TokenInfo::LocalCallback(_) => return None,
+        TokenInfo::LocalProperty(_) | TokenInfo::LocalCallback(_) | TokenInfo::LocalFunction(_) => {
+            return None
+        }
         TokenInfo::IncompleteNamedReference(el, name) => from_property_in_type(&el, &name)?,
     };
 
@@ -79,10 +86,10 @@ fn from_property_in_type(base: &ElementType, name: &str) -> Option<MarkupContent
 fn property_tooltip(ty: &Type, name: &str, pure: bool) -> Option<MarkupContent> {
     let pure = if pure { "pure " } else { "" };
     if let Type::Callback(callback) = ty {
-        let sig = signature_from_function_ty(&callback);
+        let sig = signature_from_function_ty(callback);
         Some(from_slint_code(&format!("{pure}callback {name}{sig}")))
     } else if let Type::Function(function) = &ty {
-        let sig = signature_from_function_ty(&function);
+        let sig = signature_from_function_ty(function);
         Some(from_slint_code(&format!("{pure}function {name}{sig}")))
     } else if ty.is_property_type() {
         Some(from_slint_code(&format!("property <{ty}> {name}")))

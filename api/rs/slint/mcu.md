@@ -29,7 +29,7 @@ Start by adding a dependency to the `slint` and the `slint-build` crates to your
 Start with the `slint` crate like this:
 
 ```sh
-cargo add slint@1.9.0 --no-default-features --features "compat-1-2 unsafe-single-threaded libm renderer-software"
+cargo add slint@1.12 --no-default-features --features "compat-1-2 unsafe-single-threaded libm renderer-software"
 ```
 
 The default features of the `slint` crate are tailored towards hosted environments and includes the "std" feature. In bare metal environments,
@@ -52,7 +52,7 @@ This is the default when using the Rust 2021 Edition, but not if you use a works
 Then add the `slint-build` crate as a build dependency:
 
 ```sh
-cargo add --build slint-build@1.9.0
+cargo add --build slint-build@1.12
 ```
 
 For reference: These are the relevant parts of your `Cargo.toml` file,
@@ -68,11 +68,11 @@ edition = "2021"
 ## ... your other dependencies
 
 [dependencies.slint]
-version = "1.8.0"
+version = "1.12"
 default-features = false
 features = ["compat-1-2", "unsafe-single-threaded", "libm", "renderer-software"]
 [build-dependencies]
-slint-build = "1.9.0"
+slint-build = "1.12"
 ```
 
 ## Changes to `build.rs`
@@ -126,7 +126,7 @@ This minimal implementation needs to cover two functions:
    that implements this trait.
  * `fn duration_since_start(&self) -> Duration`: For animations in `.slint` design files to change properties correctly, Slint needs to know
    how much time has elapsed between two rendered frames. In a bare metal environment you need to provide a source of time. Often the HAL crate of your
-   device provides a system timer API for this, which you can query in your impementation.
+   device provides a system timer API for this, which you can query in your implementation.
 
 You may override more functions of this trait, for example to handle debug output, to delegate the event loop,
 or to deliver events in multi-threaded environments.
@@ -222,7 +222,7 @@ loop {
     if let Some(event) = check_for_touch_event(/*...*/) {
         // convert the event from the driver into a `slint::platform::WindowEvent`
         // and pass it to the window.
-        window.dispatch_event(event);
+        window.try_dispatch_event(event).unwrap();
     }
 
     // ... maybe some more application logic ...

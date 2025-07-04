@@ -7,34 +7,37 @@ use std::num::NonZeroUsize;
 use std::rc::{Rc, Weak};
 
 use itertools::Either;
-
 use smol_str::{format_smolstr, SmolStr};
 
 use super::lower_to_item_tree::{LoweredElement, LoweredSubComponentMapping, LoweringState};
-use super::{Animation, PropertyReference};
+use super::{Animation, PropertyIdx, PropertyReference, RepeatedElementIdx};
+use crate::expression_tree::{BuiltinFunction, Callable, Expression as tree_Expression};
 use crate::langtype::{EnumerationValue, Struct, Type};
 use crate::layout::Orientation;
 use crate::llr::Expression as llr_Expression;
 use crate::namedreference::NamedReference;
 use crate::object_tree::{Element, ElementRc, PropertyAnimation};
-use crate::{
-    expression_tree::{BuiltinFunction, Expression as tree_Expression},
-    typeregister::BUILTIN,
-};
+use crate::typeregister::BUILTIN;
 
-pub struct ExpressionContext<'a> {
+pub struct ExpressionLoweringCtxInner<'a> {
     pub component: &'a Rc<crate::object_tree::Component>,
+    /// The mapping for the current component
     pub mapping: &'a LoweredSubComponentMapping,
-    pub state: &'a LoweringState,
-    pub parent: Option<&'a ExpressionContext<'a>>,
+    pub parent: Option<&'a ExpressionLoweringCtxInner<'a>>,
+}
+#[derive(derive_more::Deref)]
+pub struct ExpressionLoweringCtx<'a> {
+    pub state: &'a mut LoweringState,
+    #[deref]
+    pub inner: ExpressionLoweringCtxInner<'a>,
 }
 
-impl ExpressionContext<'_> {
+impl ExpressionLoweringCtx<'_> {
     pub fn map_property_reference(&self, from: &NamedReference) -> PropertyReference {
         let element = from.element();
         let enclosing = &element.borrow().enclosing_component.upgrade().unwrap();
         if !enclosing.is_global() {
-            let mut map = self;
+            let mut map = &self.inner;
             let mut level = 0;
             while !Rc::ptr_eq(enclosing, map.component) {
                 map = map.parent.unwrap();
@@ -53,7 +56,7 @@ impl ExpressionContext<'_> {
     }
 }
 
-impl super::TypeResolutionContext for ExpressionContext<'_> {
+impl super::TypeResolutionContext for ExpressionLoweringCtx<'_> {
     fn property_ty(&self, _: &PropertyReference) -> &Type {
         todo!()
     }
@@ -61,7 +64,7 @@ impl super::TypeResolutionContext for ExpressionContext<'_> {
 
 pub fn lower_expression(
     expression: &tree_Expression,
-    ctx: &ExpressionContext<'_>,
+    ctx: &mut ExpressionLoweringCtx<'_>,
 ) -> llr_Expression {
     match expression {
         tree_Expression::Invalid => {
@@ -73,26 +76,35 @@ pub fn lower_expression(
             llr_Expression::NumberLiteral(unit.normalize(*n))
         }
         tree_Expression::BoolLiteral(b) => llr_Expression::BoolLiteral(*b),
-        tree_Expression::CallbackReference(nr, _)
-        | tree_Expression::PropertyReference(nr)
-        | tree_Expression::FunctionReference(nr, _) => {
+        tree_Expression::PropertyReference(nr) => {
             llr_Expression::PropertyReference(ctx.map_property_reference(nr))
         }
-        tree_Expression::BuiltinFunctionReference(_, _) => panic!(),
-        tree_Expression::MemberFunction { .. } => panic!(),
-        tree_Expression::BuiltinMacroReference(_, _) => panic!(),
         tree_Expression::ElementReference(e) => {
+            let elem = e.upgrade().unwrap();
+            let enclosing = elem.borrow().enclosing_component.upgrade().unwrap();
+            // When within a ShowPopupMenu builtin function, this is a reference to the root of the menu item tree
+            if Rc::ptr_eq(&elem, &enclosing.root_element) {
+                if let Some(idx) = ctx
+                    .component
+                    .menu_item_tree
+                    .borrow()
+                    .iter()
+                    .position(|c| Rc::ptr_eq(c, &enclosing))
+                {
+                    return llr_Expression::NumberLiteral(idx as _);
+                }
+            }
+
             // We map an element reference to a reference to the property "" inside that native item
-            llr_Expression::PropertyReference(ctx.map_property_reference(&NamedReference::new(
-                &e.upgrade().unwrap(),
-                SmolStr::default(),
-            )))
+            llr_Expression::PropertyReference(
+                ctx.map_property_reference(&NamedReference::new(&elem, SmolStr::default())),
+            )
         }
         tree_Expression::RepeaterIndexReference { element } => {
-            repeater_special_property(element, ctx.component, 1)
+            repeater_special_property(element, ctx.component, 1usize.into())
         }
         tree_Expression::RepeaterModelReference { element } => {
-            repeater_special_property(element, ctx.component, 0)
+            repeater_special_property(element, ctx.component, 0usize.into())
         }
         tree_Expression::FunctionParameterReference { index, .. } => {
             llr_Expression::FunctionParameterReference { index: *index }
@@ -118,14 +130,14 @@ pub fn lower_expression(
         tree_Expression::CodeBlock(expr) => {
             llr_Expression::CodeBlock(expr.iter().map(|e| lower_expression(e, ctx)).collect::<_>())
         }
-        tree_Expression::FunctionCall { function, arguments, .. } => match &**function {
-            tree_Expression::BuiltinFunctionReference(BuiltinFunction::ShowPopupWindow, _) => {
-                lower_show_popup(arguments, ctx)
+        tree_Expression::FunctionCall { function, arguments, .. } => match function {
+            Callable::Builtin(BuiltinFunction::ShowPopupWindow) => {
+                lower_show_popup_window(arguments, ctx)
             }
-            tree_Expression::BuiltinFunctionReference(BuiltinFunction::ClosePopupWindow, _) => {
-                lower_close_popup(arguments, ctx)
+            Callable::Builtin(BuiltinFunction::ClosePopupWindow) => {
+                lower_close_popup_window(arguments, ctx)
             }
-            tree_Expression::BuiltinFunctionReference(f, _) => {
+            Callable::Builtin(f) => {
                 let mut arguments =
                     arguments.iter().map(|e| lower_expression(e, ctx)).collect::<Vec<_>>();
                 if *f == BuiltinFunction::Translate {
@@ -133,23 +145,29 @@ pub fn lower_expression(
                         *as_model = false;
                     }
                     #[cfg(feature = "bundle-translations")]
-                    if let Some(mut translation_builder) =
-                        ctx.state.translation_builder.as_ref().map(|x| x.borrow_mut())
-                    {
+                    if let Some(translation_builder) = ctx.state.translation_builder.as_mut() {
                         return translation_builder.lower_translate_call(arguments);
                     }
                 }
                 llr_Expression::BuiltinFunctionCall { function: f.clone(), arguments }
             }
-            tree_Expression::CallbackReference(nr, _) => {
+            Callable::Callback(nr) => {
                 let arguments = arguments.iter().map(|e| lower_expression(e, ctx)).collect::<_>();
                 llr_Expression::CallBackCall { callback: ctx.map_property_reference(nr), arguments }
             }
-            tree_Expression::FunctionReference(nr, _) => {
+            Callable::Function(nr)
+                if nr
+                    .element()
+                    .borrow()
+                    .native_class()
+                    .is_some_and(|n| n.properties.contains_key(nr.name())) =>
+            {
+                llr_Expression::ItemMemberFunctionCall { function: ctx.map_property_reference(nr) }
+            }
+            Callable::Function(nr) => {
                 let arguments = arguments.iter().map(|e| lower_expression(e, ctx)).collect::<_>();
                 llr_Expression::FunctionCall { function: ctx.map_property_reference(nr), arguments }
             }
-            _ => panic!("not calling a function"),
         },
         tree_Expression::SelfAssignment { lhs, rhs, op, .. } => {
             lower_assignment(lhs, rhs, *op, ctx)
@@ -169,10 +187,22 @@ pub fn lower_expression(
             }
         }
         tree_Expression::Condition { condition, true_expr, false_expr } => {
+            let (true_ty, false_ty) = (true_expr.ty(), false_expr.ty());
             llr_Expression::Condition {
                 condition: Box::new(lower_expression(condition, ctx)),
                 true_expr: Box::new(lower_expression(true_expr, ctx)),
-                false_expr: lower_expression(false_expr, ctx).into(),
+                false_expr: if false_ty == Type::Invalid
+                    || false_ty == Type::Void
+                    || true_ty == false_ty
+                {
+                    Box::new(lower_expression(false_expr, ctx))
+                } else {
+                    // Because the type of the Condition is based on the false expression, we need to insert a cast
+                    Box::new(llr_Expression::Cast {
+                        from: Box::new(lower_expression(false_expr, ctx)),
+                        to: Type::Void,
+                    })
+                },
             }
         }
         tree_Expression::Array { element_ty, values } => llr_Expression::Array {
@@ -222,6 +252,7 @@ pub fn lower_expression(
             rhs: Box::new(lower_expression(rhs, ctx)),
         },
         tree_Expression::EmptyComponentFactory => llr_Expression::EmptyComponentFactory,
+        tree_Expression::DebugHook { expression, .. } => lower_expression(expression, ctx),
     }
 }
 
@@ -229,7 +260,7 @@ fn lower_assignment(
     lhs: &tree_Expression,
     rhs: &tree_Expression,
     op: char,
-    ctx: &ExpressionContext,
+    ctx: &mut ExpressionLoweringCtx,
 ) -> llr_Expression {
     match lhs {
         tree_Expression::PropertyReference(nr) => {
@@ -262,39 +293,37 @@ fn lower_assignment(
             let lower_base =
                 tree_Expression::ReadLocalVariable { name: unique_name, ty: ty.clone() };
             let mut values = HashMap::new();
-            match &ty {
-                Type::Struct(s) => {
-                    for field in s.fields.keys() {
-                        let e = if field != name {
-                            tree_Expression::StructFieldAccess {
-                                base: lower_base.clone().into(),
-                                name: field.clone(),
-                            }
-                        } else if op == '=' {
-                            rhs.clone()
-                        } else {
-                            tree_Expression::BinaryExpression {
-                                lhs: tree_Expression::StructFieldAccess {
-                                    base: lower_base.clone().into(),
-                                    name: field.clone(),
-                                }
-                                .into(),
-                                rhs: Box::new(rhs.clone()),
-                                op,
-                            }
-                        };
-                        values.insert(field.clone(), e);
+            let Type::Struct(ty) = ty else { unreachable!() };
+
+            for field in ty.fields.keys() {
+                let e = if field != name {
+                    tree_Expression::StructFieldAccess {
+                        base: lower_base.clone().into(),
+                        name: field.clone(),
                     }
-                }
-                _ => unreachable!(),
+                } else if op == '=' {
+                    rhs.clone()
+                } else {
+                    tree_Expression::BinaryExpression {
+                        lhs: tree_Expression::StructFieldAccess {
+                            base: lower_base.clone().into(),
+                            name: field.clone(),
+                        }
+                        .into(),
+                        rhs: Box::new(rhs.clone()),
+                        op,
+                    }
+                };
+                values.insert(field.clone(), e);
             }
+
             let new_value =
                 tree_Expression::CodeBlock(vec![s, tree_Expression::Struct { ty, values }]);
             lower_assignment(base, &new_value, '=', ctx)
         }
         tree_Expression::RepeaterModelReference { element } => {
             let rhs = lower_expression(rhs, ctx);
-            let prop = repeater_special_property(element, ctx.component, 0);
+            let prop = repeater_special_property(element, ctx.component, 0usize.into());
 
             let level = match &prop {
                 llr_Expression::PropertyReference(PropertyReference::InParent {
@@ -337,7 +366,7 @@ fn lower_assignment(
 fn repeater_special_property(
     element: &Weak<RefCell<Element>>,
     component: &Rc<crate::object_tree::Component>,
-    property_index: usize,
+    property_index: PropertyIdx,
 ) -> llr_Expression {
     let mut r = PropertyReference::Local { sub_component_path: vec![], property_index };
     let enclosing = element.upgrade().unwrap().borrow().enclosing_component.upgrade().unwrap();
@@ -360,7 +389,10 @@ fn repeater_special_property(
     llr_Expression::PropertyReference(r)
 }
 
-fn lower_show_popup(args: &[tree_Expression], ctx: &ExpressionContext) -> llr_Expression {
+fn lower_show_popup_window(
+    args: &[tree_Expression],
+    ctx: &mut ExpressionLoweringCtx,
+) -> llr_Expression {
     if let [tree_Expression::ElementReference(e)] = args {
         let popup_window = e.upgrade().unwrap();
         let pop_comp = popup_window.borrow().enclosing_component.upgrade().unwrap();
@@ -396,7 +428,10 @@ fn lower_show_popup(args: &[tree_Expression], ctx: &ExpressionContext) -> llr_Ex
     }
 }
 
-fn lower_close_popup(args: &[tree_Expression], ctx: &ExpressionContext) -> llr_Expression {
+fn lower_close_popup_window(
+    args: &[tree_Expression],
+    ctx: &mut ExpressionLoweringCtx,
+) -> llr_Expression {
     if let [tree_Expression::ElementReference(e)] = args {
         let popup_window = e.upgrade().unwrap();
         let pop_comp = popup_window.borrow().enclosing_component.upgrade().unwrap();
@@ -428,8 +463,11 @@ fn lower_close_popup(args: &[tree_Expression], ctx: &ExpressionContext) -> llr_E
     }
 }
 
-pub fn lower_animation(a: &PropertyAnimation, ctx: &ExpressionContext<'_>) -> Animation {
-    fn lower_animation_element(a: &ElementRc, ctx: &ExpressionContext<'_>) -> llr_Expression {
+pub fn lower_animation(a: &PropertyAnimation, ctx: &mut ExpressionLoweringCtx<'_>) -> Animation {
+    fn lower_animation_element(
+        a: &ElementRc,
+        ctx: &mut ExpressionLoweringCtx<'_>,
+    ) -> llr_Expression {
         llr_Expression::Struct {
             values: animation_fields()
                 .map(|(k, ty)| {
@@ -457,13 +495,13 @@ pub fn lower_animation(a: &PropertyAnimation, ctx: &ExpressionContext<'_>) -> An
         ])
     }
 
-    fn animation_ty() -> Type {
-        Type::Struct(Rc::new(Struct {
+    fn animation_ty() -> Rc<Struct> {
+        Rc::new(Struct {
             fields: animation_fields().collect(),
             name: Some("slint::private_api::PropertyAnimation".into()),
             node: None,
             rust_attributes: None,
-        }))
+        })
     }
 
     match a {
@@ -473,7 +511,7 @@ pub fn lower_animation(a: &PropertyAnimation, ctx: &ExpressionContext<'_>) -> An
                 name: "state".into(),
                 value: Box::new(lower_expression(state_ref, ctx)),
             };
-            let animation_ty = animation_ty();
+            let animation_ty = Type::Struct(animation_ty());
             let mut get_anim = llr_Expression::default_value_for_type(&animation_ty).unwrap();
             for tr in animations.iter().rev() {
                 let condition = lower_expression(
@@ -491,7 +529,7 @@ pub fn lower_animation(a: &PropertyAnimation, ctx: &ExpressionContext<'_>) -> An
             }
             let result = llr_Expression::Struct {
                 // This is going to be a tuple
-                ty: Type::Struct(Rc::new(Struct {
+                ty: Rc::new(Struct {
                     fields: IntoIterator::into_iter([
                         (SmolStr::new_static("0"), animation_ty),
                         // The type is an instant, which does not exist in our type system
@@ -501,7 +539,7 @@ pub fn lower_animation(a: &PropertyAnimation, ctx: &ExpressionContext<'_>) -> An
                     name: None,
                     node: None,
                     rust_attributes: None,
-                })),
+                }),
                 values: IntoIterator::into_iter([
                     (SmolStr::new_static("0"), get_anim),
                     (
@@ -526,7 +564,7 @@ pub fn lower_animation(a: &PropertyAnimation, ctx: &ExpressionContext<'_>) -> An
 fn compute_layout_info(
     l: &crate::layout::Layout,
     o: Orientation,
-    ctx: &ExpressionContext,
+    ctx: &mut ExpressionLoweringCtx,
 ) -> llr_Expression {
     match l {
         crate::layout::Layout::GridLayout(layout) => {
@@ -535,7 +573,7 @@ fn compute_layout_info(
             llr_Expression::ExtraBuiltinFunctionCall {
                 function: "grid_layout_info".into(),
                 arguments: vec![cells, spacing, padding],
-                return_ty: crate::typeregister::layout_info_type(),
+                return_ty: crate::typeregister::layout_info_type().into(),
             }
         }
         crate::layout::Layout::BoxLayout(layout) => {
@@ -545,13 +583,13 @@ fn compute_layout_info(
                 llr_Expression::ExtraBuiltinFunctionCall {
                     function: "box_layout_info".into(),
                     arguments: vec![bld.cells, spacing, padding, bld.alignment],
-                    return_ty: crate::typeregister::layout_info_type(),
+                    return_ty: crate::typeregister::layout_info_type().into(),
                 }
             } else {
                 llr_Expression::ExtraBuiltinFunctionCall {
                     function: "box_layout_info_ortho".into(),
                     arguments: vec![bld.cells, padding],
-                    return_ty: crate::typeregister::layout_info_type(),
+                    return_ty: crate::typeregister::layout_info_type().into(),
                 }
             };
             match bld.compute_cells {
@@ -571,7 +609,7 @@ fn compute_layout_info(
 fn solve_layout(
     l: &crate::layout::Layout,
     o: Orientation,
-    ctx: &ExpressionContext,
+    ctx: &mut ExpressionLoweringCtx,
 ) -> llr_Expression {
     match l {
         crate::layout::Layout::GridLayout(layout) => {
@@ -698,13 +736,13 @@ struct BoxLayoutDataResult {
     cells: llr_Expression,
     /// When there are repeater involved, we need to do a BoxLayoutFunction with the
     /// given cell variable and elements
-    compute_cells: Option<(String, Vec<Either<llr_Expression, u32>>)>,
+    compute_cells: Option<(String, Vec<Either<llr_Expression, RepeatedElementIdx>>)>,
 }
 
 fn box_layout_data(
     layout: &crate::layout::BoxLayout,
     orientation: Orientation,
-    ctx: &ExpressionContext,
+    ctx: &mut ExpressionLoweringCtx,
 ) -> BoxLayoutDataResult {
     let alignment = if let Some(expr) = &layout.geometry.alignment {
         llr_Expression::PropertyReference(ctx.map_property_reference(expr))
@@ -731,7 +769,11 @@ fn box_layout_data(
                         get_layout_info(&li.element, ctx, &li.constraints, orientation);
                     make_struct(
                         "BoxLayoutCellData",
-                        [("constraint", crate::typeregister::layout_info_type(), layout_info)],
+                        [(
+                            "constraint",
+                            crate::typeregister::layout_info_type().into(),
+                            layout_info,
+                        )],
                     )
                 })
                 .collect(),
@@ -754,13 +796,13 @@ fn box_layout_data(
                     get_layout_info(&item.element, ctx, &item.constraints, orientation);
                 elements.push(Either::Left(make_struct(
                     "BoxLayoutCellData",
-                    [("constraint", crate::typeregister::layout_info_type(), layout_info)],
+                    [("constraint", crate::typeregister::layout_info_type().into(), layout_info)],
                 )));
             }
         }
         let cells = llr_Expression::ReadLocalVariable {
             name: "cells".into(),
-            ty: Type::Array(Rc::new(crate::typeregister::layout_info_type())),
+            ty: Type::Array(Rc::new(crate::typeregister::layout_info_type().into())),
         };
         BoxLayoutDataResult { alignment, cells, compute_cells: Some(("cells".into(), elements)) }
     }
@@ -769,7 +811,7 @@ fn box_layout_data(
 fn grid_layout_cell_data(
     layout: &crate::layout::GridLayout,
     orientation: Orientation,
-    ctx: &ExpressionContext,
+    ctx: &mut ExpressionLoweringCtx,
 ) -> llr_Expression {
     llr_Expression::Array {
         element_ty: grid_layout_cell_data_ty(),
@@ -784,7 +826,7 @@ fn grid_layout_cell_data(
                 make_struct(
                     "GridLayoutCellData",
                     [
-                        ("constraint", crate::typeregister::layout_info_type(), layout_info),
+                        ("constraint", crate::typeregister::layout_info_type().into(), layout_info),
                         ("col_or_row", Type::Int32, llr_Expression::NumberLiteral(col_or_row as _)),
                         ("span", Type::Int32, llr_Expression::NumberLiteral(span as _)),
                     ],
@@ -800,7 +842,7 @@ pub(super) fn grid_layout_cell_data_ty() -> Type {
         fields: IntoIterator::into_iter([
             (SmolStr::new_static("col_or_row"), Type::Int32),
             (SmolStr::new_static("span"), Type::Int32),
-            (SmolStr::new_static("constraint"), crate::typeregister::layout_info_type()),
+            (SmolStr::new_static("constraint"), crate::typeregister::layout_info_type().into()),
         ])
         .collect(),
         name: Some("GridLayoutCellData".into()),
@@ -812,7 +854,7 @@ pub(super) fn grid_layout_cell_data_ty() -> Type {
 fn generate_layout_padding_and_spacing(
     layout_geometry: &crate::layout::LayoutGeometry,
     orientation: Orientation,
-    ctx: &ExpressionContext,
+    ctx: &ExpressionLoweringCtx,
 ) -> (llr_Expression, llr_Expression) {
     let padding_prop = |expr| {
         if let Some(expr) = expr {
@@ -835,7 +877,7 @@ fn generate_layout_padding_and_spacing(
 fn layout_geometry_size(
     rect: &crate::layout::LayoutRect,
     orientation: Orientation,
-    ctx: &ExpressionContext,
+    ctx: &ExpressionLoweringCtx,
 ) -> llr_Expression {
     match rect.size_reference(orientation) {
         Some(nr) => llr_Expression::PropertyReference(ctx.map_property_reference(nr)),
@@ -845,7 +887,7 @@ fn layout_geometry_size(
 
 pub fn get_layout_info(
     elem: &ElementRc,
-    ctx: &ExpressionContext,
+    ctx: &mut ExpressionLoweringCtx,
     constraints: &crate::layout::LayoutConstraints,
     orientation: Orientation,
 ) -> llr_Expression {
@@ -861,11 +903,8 @@ pub fn get_layout_info(
             value: layout_info.into(),
         };
         let ty = crate::typeregister::layout_info_type();
-        let fields = match &ty {
-            Type::Struct(s) => &s.fields,
-            _ => panic!(),
-        };
-        let mut values = fields
+        let mut values = ty
+            .fields
             .keys()
             .map(|p| {
                 (
@@ -873,14 +912,14 @@ pub fn get_layout_info(
                     llr_Expression::StructFieldAccess {
                         base: llr_Expression::ReadLocalVariable {
                             name: "layout_info".into(),
-                            ty: ty.clone(),
+                            ty: ty.clone().into(),
                         }
                         .into(),
                         name: p.clone(),
                     },
                 )
             })
-            .collect::<HashMap<_, _>>();
+            .collect::<BTreeMap<_, _>>();
 
         for (nr, s) in constraints.for_each_restrictions(orientation) {
             values.insert(
@@ -894,7 +933,10 @@ pub fn get_layout_info(
     }
 }
 
-fn compile_path(path: &crate::expression_tree::Path, ctx: &ExpressionContext) -> llr_Expression {
+fn compile_path(
+    path: &crate::expression_tree::Path,
+    ctx: &mut ExpressionLoweringCtx,
+) -> llr_Expression {
     fn llr_path_elements(elements: Vec<llr_Expression>) -> llr_Expression {
         llr_Expression::Cast {
             from: llr_Expression::Array {
@@ -912,7 +954,7 @@ fn compile_path(path: &crate::expression_tree::Path, ctx: &ExpressionContext) ->
             let converted_elements = elements
                 .iter()
                 .map(|element| {
-                    let element_type = Type::Struct(Rc::new(Struct {
+                    let element_type = Rc::new(Struct {
                         fields: element
                             .element_type
                             .properties
@@ -922,7 +964,7 @@ fn compile_path(path: &crate::expression_tree::Path, ctx: &ExpressionContext) ->
                         name: element.element_type.native_class.cpp_type.clone(),
                         node: None,
                         rust_attributes: None,
-                    }));
+                    });
 
                     llr_Expression::Struct {
                         ty: element_type,
@@ -965,7 +1007,7 @@ fn compile_path(path: &crate::expression_tree::Path, ctx: &ExpressionContext) ->
 
             llr_Expression::Cast {
                 from: llr_Expression::Struct {
-                    ty: Type::Struct(Rc::new(Struct {
+                    ty: Rc::new(Struct {
                         fields: IntoIterator::into_iter([
                             (SmolStr::new_static("events"), Type::Array(event_type.clone().into())),
                             (SmolStr::new_static("points"), Type::Array(point_type.clone().into())),
@@ -974,7 +1016,7 @@ fn compile_path(path: &crate::expression_tree::Path, ctx: &ExpressionContext) ->
                         name: None,
                         node: None,
                         rust_attributes: None,
-                    })),
+                    }),
                     values: IntoIterator::into_iter([
                         (
                             SmolStr::new_static("events"),
@@ -1011,19 +1053,19 @@ pub fn make_struct(
     it: impl IntoIterator<Item = (&'static str, Type, llr_Expression)>,
 ) -> llr_Expression {
     let mut fields = BTreeMap::<SmolStr, Type>::new();
-    let mut values = HashMap::<SmolStr, llr_Expression>::new();
+    let mut values = BTreeMap::<SmolStr, llr_Expression>::new();
     for (name, ty, expr) in it {
         fields.insert(SmolStr::new(name), ty);
         values.insert(SmolStr::new(name), expr);
     }
 
     llr_Expression::Struct {
-        ty: Type::Struct(Rc::new(Struct {
+        ty: Rc::new(Struct {
             fields,
             name: Some(format_smolstr!("slint::private_api::{name}")),
             node: None,
             rust_attributes: None,
-        })),
+        }),
         values,
     }
 }

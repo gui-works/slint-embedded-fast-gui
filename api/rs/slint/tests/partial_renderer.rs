@@ -1,23 +1,30 @@
 // Copyright © SixtyFPS GmbH <info@slint.dev>
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
+use i_slint_renderer_skia::skia_safe;
+use i_slint_renderer_skia::SkiaRenderer;
+use i_slint_renderer_skia::SkiaSharedContext;
 use slint::platform::software_renderer::{
     MinimalSoftwareWindow, PremultipliedRgbaColor, SoftwareRenderer, TargetPixel,
 };
 use slint::platform::{PlatformError, WindowAdapter};
-use slint::{Model, PhysicalPosition, PhysicalSize};
-use std::rc::Rc;
+use slint::{Model, PhysicalPosition, PhysicalSize, SharedPixelBuffer};
+use std::cell::{Cell, RefCell};
+use std::rc::{Rc, Weak};
 
 thread_local! {
     static WINDOW: Rc<MinimalSoftwareWindow>  =
     MinimalSoftwareWindow::new(slint::platform::software_renderer::RepaintBufferType::ReusedBuffer);
-
+    static SKIA_WINDOW: Rc<SkiaTestWindow> = SkiaTestWindow::new();
+    static NEXT_WINDOW_CHOICE: Rc<RefCell<Option<Rc<dyn WindowAdapter>>>> = Rc::new(RefCell::new(None));
 }
 
 struct TestPlatform;
 impl slint::platform::Platform for TestPlatform {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        Ok(WINDOW.with(|x| x.clone()))
+        Ok(NEXT_WINDOW_CHOICE.with(|choice| {
+            choice.borrow_mut().take().unwrap_or_else(|| WINDOW.with(|x| x.clone()))
+        }))
     }
 }
 
@@ -53,6 +60,132 @@ fn do_test_render_region(renderer: &SoftwareRenderer, x: i32, y: i32, x2: i32, y
         }
     }
     assert!(has_one_pixel, "Nothing was rendered");
+}
+
+struct SkiaTestWindow {
+    window: slint::Window,
+    renderer: SkiaRenderer,
+    needs_redraw: Cell<bool>,
+    size: Cell<slint::PhysicalSize>,
+    render_buffer: Rc<SkiaTestSoftwareBuffer>,
+}
+
+impl SkiaTestWindow {
+    fn new() -> Rc<Self> {
+        let render_buffer = Rc::new(SkiaTestSoftwareBuffer::default());
+        let renderer = SkiaRenderer::new_with_surface(
+            &SkiaSharedContext::default(),
+            Box::new(i_slint_renderer_skia::software_surface::SoftwareSurface::from(
+                render_buffer.clone(),
+            )),
+        );
+        Rc::new_cyclic(|w: &Weak<Self>| Self {
+            window: slint::Window::new(w.clone()),
+            renderer,
+            needs_redraw: Default::default(),
+            size: Default::default(),
+            render_buffer,
+        })
+    }
+
+    fn draw_if_needed(&self) -> bool {
+        if self.needs_redraw.replace(false) {
+            self.renderer.render().unwrap();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn last_dirty_region_bounding_box_size(&self) -> Option<slint::LogicalSize> {
+        self.render_buffer.last_dirty_region.borrow().as_ref().map(|r| {
+            let size = r.bounding_rect().size;
+            slint::LogicalSize::new(size.width as _, size.height as _)
+        })
+    }
+    fn last_dirty_region_bounding_box_origin(&self) -> Option<slint::LogicalPosition> {
+        self.render_buffer.last_dirty_region.borrow().as_ref().map(|r| {
+            let origin = r.bounding_rect().origin;
+            slint::LogicalPosition::new(origin.x as _, origin.y as _)
+        })
+    }
+}
+
+impl WindowAdapter for SkiaTestWindow {
+    fn window(&self) -> &slint::Window {
+        &self.window
+    }
+
+    fn size(&self) -> PhysicalSize {
+        self.size.get()
+    }
+
+    fn renderer(&self) -> &dyn slint::platform::Renderer {
+        &self.renderer
+    }
+
+    fn set_size(&self, size: slint::WindowSize) {
+        self.size.set(size.to_physical(1.));
+        self.window
+            .dispatch_event(slint::platform::WindowEvent::Resized { size: size.to_logical(1.) })
+    }
+
+    fn request_redraw(&self) {
+        self.needs_redraw.set(true);
+    }
+}
+
+#[derive(Default)]
+struct SkiaTestSoftwareBuffer {
+    pixels: RefCell<Option<SharedPixelBuffer<slint::Rgba8Pixel>>>,
+    last_dirty_region: RefCell<Option<i_slint_core::item_rendering::DirtyRegion>>,
+}
+
+impl i_slint_renderer_skia::software_surface::RenderBuffer for SkiaTestSoftwareBuffer {
+    fn with_buffer(
+        &self,
+        _window: &slint::Window,
+        size: PhysicalSize,
+        render_callback: &mut dyn FnMut(
+            std::num::NonZeroU32,
+            std::num::NonZeroU32,
+            i_slint_renderer_skia::skia_safe::ColorType,
+            u8,
+            &mut [u8],
+        ) -> Result<
+            Option<i_slint_core::item_rendering::DirtyRegion>,
+            i_slint_core::platform::PlatformError,
+        >,
+    ) -> Result<(), i_slint_core::platform::PlatformError> {
+        let Some((width, height)): Option<(std::num::NonZeroU32, std::num::NonZeroU32)> =
+            size.width.try_into().ok().zip(size.height.try_into().ok())
+        else {
+            // Nothing to render
+            return Ok(());
+        };
+
+        let mut shared_pixel_buffer = self.pixels.borrow_mut().take();
+
+        if shared_pixel_buffer.as_ref().is_some_and(|existing_buffer| {
+            existing_buffer.width() != width.get() || existing_buffer.height() != height.get()
+        }) {
+            shared_pixel_buffer = None;
+        }
+
+        let mut age = 1;
+        let pixels = shared_pixel_buffer.get_or_insert_with(|| {
+            age = 0;
+            SharedPixelBuffer::new(width.get(), height.get())
+        });
+
+        let bytes = bytemuck::cast_slice_mut(pixels.make_mut_slice());
+        *self.last_dirty_region.borrow_mut() =
+            render_callback(width, height, skia_safe::ColorType::RGBA8888, age, bytes)?;
+
+        *self.pixels.borrow_mut() = shared_pixel_buffer;
+
+        Ok(())
+    }
 }
 
 #[test]
@@ -280,4 +413,271 @@ fn scale_factor() {
     assert!(window.draw_if_needed(|renderer| {
         do_test_render_region(renderer, 0, 0, 500, 500);
     }));
+}
+
+#[test]
+fn rotated_image() {
+    slint::slint! {
+        export component Ui inherits Window {
+            in property <angle> rotation <=> i.rotation-angle;
+            in property <length> x-pos <=> i.x;
+            background: black;
+            i := Image {
+                x: 50px;
+                y: 50px;
+                width: 50px;
+                height: 150px;
+                source: @image-url("../../../logo/slint-logo-full-dark.png");
+            }
+        }
+    }
+
+    slint::platform::set_platform(Box::new(TestPlatform)).ok();
+
+    let window = SKIA_WINDOW.with(|w| w.clone());
+    NEXT_WINDOW_CHOICE.with(|choice| {
+        *choice.borrow_mut() = Some(window.clone());
+    });
+    let ui = Ui::new().unwrap();
+    window.set_size(slint::PhysicalSize::new(250, 250).into());
+    ui.show().unwrap();
+
+    assert!(window.draw_if_needed());
+    assert_eq!(
+        window.last_dirty_region_bounding_box_size(),
+        Some(slint::LogicalSize { width: 250., height: 250. })
+    );
+    assert_eq!(
+        window.last_dirty_region_bounding_box_origin(),
+        Some(slint::LogicalPosition { x: 0., y: 0. })
+    );
+
+    assert!(!window.draw_if_needed());
+
+    ui.set_x_pos(51.);
+
+    assert!(window.draw_if_needed());
+    assert_eq!(
+        window.last_dirty_region_bounding_box_size(),
+        Some(slint::LogicalSize { width: 51., height: 150. })
+    );
+    assert_eq!(
+        window.last_dirty_region_bounding_box_origin(),
+        Some(slint::LogicalPosition { x: 50., y: 50. })
+    );
+
+    ui.set_rotation(90.);
+
+    assert!(window.draw_if_needed());
+    assert_eq!(
+        window.last_dirty_region_bounding_box_size(),
+        Some(slint::LogicalSize { width: 150., height: 150. })
+    );
+    assert_eq!(
+        window.last_dirty_region_bounding_box_origin(),
+        Some(slint::LogicalPosition { x: 1., y: 50. })
+    );
+}
+
+#[test]
+fn window_background() {
+    slint::slint! {
+        export component Ui inherits Window {
+            in property <color> c: yellow;
+            background: c;
+        }
+    }
+
+    slint::platform::set_platform(Box::new(TestPlatform)).ok();
+    let ui = Ui::new().unwrap();
+    let window = WINDOW.with(|x| x.clone());
+    window.set_size(slint::PhysicalSize::new(180, 260));
+    ui.show().unwrap();
+    assert!(window.draw_if_needed(|renderer| {
+        do_test_render_region(renderer, 0, 0, 180, 260);
+    }));
+    assert!(!window.draw_if_needed(|_| { unreachable!() }));
+    ui.set_c(slint::Color::from_rgb_u8(45, 12, 13));
+    assert!(window.draw_if_needed(|renderer| {
+        do_test_render_region(renderer, 0, 0, 180, 260);
+    }));
+    ui.set_c(slint::Color::from_rgb_u8(45, 12, 13));
+    assert!(!window.draw_if_needed(|_| { unreachable!() }));
+}
+
+#[test]
+fn touch_area_doesnt_cause_redraw() {
+    slint::slint! {
+        export component Ui inherits Window {
+            in property <color> c: yellow;
+            in property <length> touch-area-1-x <=> ta1.x;
+            in property <length> touch-area-2-x <=> ta2.x;
+            in property <color> sole-pixel-color: red;
+            background: black;
+            ta1 := TouchArea {
+                x: 10px;
+                y: 0px;
+                width: 20px;
+                height: 40px;
+                Rectangle {
+                    x: 1phx;
+                    y: 20phx;
+                    width: 15phx;
+                    height: 17phx;
+                    background: c;
+                }
+            }
+            ta2 := TouchArea {
+                x: 10px;
+                y: 0px;
+                width: 20px;
+                height: 40px;
+            }
+            sole-pixel := Rectangle {
+                x: 60px;
+                y: 0px;
+                width: 1px;
+                height: 1px;
+                background: sole-pixel-color;
+            }
+        }
+    }
+
+    slint::platform::set_platform(Box::new(TestPlatform)).ok();
+    let ui = Ui::new().unwrap();
+    let window = WINDOW.with(|x| x.clone());
+    window.set_size(slint::PhysicalSize::new(180, 260));
+    ui.show().unwrap();
+    assert!(window.draw_if_needed(|renderer| {
+        do_test_render_region(renderer, 0, 0, 180, 260);
+    }));
+    assert!(!window.draw_if_needed(|_| { unreachable!() }));
+    ui.set_c(slint::Color::from_rgb_u8(45, 12, 13));
+    assert!(window.draw_if_needed(|renderer| {
+        do_test_render_region(renderer, 10 + 1, 20, 10 + 1 + 15, 20 + 17);
+    }));
+    assert!(!window.draw_if_needed(|_| { unreachable!() }));
+    ui.set_touch_area_1_x(20.);
+    assert!(window.draw_if_needed(|renderer| {
+        do_test_render_region(renderer, 10 + 1, 20, 10 + 1 + 15 + 10, 20 + 17);
+    }));
+    assert!(!window.draw_if_needed(|_| { unreachable!() }));
+    ui.set_touch_area_2_x(20.);
+    ui.set_sole_pixel_color(slint::Color::from_rgb_u8(45, 12, 13));
+    // Moving the touch area should not cause it to be redrawn.
+    assert!(window.draw_if_needed(|renderer| {
+        do_test_render_region(renderer, 60, 0, 61, 1);
+    }));
+}
+
+#[test]
+fn shadow_redraw_beyond_geometry() {
+    slint::slint! {
+        export component Ui inherits Window {
+            in property <length> x-pos: 10px;
+            Rectangle {
+                x: root.x-pos;
+                y: 10px;
+                width: 20px;
+                height: 20px;
+                drop-shadow-blur: 5px;
+                drop-shadow-offset-x: 15px;
+                drop-shadow-offset-y: 5px;
+                drop-shadow-color: red;
+            }
+        }
+    }
+
+    slint::platform::set_platform(Box::new(TestPlatform)).ok();
+
+    let window = SKIA_WINDOW.with(|w| w.clone());
+    NEXT_WINDOW_CHOICE.with(|choice| {
+        *choice.borrow_mut() = Some(window.clone());
+    });
+    let ui = Ui::new().unwrap();
+    window.set_size(slint::PhysicalSize::new(250, 250).into());
+    ui.show().unwrap();
+
+    assert!(window.draw_if_needed());
+    assert_eq!(
+        window.last_dirty_region_bounding_box_size(),
+        Some(slint::LogicalSize { width: 250., height: 250. })
+    );
+    assert_eq!(
+        window.last_dirty_region_bounding_box_origin(),
+        Some(slint::LogicalPosition { x: 0., y: 0. })
+    );
+
+    assert!(!window.draw_if_needed());
+
+    ui.set_x_pos(20.);
+
+    assert!(window.draw_if_needed());
+
+    let shadow_width = /* rect width */ 20. + 2. * /* blur */ 5.;
+    let move_delta = 10.;
+    let shadow_height = /* rect height */ 20. + 2. * /*blur */ 5.;
+
+    let old_shadow_x = /* rect x */ 10. + /* shadow offset */ 15. - /* blur */ 5.;
+    let old_shadow_y = /* rect y */ 10. + /* shadow offset */ 5. - /* blur */ 5.;
+
+    assert_eq!(
+        window.last_dirty_region_bounding_box_size(),
+        Some(slint::LogicalSize { width: shadow_width + move_delta, height: shadow_height })
+    );
+    assert_eq!(
+        window.last_dirty_region_bounding_box_origin(),
+        Some(slint::LogicalPosition { x: old_shadow_x, y: old_shadow_y })
+    );
+}
+
+#[test]
+fn text_alignment() {
+    slint::slint! {
+        export component Ui inherits Window {
+            in property <color> c: green;
+            Text {
+                x: 10px;
+                y: 10px;
+                width: 200px;
+                height: 50px;
+                text: "Ok";
+                color: c;
+            }
+        }
+    }
+
+    slint::platform::set_platform(Box::new(TestPlatform)).ok();
+
+    let window = SKIA_WINDOW.with(|w| w.clone());
+    NEXT_WINDOW_CHOICE.with(|choice| {
+        *choice.borrow_mut() = Some(window.clone());
+    });
+    let ui = Ui::new().unwrap();
+    window.set_size(slint::PhysicalSize::new(250, 250).into());
+    ui.show().unwrap();
+
+    assert!(window.draw_if_needed());
+    assert_eq!(
+        window.last_dirty_region_bounding_box_size(),
+        Some(slint::LogicalSize { width: 250., height: 250. })
+    );
+    assert_eq!(
+        window.last_dirty_region_bounding_box_origin(),
+        Some(slint::LogicalPosition { x: 0., y: 0. })
+    );
+
+    assert!(!window.draw_if_needed());
+
+    ui.set_c(slint::Color::from_rgb_u8(45, 12, 13));
+
+    assert!(window.draw_if_needed());
+    assert_eq!(
+        window.last_dirty_region_bounding_box_size(),
+        Some(slint::LogicalSize { width: 200., height: 50. })
+    );
+    assert_eq!(
+        window.last_dirty_region_bounding_box_origin(),
+        Some(slint::LogicalPosition { x: 10., y: 10. })
+    );
 }

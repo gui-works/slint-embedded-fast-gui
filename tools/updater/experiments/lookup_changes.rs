@@ -4,9 +4,9 @@
 use crate::Cli;
 use by_address::ByAddress;
 use i_slint_compiler::{
-    expression_tree::Expression,
+    expression_tree::{Callable, Expression},
     langtype::Type,
-    lookup::{LookupCtx, LookupObject, LookupResult},
+    lookup::{LookupCtx, LookupObject, LookupResult, LookupResultCallable},
     namedreference::NamedReference,
     object_tree::ElementRc,
     parser::{SyntaxKind, SyntaxNode},
@@ -45,11 +45,11 @@ pub(crate) fn fold_node(
 ) -> std::io::Result<bool> {
     let kind = node.kind();
     if kind == SyntaxKind::QualifiedName
-        && node.parent().map_or(false, |n| n.kind() == SyntaxKind::Expression)
+        && node.parent().is_some_and(|n| n.kind() == SyntaxKind::Expression)
     {
         return fully_qualify_property_access(node, file, state);
     } else if kind == SyntaxKind::Element
-        && node.parent().map_or(false, |n| n.kind() == SyntaxKind::Component)
+        && node.parent().is_some_and(|n| n.kind() == SyntaxKind::Component)
     {
         return move_properties_to_root(node, state, file, args);
     } else if kind == SyntaxKind::Element {
@@ -64,7 +64,7 @@ pub(crate) fn fold_node(
         kind,
         SyntaxKind::Binding | SyntaxKind::TwoWayBinding | SyntaxKind::CallbackConnection
     ) && !state.lookup_change.property_mappings.is_empty()
-        && node.parent().map_or(false, |n| n.kind() == SyntaxKind::Element)
+        && node.parent().is_some_and(|n| n.kind() == SyntaxKind::Element)
     {
         if let Some(el) = &state.current_elem {
             let prop_name = i_slint_compiler::parser::normalize_identifier(
@@ -125,13 +125,12 @@ fn fully_qualify_property_access(
         ctx.current_token = Some(first.clone().into());
         let global_lookup = i_slint_compiler::lookup::global_lookup();
         match global_lookup.lookup(ctx, &first_str) {
-            Some(LookupResult::Expression {
-                expression:
-                    Expression::PropertyReference(nr)
-                    | Expression::CallbackReference(nr, _)
-                    | Expression::FunctionReference(nr, _),
-                ..
-            }) => {
+            Some(
+                LookupResult::Expression { expression: Expression::PropertyReference(nr), .. }
+                | LookupResult::Callable(LookupResultCallable::Callable(
+                    Callable::Callback(nr) | Callable::Function(nr),
+                )),
+            ) => {
                 if let Some(new_name) = state.lookup_change.property_mappings.get(&nr) {
                     write!(file, "root.{new_name} ")?;
                     Ok(true)
@@ -140,14 +139,14 @@ fn fully_qualify_property_access(
                     if state
                         .current_component
                         .as_ref()
-                        .map_or(false, |c| Rc::ptr_eq(&element, &c.root_element))
+                        .is_some_and(|c| Rc::ptr_eq(&element, &c.root_element))
                     {
                         write!(file, "root.")?;
                     } else if state
                         .lookup_change
                         .scope
                         .last()
-                        .map_or(false, |e| Rc::ptr_eq(&element, e))
+                        .is_some_and(|e| Rc::ptr_eq(&element, e))
                     {
                         if let Some(replace_self) = &state.lookup_change.replace_self {
                             write!(file, "{replace_self}.")?;
@@ -266,7 +265,7 @@ pub(crate) fn with_lookup_ctx<R>(
         .current_elem
         .as_ref()
         .zip(state.property_name.as_ref())
-        .map_or(Type::Invalid, |(e, n)| e.borrow().lookup_property(&n).property_type);
+        .map_or(Type::Invalid, |(e, n)| e.borrow().lookup_property(n).property_type);
 
     lookup_context.property_name = state.property_name.as_ref().map(SmolStr::as_str);
     lookup_context.property_type = ty;
@@ -286,7 +285,7 @@ pub(crate) fn collect_movable_properties(state: &mut crate::State) {
                     .iter()
                     .map(|(name, _)| NamedReference::new(c, name.clone())),
             );
-            collect_movable_properties_recursive(vec, &c);
+            collect_movable_properties_recursive(vec, c);
         }
     }
     if let Some(c) = &state.current_component {
@@ -326,11 +325,7 @@ fn ensure_element_has_id(
 }
 
 pub(crate) fn enter_element(state: &mut crate::State) {
-    if state
-        .lookup_change
-        .scope
-        .last()
-        .map_or(false, |e| e.borrow().base_type.to_string() == "Path")
+    if state.lookup_change.scope.last().is_some_and(|e| e.borrow().base_type.to_string() == "Path")
     {
         // Path's sub-elements have strange lookup rules: They are considering self as the Path
         state.lookup_change.replace_self = Some("parent".into());

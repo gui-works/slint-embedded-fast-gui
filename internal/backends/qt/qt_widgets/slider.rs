@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use i_slint_core::{
-    input::key_codes,
-    input::{FocusEventResult, KeyEventType},
+    input::{key_codes, FocusEventResult, FocusReason, KeyEventType},
     items::PointerEventButton,
 };
 
@@ -78,6 +77,7 @@ impl Item for NativeSlider {
         self: Pin<&Self>,
         orientation: Orientation,
         _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
     ) -> LayoutInfo {
         let enabled = self.enabled();
         // Slint slider supports floating point ranges, while Qt uses integer. To support (0..1) ranges
@@ -149,7 +149,7 @@ impl Item for NativeSlider {
 
     fn input_event_filter_before_children(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
@@ -159,7 +159,7 @@ impl Item for NativeSlider {
     #[allow(clippy::unnecessary_cast)] // MouseEvent uses Coord
     fn input_event(
         self: Pin<&Self>,
-        event: MouseEvent,
+        event: &MouseEvent,
         window_adapter: &Rc<dyn WindowAdapter>,
         self_rc: &i_slint_core::items::ItemRc,
     ) -> InputEventResult {
@@ -210,7 +210,11 @@ impl Item for NativeSlider {
                 click_count: _,
             } => {
                 if !self.has_focus() {
-                    WindowInner::from_pub(window_adapter.window()).set_focus_item(self_rc, true);
+                    WindowInner::from_pub(window_adapter.window()).set_focus_item(
+                        self_rc,
+                        true,
+                        FocusReason::PointerClick,
+                    );
                 }
                 data.pressed_x = if vertical { pos.y as f32 } else { pos.x as f32 };
                 data.pressed = 1;
@@ -244,9 +248,10 @@ impl Item for NativeSlider {
                 InputEventResult::EventAccepted
             }
             MouseEvent::Pressed { button, .. } | MouseEvent::Released { button, .. } => {
-                debug_assert_ne!(button, PointerEventButton::Left);
+                debug_assert_ne!(*button, PointerEventButton::Left);
                 InputEventResult::EventIgnored
             }
+            MouseEvent::DragMove(..) | MouseEvent::Drop(..) => InputEventResult::EventIgnored,
         };
         data.active_controls = new_control;
 
@@ -286,6 +291,22 @@ impl Item for NativeSlider {
                 }
                 return KeyEventResult::EventAccepted;
             }
+            if keycode == key_codes::Home {
+                if event.event_type == KeyEventType::KeyPressed {
+                    self.set_value(self.minimum());
+                } else if event.event_type == KeyEventType::KeyReleased {
+                    Self::FIELD_OFFSETS.released.apply_pin(self).call(&(self.value(),));
+                }
+                return KeyEventResult::EventAccepted;
+            }
+            if keycode == key_codes::End {
+                if event.event_type == KeyEventType::KeyPressed {
+                    self.set_value(self.maximum());
+                } else if event.event_type == KeyEventType::KeyReleased {
+                    Self::FIELD_OFFSETS.released.apply_pin(self).call(&(self.value(),));
+                }
+                return KeyEventResult::EventAccepted;
+            }
         }
         KeyEventResult::EventIgnored
     }
@@ -300,7 +321,7 @@ impl Item for NativeSlider {
             Self::FIELD_OFFSETS
                 .has_focus
                 .apply_pin(self)
-                .set(event == &FocusEvent::FocusIn || event == &FocusEvent::WindowReceivedFocus);
+                .set(matches!(event, FocusEvent::FocusIn(_)));
             FocusEventResult::FocusAccepted
         } else {
             FocusEventResult::FocusIgnored
@@ -346,6 +367,19 @@ impl Item for NativeSlider {
             auto style = qApp->style();
             style->drawComplexControl(QStyle::CC_Slider, &option, painter->get(), widget);
         });
+    }
+
+    fn bounding_rect(
+        self: core::pin::Pin<&Self>,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+        geometry: LogicalRect,
+    ) -> LogicalRect {
+        geometry
+    }
+
+    fn clips_children(self: core::pin::Pin<&Self>) -> bool {
+        false
     }
 }
 

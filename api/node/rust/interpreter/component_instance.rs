@@ -46,7 +46,7 @@ impl JsComponentInstance {
 
     #[napi]
     pub fn set_property(&self, env: Env, prop_name: String, js_value: JsUnknown) -> Result<()> {
-        let ty = self
+        let (ty, _) = self
             .inner
             .definition()
             .properties_and_callbacks()
@@ -88,7 +88,7 @@ impl JsComponentInstance {
         prop_name: String,
         js_value: JsUnknown,
     ) -> Result<()> {
-        let ty = self
+        let (ty, _) = self
             .inner
             .definition()
             .global_properties_and_callbacks(global_name.as_str())
@@ -121,7 +121,7 @@ impl JsComponentInstance {
     ) -> Result<()> {
         let function_ref = RefCountedReference::new(&env, callback)?;
 
-        let ty = self
+        let (ty, _) = self
             .inner
             .definition()
             .properties_and_callbacks()
@@ -141,7 +141,7 @@ impl JsComponentInstance {
 
                     move |args| {
                         let Ok(callback) = function_ref.get::<JsFunction>() else {
-                            eprintln!("Node.js: cannot get reference of callback {} because it has the wrong type", callback_name);
+                            eprintln!("Node.js: cannot get reference of callback {callback_name} because it has the wrong type");
                             return Value::Void;
                         };
 
@@ -175,7 +175,7 @@ impl JsComponentInstance {
             return Ok(());
         }
 
-        Err(napi::Error::from_reason(format!("{} is not a callback", callback_name).as_str()))
+        Err(napi::Error::from_reason(format!("{callback_name} is not a callback").as_str()))
     }
 
     #[napi]
@@ -188,7 +188,7 @@ impl JsComponentInstance {
     ) -> Result<()> {
         let function_ref = RefCountedReference::new(&env, callback)?;
 
-        let ty = self
+        let (ty, _) = self
             .inner
             .definition()
             .global_properties_and_callbacks(global_name.as_str())
@@ -211,8 +211,7 @@ impl JsComponentInstance {
                     move |args| {
                         let Ok(callback) = function_ref.get::<JsFunction>() else {
                             eprintln!(
-                                "Node.js: cannot get reference of callback {} of global {} because it has the wrong type",
-                                callback_name, global_name
+                                "Node.js: cannot get reference of callback {callback_name} of global {global_name} because it has the wrong type"
                             );
                             return Value::Void;
                         };
@@ -247,20 +246,20 @@ impl JsComponentInstance {
             return Ok(());
         }
 
-        Err(napi::Error::from_reason(format!("{} is not a callback", callback_name).as_str()))
+        Err(napi::Error::from_reason(format!("{callback_name} is not a callback").as_str()))
     }
 
     fn invoke_args(
         env: Env,
         callback_name: &String,
         arguments: Vec<JsUnknown>,
-        args: &Vec<Type>,
+        args: &[Type],
     ) -> Result<Vec<Value>> {
         let count = args.len();
         let args = arguments
             .into_iter()
-            .zip(args.into_iter())
-            .map(|(a, ty)| super::value::to_value(&env, a, &ty))
+            .zip(args)
+            .map(|(a, ty)| super::value::to_value(&env, a, ty))
             .collect::<Result<Vec<_>, _>>()?;
         if args.len() != count {
             return Err(napi::Error::from_reason(
@@ -281,9 +280,9 @@ impl JsComponentInstance {
         &self,
         env: Env,
         callback_name: String,
-        arguments: Vec<JsUnknown>,
+        callback_arguments: Vec<JsUnknown>,
     ) -> Result<JsUnknown> {
-        let ty = self
+        let (ty, _) = self
             .inner
             .definition()
             .properties_and_callbacks()
@@ -291,17 +290,17 @@ impl JsComponentInstance {
             .ok_or(())
             .map_err(|_| {
                 napi::Error::from_reason(
-                    format!("Callback {} not found in the component", callback_name).as_str(),
+                    format!("Callback {callback_name} not found in the component").as_str(),
                 )
             })?;
 
         let args = match ty {
             Type::Callback(function) | Type::Function(function) => {
-                Self::invoke_args(env, &callback_name, arguments, &function.args)?
+                Self::invoke_args(env, &callback_name, callback_arguments, &function.args)?
             }
             _ => {
                 return Err(napi::Error::from_reason(
-                    format!("{} is not a callback or a function", callback_name).as_str(),
+                    format!("{callback_name} is not a callback or a function").as_str(),
                 ));
             }
         };
@@ -319,9 +318,9 @@ impl JsComponentInstance {
         env: Env,
         global_name: String,
         callback_name: String,
-        arguments: Vec<JsUnknown>,
+        callback_arguments: Vec<JsUnknown>,
     ) -> Result<JsUnknown> {
-        let ty = self
+        let (ty, _) = self
             .inner
             .definition()
             .global_properties_and_callbacks(global_name.as_str())
@@ -331,8 +330,7 @@ impl JsComponentInstance {
             .map_err(|_| {
                 napi::Error::from_reason(
                     format!(
-                        "Callback {} of global {global_name} not found in the component",
-                        callback_name
+                        "Callback {callback_name} of global {global_name} not found in the component"
                     )
                     .as_str(),
                 )
@@ -340,13 +338,12 @@ impl JsComponentInstance {
 
         let args = match ty {
             Type::Callback(function) | Type::Function(function) => {
-                Self::invoke_args(env, &callback_name, arguments, &function.args)?
+                Self::invoke_args(env, &callback_name, callback_arguments, &function.args)?
             }
             _ => {
                 return Err(napi::Error::from_reason(
                     format!(
-                        "{} is not a callback or a function on global {}",
-                        callback_name, global_name
+                        "{callback_name} is not a callback or a function on global {global_name}"
                     )
                     .as_str(),
                 ));
@@ -384,7 +381,7 @@ pub struct RefCountedReference {
 
 impl RefCountedReference {
     pub fn new<T: NapiRaw>(env: &Env, value: T) -> Result<Self> {
-        Ok(Self { env: env.clone(), reference: env.create_reference(value)? })
+        Ok(Self { env: *env, reference: env.create_reference(value)? })
     }
 
     pub fn get<T: NapiValue>(&self) -> Result<T> {

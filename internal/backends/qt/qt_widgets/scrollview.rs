@@ -93,6 +93,7 @@ impl Item for NativeScrollView {
         self: Pin<&Self>,
         orientation: Orientation,
         _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
     ) -> LayoutInfo {
         let min = match orientation {
             Orientation::Horizontal => self.native_padding_left() + self.native_padding_right(),
@@ -104,7 +105,7 @@ impl Item for NativeScrollView {
 
     fn input_event_filter_before_children(
         self: Pin<&Self>,
-        _: MouseEvent,
+        _: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         _self_rc: &ItemRc,
     ) -> InputEventFilterResult {
@@ -113,7 +114,7 @@ impl Item for NativeScrollView {
 
     fn input_event(
         self: Pin<&Self>,
-        event: MouseEvent,
+        event: &MouseEvent,
         _window_adapter: &Rc<dyn WindowAdapter>,
         self_rc: &i_slint_core::items::ItemRc,
     ) -> InputEventResult {
@@ -224,6 +225,7 @@ impl Item for NativeScrollView {
                     }
                     InputEventResult::EventAccepted
                 }
+                MouseEvent::DragMove(..) | MouseEvent::Drop(..) => InputEventResult::EventIgnored,
             };
             self.data.set(data);
             result
@@ -444,6 +446,19 @@ impl Item for NativeScrollView {
                 initial_state
             );
         }
+    }
+
+    fn bounding_rect(
+        self: core::pin::Pin<&Self>,
+        _window_adapter: &Rc<dyn WindowAdapter>,
+        _self_rc: &ItemRc,
+        geometry: LogicalRect,
+    ) -> LogicalRect {
+        geometry
+    }
+
+    fn clips_children(self: core::pin::Pin<&Self>) -> bool {
+        false
     }
 }
 

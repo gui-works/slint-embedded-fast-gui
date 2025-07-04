@@ -60,7 +60,7 @@ impl JsComponentCompiler {
 
     #[napi(setter)]
     pub fn set_include_paths(&mut self, include_paths: Vec<String>) {
-        self.internal.set_include_paths(include_paths.iter().map(|p| PathBuf::from(p)).collect());
+        self.internal.set_include_paths(include_paths.iter().map(PathBuf::from).collect());
     }
 
     #[napi(getter)]
@@ -128,16 +128,15 @@ impl JsComponentCompiler {
                         ))),
                     );
 
-                    return Some((name.to_string(), struct_instance.ok()?));
+                    Some((name.to_string(), struct_instance.ok()?))
                 }
-                _ => return None,
+                _ => None,
             }
         }
 
         self.structs_and_enums
             .iter()
             .filter_map(|ty| convert_type(&env, ty))
-            .into_iter()
             .collect::<HashMap<String, JsUnknown>>()
     }
 
@@ -156,16 +155,15 @@ impl JsComponentCompiler {
                         )
                         .ok()?;
                     }
-                    return Some((en.name.to_string(), o.into_unknown()));
+                    Some((en.name.to_string(), o.into_unknown()))
                 }
-                _ => return None,
+                _ => None,
             }
         }
 
         self.structs_and_enums
             .iter()
             .filter_map(|ty| convert_type(&env, ty))
-            .into_iter()
             .collect::<HashMap<String, JsUnknown>>()
     }
 

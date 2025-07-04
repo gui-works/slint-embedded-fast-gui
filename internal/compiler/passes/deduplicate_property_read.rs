@@ -8,7 +8,7 @@ use crate::langtype::Type;
 use crate::object_tree::*;
 use smol_str::{format_smolstr, SmolStr};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 pub fn deduplicate_property_read(component: &Component) {
     visit_all_expressions(component, |expr, ty| {
@@ -41,9 +41,9 @@ struct DedupPropState<'a> {
     counts: RefCell<PropertyReadCounts>,
 }
 
-impl<'a> DedupPropState<'a> {
+impl DedupPropState<'_> {
     fn add(&self, nr: &NamedReference) {
-        if self.parent_state.map_or(false, |pc| pc.add_from_children(nr)) {
+        if self.parent_state.is_some_and(|pc| pc.add_from_children(nr)) {
             return;
         }
         let mut use_counts = self.counts.borrow_mut();
@@ -62,7 +62,7 @@ impl<'a> DedupPropState<'a> {
     }
 
     fn add_from_children(&self, nr: &NamedReference) -> bool {
-        if self.parent_state.map_or(false, |pc| pc.add_from_children(nr)) {
+        if self.parent_state.is_some_and(|pc| pc.add_from_children(nr)) {
             return true;
         }
         let mut use_counts = self.counts.borrow_mut();
@@ -106,17 +106,21 @@ fn process_expression(expr: &mut Expression, old_state: &DedupPropState) {
     }
 
     if new_state.counts.borrow().has_duplicate {
-        let mut stores = vec![];
+        let mut stores = BTreeMap::<SmolStr, NamedReference>::new();
         for (nr, c) in &new_state.counts.borrow().counts {
             if c.has_been_mapped {
-                stores.push(Expression::StoreLocalVariable {
-                    name: map_nr(nr),
-                    value: Box::new(Expression::PropertyReference(nr.clone())),
-                });
+                stores.insert(map_nr(nr), nr.clone());
             }
         }
-        stores.push(std::mem::take(expr));
-        *expr = Expression::CodeBlock(stores);
+        let mut exprs = stores
+            .into_iter()
+            .map(|(name, nr)| Expression::StoreLocalVariable {
+                name,
+                value: Box::new(Expression::PropertyReference(nr)),
+            })
+            .collect::<Vec<_>>();
+        exprs.push(std::mem::take(expr));
+        *expr = Expression::CodeBlock(exprs);
     }
 }
 

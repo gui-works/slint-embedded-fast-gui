@@ -34,7 +34,10 @@ if (SLINT_ESP_LOCAL_EXAMPLE)
     add_subdirectory(../.. slint_build)
 else()
     list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
-    find_package(Slint)
+    # This variable is set when generating nightly snapshot's CMakeLists.txt
+    if (NOT SLINT_NIGHTLY)
+        find_package(Slint)
+    endif()
 
     if (TARGET Slint::Slint)
         # Imported targets are only visible in directory scope by default, but
@@ -45,7 +48,7 @@ else()
         FetchContent_Declare(
             Slint
             GIT_REPOSITORY https://github.com/slint-ui/slint
-            GIT_TAG v1.9.2
+            GIT_TAG v1.13.0
             SOURCE_SUBDIR api/cpp
         )
         FetchContent_MakeAvailable(Slint)

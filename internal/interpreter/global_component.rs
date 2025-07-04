@@ -178,7 +178,7 @@ pub fn instantiate(
         CompiledGlobal::Builtin { element, .. } => {
             trait Helper {
                 fn instantiate(name: &str) -> Pin<Rc<dyn GlobalComponent>> {
-                    panic!("Cannot find native global {}", name)
+                    panic!("Cannot find native global {name}")
                 }
             }
             impl Helper for () {}
@@ -203,7 +203,7 @@ pub fn instantiate(
                 None,
                 Some(root),
                 None,
-                GlobalStorage::Weak(Rc::downgrade(&globals)),
+                GlobalStorage::Weak(Rc::downgrade(globals)),
             );
             inst.run_setup_code();
             Rc::pin(GlobalComponentInstance(inst))

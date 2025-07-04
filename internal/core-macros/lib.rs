@@ -197,7 +197,7 @@ pub fn slint_doc(_attr: TokenStream, item: TokenStream) -> TokenStream {
     quote!(#item).into()
 }
 
-/// Same as `slint_doc` but for string literals instead of doc coments (useful for crate level documentation that cannot have an attribute)
+/// Same as `slint_doc` but for string literals instead of doc comments (useful for crate level documentation that cannot have an attribute)
 #[proc_macro]
 pub fn slint_doc_str(input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::LitStr);
@@ -206,4 +206,31 @@ pub fn slint_doc_str(input: TokenStream) -> TokenStream {
     visitor.process_string(&mut doc);
     assert!(visitor.1, "No slint link found");
     quote!(#doc).into()
+}
+
+/// Attribute macro that removes `extern "..."` from the function signatures
+///
+/// This is useful because wasm does not support `extern "C-unwind"` and also
+/// warn about ABI incompatibilities we wouldn't care about.
+///
+/// (can be applied to a function or a vtable struct)
+#[proc_macro_attribute]
+pub fn remove_extern(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let mut input = syn::parse_macro_input!(item as syn::Item);
+
+    match &mut input {
+        syn::Item::Fn(item_fn) => {
+            item_fn.sig.abi.take();
+        }
+        syn::Item::Struct(item_struct) => {
+            for f in item_struct.fields.iter_mut() {
+                if let syn::Type::BareFn(f) = &mut f.ty {
+                    f.abi.take();
+                }
+            }
+        }
+        _ => (),
+    }
+
+    quote!(#input).into()
 }

@@ -56,14 +56,15 @@ impl<'a> LibinputInterface for SeatWrap {
             .open_device(&path)
             .map(|device| {
                 let flags = nix::fcntl::OFlag::from_bits_retain(flags);
-                let fd = device.as_fd().as_raw_fd();
+                let fd = device.as_fd();
                 nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_SETFL(flags))
                     .map_err(|e| format!("Error applying libinput provided open fd flags: {e}"))
                     .unwrap();
 
-                self.device_for_fd.insert(fd, device);
+                let raw_fd = fd.as_raw_fd();
+                self.device_for_fd.insert(raw_fd, device);
                 // Safety: API requires us to own it, but in close_restricted() we'll take it back.
-                unsafe { OwnedFd::from_raw_fd(fd) }
+                unsafe { OwnedFd::from_raw_fd(raw_fd) }
             })
             .map_err(|e| e.0.into())
     }
@@ -193,7 +194,7 @@ impl<'a> calloop::EventSource for LibInputHandler<'a> {
                                 .clamp(0., screen_size.height);
                             self.mouse_pos.set(Some(mouse_pos));
                             let event = WindowEvent::PointerMoved { position: mouse_pos };
-                            window.dispatch_event(event);
+                            window.try_dispatch_event(event).map_err(Self::Error::other)?;
                         }
                         input::event::PointerEvent::MotionAbsolute(abs_motion_event) => {
                             let mouse_pos = LogicalPosition {
@@ -205,7 +206,7 @@ impl<'a> calloop::EventSource for LibInputHandler<'a> {
                             };
                             self.mouse_pos.set(Some(mouse_pos));
                             let event = WindowEvent::PointerMoved { position: mouse_pos };
-                            window.dispatch_event(event);
+                            window.try_dispatch_event(event).map_err(Self::Error::other)?;
                         }
                         input::event::PointerEvent::Button(button_event) => {
                             // https://github.com/torvalds/linux/blob/0dd2a6fb1e34d6dcb96806bc6b111388ad324722/include/uapi/linux/input-event-codes.h#L355
@@ -226,11 +227,8 @@ impl<'a> calloop::EventSource for LibInputHandler<'a> {
                                     WindowEvent::PointerReleased { position: mouse_pos, button }
                                 }
                             };
-                            window.dispatch_event(event);
+                            window.try_dispatch_event(event).map_err(Self::Error::other)?;
                         }
-                        input::event::PointerEvent::ScrollWheel(_) => todo!(),
-                        input::event::PointerEvent::ScrollFinger(_) => todo!(),
-                        input::event::PointerEvent::ScrollContinuous(_) => todo!(),
                         _ => {}
                     }
                 }
@@ -259,7 +257,7 @@ impl<'a> calloop::EventSource for LibInputHandler<'a> {
                         }
                         _ => None,
                     } {
-                        window.dispatch_event(event);
+                        window.try_dispatch_event(event).map_err(Self::Error::other)?;
                     }
                 }
                 input::Event::Keyboard(input::event::KeyboardEvent::Key(key_event)) => {
@@ -314,7 +312,7 @@ impl<'a> calloop::EventSource for LibInputHandler<'a> {
                             KeyState::Pressed => WindowEvent::KeyPressed { text },
                             KeyState::Released => WindowEvent::KeyReleased { text },
                         };
-                        window.dispatch_event(event);
+                        window.try_dispatch_event(event).map_err(Self::Error::other)?;
                     }
                 }
                 _ => {}

@@ -6,6 +6,7 @@ description: Image element api.
 
 import SlintProperty  from '/src/components/SlintProperty.astro';
 import CodeSnippetMD from '/src/components/CodeSnippetMD.astro';
+import Link from '/src/components/Link.astro';
 
 <CodeSnippetMD imagePath="/src/assets/generated/image-example.png"  imageWidth="300" imageHeight="200"  imageAlt='image example'>
 ```slint
@@ -15,19 +16,12 @@ Image {
 ```
 </CodeSnippetMD>
 
-An `Image` can be used to represent an image loaded from a file. Supported image formats are:
-
-| Format    | Extensions |
-| -------- | ------- |
-| PNG  | .png    |
-| JPEG | .jpg, .jpeg     |
-| SVG    | .svg    |
-
+Use the `Image` element to display an <Link type="ImageType" label="image" />.
 
 ## Properties
 
 ### colorize
-<SlintProperty propName="colorize" typeName="brush"> 
+<SlintProperty propName="colorize" typeName="brush">
 When set, the image is used as an alpha mask and is drawn in the given color (or with the gradient).
 <CodeSnippetMD imagePath="/src/assets/generated/image-colorize.png"  imageWidth="300" imageHeight="200"  imageAlt='image example'>
 ```slint
@@ -123,7 +117,7 @@ Image {
 </CodeSnippetMD>
 
 <CodeSnippetMD imagePath="/src/assets/generated/image-contain.png"  imageWidth="300" imageHeight="200"  imageAlt='image contain example'>
-```slint 
+```slint
 Image {
     width: 250px; height: 40px;
     source: @image-url("mini-banner.png");
@@ -169,7 +163,7 @@ Image {
 <CodeSnippetMD imagePath="/src/assets/generated/image-pixelated.png"  imageWidth="300" imageHeight="300"  imageAlt='image pixelated example'>
 ```slint
 Image {
-    width: 800px; 
+    width: 800px;
     source: @image-url("mini-banner.png");
     image-rendering: pixelated;
 }
@@ -242,18 +236,46 @@ export component Example inherits Window {
 }
 ```
 
-Use the `@image-url("...")` macro to specify the location of the image.
+Use the <Link type="ImageType" label="`@image-url` macro" /> to specify the image's path.
 </SlintProperty>
 
 
 ### source-clip-x
 <SlintProperty propName="source-clip-x" typeName="int"/>
-### source-clip-y  
+### source-clip-y
 <SlintProperty propName="source-clip-y" typeName="int"/>
-### source-clip-width 
+### source-clip-width
 <SlintProperty propName="source-clip-width" typeName="int" defaultValue="source.width - source.clip-x"/>
 ### source-clip-height
 <SlintProperty propName="source-clip-height" typeName="int" defaultValue="source.height - source.clip-y"/>
 
-Properties in source image coordinates that define the region of the source image that is rendered. 
+Properties in source image coordinates that define the region of the source image that is rendered.
 By default the entire source image is visible:
+
+## Accessibility
+
+### Alternative text
+
+Consider giving an alternative text description of your image by setting the `accessible-label` property:
+
+```slint
+Image {
+    width: 100px;
+    height: 100px;
+    source: @image-url("slint-logo.png");
+    accessible-label: "Slint logo";
+}
+```
+
+### Filtering out images for users of assistive technologies
+
+By default, images have the `accessible-role` property set to `image`.
+If your image is purely decorative and doesn't convey any information,
+consider removing it from the accessibility tree:
+
+```slint
+Image {
+    source: @image-url("mini-banner.png");
+    accessible-role: none;
+}
+```

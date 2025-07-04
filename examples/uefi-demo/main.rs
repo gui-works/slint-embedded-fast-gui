@@ -130,7 +130,7 @@ fn get_key_press() -> Option<char> {
 }
 
 fn wait_for_input(max_timeout: Option<Duration>) {
-    use uefi::table::boot::*;
+    use uefi::boot::*;
 
     let watchdog_timeout = Duration::from_secs(120);
     let timeout = watchdog_timeout.min(max_timeout.unwrap_or(watchdog_timeout));
@@ -244,7 +244,7 @@ impl slint::platform::Platform for Platform {
     }
 
     fn run_event_loop(&self) -> Result<(), slint::PlatformError> {
-        use uefi::{proto::console::gop::*, table::boot::*};
+        use uefi::{boot::*, proto::console::gop::*};
 
         let gop_handle = uefi::boot::get_handle_for_protocol::<GraphicsOutput>().unwrap();
 
@@ -308,8 +308,8 @@ impl slint::platform::Platform for Platform {
             while let Some(key) = get_key_press() {
                 // EFI does not distinguish between pressed and released events.
                 let text = SharedString::from(key);
-                self.window.dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
-                self.window.dispatch_event(WindowEvent::KeyReleased { text });
+                self.window.try_dispatch_event(WindowEvent::KeyPressed { text: text.clone() })?;
+                self.window.try_dispatch_event(WindowEvent::KeyReleased { text })?;
             }
             // mouse handle until no input
             while let Some(mut mouse) =
@@ -341,10 +341,11 @@ impl slint::platform::Platform for Platform {
                     mouse.relative_movement[1] = (info.resolution().1) as i32;
                 }
 
-                self.window.dispatch_event(WindowEvent::PointerMoved { position });
-                self.window.dispatch_event(WindowEvent::PointerExited {});
-                self.window.dispatch_event(WindowEvent::PointerPressed { position, button });
-                self.window.dispatch_event(WindowEvent::PointerReleased { position, button });
+                self.window.try_dispatch_event(WindowEvent::PointerMoved { position })?;
+                self.window.try_dispatch_event(WindowEvent::PointerExited {})?;
+                self.window.try_dispatch_event(WindowEvent::PointerPressed { position, button })?;
+                self.window
+                    .try_dispatch_event(WindowEvent::PointerReleased { position, button })?;
                 is_mouse_move = true;
             }
 
@@ -428,7 +429,7 @@ fn main() -> Status {
     ui.set_uefi_version(uefi::system::uefi_revision().to_string().into());
 
     let mut buf = [0u8; 1];
-    let guid = uefi::table::runtime::VariableVendor::GLOBAL_VARIABLE;
+    let guid = uefi::runtime::VariableVendor::GLOBAL_VARIABLE;
     let sb = uefi::runtime::get_variable(cstr16!("SecureBoot"), &guid, &mut buf);
     ui.set_secure_boot(if sb.is_ok() { buf[0] == 1 } else { false });
 

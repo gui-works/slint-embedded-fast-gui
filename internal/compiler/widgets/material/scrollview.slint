@@ -13,6 +13,8 @@ component ScrollBar inherits Rectangle {
     in-out property <bool> enabled <=> touch-area.enabled;
     in property <ScrollBarPolicy> policy: ScrollBarPolicy.as-needed;
 
+    callback scrolled();
+
     states [
         disabled when !touch-area.enabled : {
             background.border-color: MaterialPalette.control-foreground;
@@ -27,6 +29,7 @@ component ScrollBar inherits Rectangle {
     ]
 
     visible: (self.policy == ScrollBarPolicy.always-on) || (self.policy == ScrollBarPolicy.as-needed && self.maximum > 0);
+    clip: true;
 
     state-layer := Rectangle {
         width: 100%;
@@ -42,8 +45,8 @@ component ScrollBar inherits Rectangle {
     handle := Rectangle {
         x: !root.horizontal ? 0phx : (root.width - handle.width) * (-root.value / root.maximum);
         y: root.horizontal ? 0phx : (root.height - handle.height) * (-root.value / root.maximum);
-        width: !root.horizontal ? parent.width : root.maximum <= 0phx ? 0phx : max(32px, parent.width * max(root.page-size / (root.maximum + root.page-size)));
-        height: root.horizontal ? parent.height : root.maximum <= 0phx ? 0phx : max(32px, parent.height * (root.page-size / (root.maximum + root.page-size)));
+        width: !root.horizontal ? parent.width : root.maximum <= 0phx ? 0phx : max(min(32px, root.width), parent.width * max(root.page-size / (root.maximum + root.page-size)));
+        height: root.horizontal ? parent.height : root.maximum <= 0phx ? 0phx : max(min(32px, root.height), parent.height * (root.page-size / (root.maximum + root.page-size)));
 
         background := Rectangle {
             width: 100%;
@@ -72,6 +75,7 @@ component ScrollBar inherits Rectangle {
                     root.horizontal ? (touch-area.mouse-x - touch-area.pressed-x) * (root.maximum / (root.width - handle.width))
                                : (touch-area.mouse-y - touch-area.pressed-y) * (root.maximum / (root.height - handle.height))
                 )));
+                root.scrolled();
             }
         }
 
@@ -100,7 +104,8 @@ export component ScrollView {
     in-out property <length> viewport-y <=> flickable.viewport-y;
     in property <ScrollBarPolicy> vertical-scrollbar-policy <=> vertical-bar.policy;
     in property <ScrollBarPolicy> horizontal-scrollbar-policy <=> horizontal-bar.policy;
-    
+    in property <bool> mouse-drag-pan-enabled <=> flickable.interactive;
+
     callback scrolled <=> flickable.flicked;
 
     min-height: 50px;
@@ -130,6 +135,8 @@ export component ScrollView {
         maximum: flickable.viewport-height - flickable.height;
         page-size: flickable.height;
         enabled: root.enabled;
+
+        scrolled => {root.scrolled()}
     }
 
     horizontal-bar := ScrollBar {
@@ -141,5 +148,7 @@ export component ScrollView {
         maximum: flickable.viewport-width - flickable.width;
         page-size: flickable.width;
         enabled: root.enabled;
+
+        scrolled => {root.scrolled()}
     }
 }

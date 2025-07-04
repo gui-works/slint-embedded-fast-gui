@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
 
 use crate::api::Value;
-use i_slint_core::model::{Model, ModelTracker};
+use core::cell::Cell;
+use i_slint_core::model::{Model, ModelNotify, ModelRc, ModelTracker};
 
 pub struct ValueModel {
     value: Value,
@@ -49,7 +50,7 @@ impl Model for ValueModel {
             Value::Number(x) => x.max(Default::default()) as usize,
             Value::Void => 0,
             Value::Model(model_ptr) => model_ptr.row_count(),
-            x => panic!("Invalid model {:?}", x),
+            x => panic!("Invalid model {x:?}"),
         }
     }
 
@@ -61,7 +62,7 @@ impl Model for ValueModel {
                 Value::Bool(_) => Value::Void,
                 Value::Number(_) => Value::Number(row as _),
                 Value::Model(model_ptr) => model_ptr.row_data(row)?,
-                x => panic!("Invalid model {:?}", x),
+                x => panic!("Invalid model {x:?}"),
             })
         }
     }
@@ -79,5 +80,67 @@ impl Model for ValueModel {
 
     fn as_any(&self) -> &dyn core::any::Any {
         self
+    }
+}
+
+/// A model for conditional elements
+#[derive(Default)]
+pub(crate) struct BoolModel {
+    value: Cell<bool>,
+    notify: ModelNotify,
+}
+
+impl Model for BoolModel {
+    type Data = Value;
+    fn row_count(&self) -> usize {
+        if self.value.get() {
+            1
+        } else {
+            0
+        }
+    }
+    fn row_data(&self, row: usize) -> Option<Self::Data> {
+        (row == 0 && self.value.get()).then_some(Value::Void)
+    }
+    fn model_tracker(&self) -> &dyn ModelTracker {
+        &self.notify
+    }
+}
+
+impl BoolModel {
+    pub fn set_value(&self, val: bool) {
+        let old = self.value.replace(val);
+        if old != val {
+            self.notify.reset();
+        }
+    }
+}
+
+// A map model that wraps a Model
+pub struct ValueMapModel<T>(pub ModelRc<T>);
+
+impl<T: TryFrom<Value> + Into<Value> + 'static> Model for ValueMapModel<T> {
+    type Data = Value;
+
+    fn row_count(&self) -> usize {
+        self.0.row_count()
+    }
+
+    fn row_data(&self, row: usize) -> Option<Self::Data> {
+        self.0.row_data(row).map(|x| x.into())
+    }
+
+    fn model_tracker(&self) -> &dyn ModelTracker {
+        self.0.model_tracker()
+    }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn set_row_data(&self, row: usize, data: Self::Data) {
+        if let Ok(data) = data.try_into() {
+            self.0.set_row_data(row, data)
+        }
     }
 }

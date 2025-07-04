@@ -17,6 +17,9 @@ The main.rs will look something like this
 #![cfg_attr(not(feature = "simulator"), no_main)]
 slint::include_modules!();
 
+#[allow(unused_imports)]
+use mcu_board_support::prelude::*;
+
 #[mcu_board_support::entry]
 fn main() -> ! {
     mcu_board_support::init();
@@ -121,7 +124,8 @@ Add this build task to your `.vscode/tasks.json`:
 			"command": "build",
 			"args": [
 				"--package=printerdemo_mcu",
-				"--features=mcu-pico-st7789",
+				"--no-default-features",
+				"--features=mcu-board-support/pico-st7789",
 				"--target=thumbv6m-none-eabi",
 				"--profile=release-with-debug"
 			],
@@ -186,6 +190,15 @@ Using [probe-rs](https://probe.rs).
 CARGO_PROFILE_RELEASE_OPT_LEVEL=s CARGO_TARGET_THUMBV7EM_NONE_EABIHF_RUNNER="probe-rs run --chip STM32H735IGKx" cargo run -p printerdemo_mcu --no-default-features  --features=mcu-board-support/stm32h735g --target=thumbv7em-none-eabihf --release
 ```
 
+### STM32U5G9J-DK2
+
+ cargo build -p mcu-board-support --target=thumbv8m.main-none-eabihf --features stm32u5g9j-dk2 --no-default-features
+Using [probe-rs](https://probe.rs).
+
+```sh
+CARGO_PROFILE_RELEASE_OPT_LEVEL=s CARGO_TARGET_THUMBV8M_MAIN_NONE_EABIHF_RUNNER="probe-rs run --chip STM32U5G9ZJTxQ" cargo run -p printerdemo_mcu --no-default-features  --features=mcu-board-support/stm32u5g9j-dk2 --target=thumbv8m.main-none-eabihf --release
+```
+
 ### ESP32
 
 #### Prerequisites
@@ -196,21 +209,10 @@ CARGO_PROFILE_RELEASE_OPT_LEVEL=s CARGO_TARGET_THUMBV7EM_NONE_EABIHF_RUNNER="pro
 When flashing, with `esplash`, you will be prompted to select a USB port. If this port is always the same, then you can also pass it as a parameter on the command line to avoid the prompt. For example if
 `/dev/ttyUSB1` is the device file for your port, the command line changes to `espflash --monitor /dev/ttyUSB1 path/to/binary/to/flash_and_monitor`.
 
-#### ESP32-S2-Kaluga-1
-
-
-To compile and run the demo:
-
-```sh
-CARGO_PROFILE_RELEASE_OPT_LEVEL=s cargo +esp run -p printerdemo_mcu --target xtensa-esp32s2-none-elf --no-default-features --features=mcu-board-support/esp32-s2-kaluga-1 --release --config examples/mcu-board-support/esp32_s2_kaluga_1/cargo-config.toml
-```
-
-The device needs to be connected with the two USB cables (one for power, one for data)
-
 #### ESP32-S3-Box
 
 To compile and run the demo:
 
 ```sh
-CARGO_PROFILE_RELEASE_OPT_LEVEL=s cargo +esp run -p printerdemo_mcu --target xtensa-esp32s3-none-elf --no-default-features --features=mcu-board-support/esp32-s3-box --release --config examples/mcu-board-support/esp32_s3_box/cargo-config.toml
+CARGO_PROFILE_RELEASE_OPT_LEVEL=s cargo +esp run -p printerdemo_mcu --target xtensa-esp32s3-none-elf --no-default-features --features=mcu-board-support/esp32-s3-box-3 --release --config examples/mcu-board-support/esp32_s3_box_3/cargo-config.toml
 ```

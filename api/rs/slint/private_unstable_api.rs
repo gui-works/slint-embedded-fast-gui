@@ -190,10 +190,11 @@ pub mod re_exports {
     pub use i_slint_core::api::LogicalPosition;
     pub use i_slint_core::callbacks::Callback;
     pub use i_slint_core::date_time::*;
+    pub use i_slint_core::detect_operating_system;
     pub use i_slint_core::graphics::*;
     pub use i_slint_core::input::{
-        key_codes::Key, FocusEvent, InputEventResult, KeyEvent, KeyEventResult, KeyboardModifiers,
-        MouseEvent,
+        key_codes::Key, FocusEvent, FocusReason, InputEventResult, KeyEvent, KeyEventResult,
+        KeyboardModifiers, MouseEvent,
     };
     pub use i_slint_core::item_tree::{
         register_item_tree, unregister_item_tree, IndexRange, ItemTree, ItemTreeRefPin,
@@ -208,11 +209,15 @@ pub mod re_exports {
     pub use i_slint_core::lengths::{
         logical_position_to_api, LogicalLength, LogicalPoint, LogicalRect,
     };
+    pub use i_slint_core::menus::{Menu, MenuFromItemTree, MenuVTable};
     pub use i_slint_core::model::*;
     pub use i_slint_core::properties::{
         set_state_binding, ChangeTracker, Property, PropertyTracker, StateInfo,
     };
     pub use i_slint_core::slice::Slice;
+    pub use i_slint_core::string::shared_string_from_number;
+    pub use i_slint_core::string::shared_string_from_number_fixed;
+    pub use i_slint_core::string::shared_string_from_number_precision;
     pub use i_slint_core::timers::{Timer, TimerMode};
     pub use i_slint_core::translations::{
         set_bundled_languages, translate_from_bundle, translate_from_bundle_with_plural,
@@ -220,15 +225,16 @@ pub mod re_exports {
     pub use i_slint_core::window::{
         InputMethodRequest, WindowAdapter, WindowAdapterRc, WindowInner,
     };
-    pub use i_slint_core::Color;
-    pub use i_slint_core::Coord;
-    pub use i_slint_core::ItemTreeVTable_static;
-    pub use i_slint_core::SharedString;
-    pub use i_slint_core::SharedVector;
+    pub use i_slint_core::{Color, Coord, SharedString, SharedVector};
+    pub use i_slint_core::{ItemTreeVTable_static, MenuVTable_static};
     pub use num_traits::float::Float;
     pub use num_traits::ops::euclid::Euclid;
     pub use once_cell::race::OnceBox;
     pub use once_cell::unsync::OnceCell;
     pub use pin_weak::rc::PinWeak;
+    pub use unicode_segmentation::UnicodeSegmentation;
     pub use vtable::{self, *};
+
+    #[cfg(feature = "live-reload")]
+    pub use slint_interpreter::live_reload;
 }

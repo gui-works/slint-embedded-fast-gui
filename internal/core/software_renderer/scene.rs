@@ -7,11 +7,10 @@ use super::{
     Fixed, PhysicalBorderRadius, PhysicalLength, PhysicalPoint, PhysicalRect, PhysicalRegion,
     PhysicalSize, PremultipliedRgbaColor, RenderingRotation,
 };
-use crate::graphics::{PixelFormat, SharedImageBuffer};
+use crate::graphics::{SharedImageBuffer, TexturePixelFormat};
 use crate::lengths::{PointLengths as _, SizeLengths as _};
 use crate::Color;
 use alloc::rc::Rc;
-#[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 use euclid::Length;
 
@@ -285,7 +284,7 @@ pub enum SceneCommand {
 pub struct SceneTexture<'a> {
     /// This should have a size so that the entire slice is ((height - 1) * pixel_stride + width) * bpp
     pub data: &'a [u8],
-    pub format: PixelFormat,
+    pub format: TexturePixelFormat,
     /// number of pixels between two lines in the source
     pub pixel_stride: u16,
 
@@ -295,7 +294,7 @@ pub struct SceneTexture<'a> {
 impl<'a> SceneTexture<'a> {
     pub fn source_size(&self) -> PhysicalSize {
         let mut len = self.data.len();
-        if self.format == PixelFormat::SignedDistanceField {
+        if self.format == TexturePixelFormat::SignedDistanceField {
             len -= 1;
         } else {
             len /= self.format.bpp();
@@ -308,6 +307,23 @@ impl<'a> SceneTexture<'a> {
         } else {
             PhysicalSize::new(w as _, (h + 1) as _)
         }
+    }
+
+    pub fn from_target_texture(
+        texture: &'a super::target_pixel_buffer::DrawTextureArgs,
+        clip: &PhysicalRect,
+    ) -> Option<(Self, PhysicalRect)> {
+        let (extra, geometry) = SceneTextureExtra::from_target_texture(texture, clip)?;
+        let source = texture.source();
+        Some((
+            Self {
+                data: source.data,
+                pixel_stride: (source.byte_stride / source.pixel_format.bpp()) as u16,
+                format: source.pixel_format,
+                extra,
+            },
+            geometry,
+        ))
     }
 }
 
@@ -326,16 +342,86 @@ pub struct SceneTextureExtra {
     pub rotation: RenderingRotation,
 }
 
+impl SceneTextureExtra {
+    pub fn from_target_texture(
+        texture: &super::target_pixel_buffer::DrawTextureArgs,
+        clip: &PhysicalRect,
+    ) -> Option<(Self, PhysicalRect)> {
+        let geometry: PhysicalRect = euclid::rect(
+            texture.dst_x as i16,
+            texture.dst_y as i16,
+            texture.dst_width as i16,
+            texture.dst_height as i16,
+        );
+        let geometry = geometry.to_box2d();
+        let clipped_geometry = geometry.intersection(&clip.to_box2d())?;
+
+        let mut offset = match texture.rotation {
+            RenderingRotation::NoRotation => clipped_geometry.min - geometry.min,
+            RenderingRotation::Rotate90 => euclid::vec2(
+                clipped_geometry.min.y - geometry.min.y,
+                geometry.max.x - clipped_geometry.max.x,
+            ),
+            RenderingRotation::Rotate180 => geometry.max - clipped_geometry.max,
+            RenderingRotation::Rotate270 => euclid::vec2(
+                geometry.max.y - clipped_geometry.max.y,
+                clipped_geometry.min.x - geometry.min.x,
+            ),
+        };
+
+        let source_size = texture.source_size().cast::<i32>();
+        let (dx, dy) = if let Some(tiling) = &texture.tiling {
+            offset -= euclid::vec2(tiling.offset_x, tiling.offset_y).cast();
+
+            // FIXME: gap
+            tiling.gap_x;
+            tiling.gap_y;
+
+            (Fixed::from_f32(tiling.scale_x)?, Fixed::from_f32(tiling.scale_y)?)
+        } else {
+            let (dst_w, dst_h) = if texture.rotation.is_transpose() {
+                (texture.dst_height as i32, texture.dst_width as i32)
+            } else {
+                (texture.dst_width as i32, texture.dst_height as i32)
+            };
+            let dx = Fixed::<i32, 8>::from_fraction(source_size.width, dst_w);
+            let dy = Fixed::<i32, 8>::from_fraction(source_size.height, dst_h);
+            (dx, dy)
+        };
+
+        Some((
+            Self {
+                colorize: texture.colorize.unwrap_or_default(),
+                alpha: texture.alpha,
+                rotation: texture.rotation,
+                dx: Fixed::try_from_fixed(dx).ok()?,
+                dy: Fixed::try_from_fixed(dy).ok()?,
+                off_x: Fixed::try_from_fixed(dx * offset.x as i32).ok()?,
+                off_y: Fixed::try_from_fixed(dy * offset.y as i32).ok()?,
+            },
+            clipped_geometry.to_rect(),
+        ))
+    }
+}
+
+#[derive(Clone)]
 pub enum SharedBufferData {
     SharedImage(SharedImageBuffer),
     AlphaMap { data: Rc<[u8]>, width: u16 },
 }
 
 impl SharedBufferData {
-    fn width(&self) -> usize {
+    pub fn width(&self) -> usize {
         match self {
             SharedBufferData::SharedImage(image) => image.width() as usize,
             SharedBufferData::AlphaMap { width, .. } => *width as usize,
+        }
+    }
+    #[allow(unused)]
+    pub fn height(&self) -> usize {
+        match self {
+            SharedBufferData::SharedImage(image) => image.height() as usize,
+            SharedBufferData::AlphaMap { data, width, .. } => data.len() / *width as usize,
         }
     }
 }
@@ -356,27 +442,27 @@ impl SharedBufferCommand {
             SharedBufferData::SharedImage(SharedImageBuffer::RGB8(b)) => SceneTexture {
                 data: &b.as_bytes()[start * 3..end * 3],
                 pixel_stride: stride as u16,
-                format: PixelFormat::Rgb,
+                format: TexturePixelFormat::Rgb,
                 extra: self.extra,
             },
             SharedBufferData::SharedImage(SharedImageBuffer::RGBA8(b)) => SceneTexture {
                 data: &b.as_bytes()[start * 4..end * 4],
                 pixel_stride: stride as u16,
-                format: PixelFormat::Rgba,
+                format: TexturePixelFormat::Rgba,
                 extra: self.extra,
             },
             SharedBufferData::SharedImage(SharedImageBuffer::RGBA8Premultiplied(b)) => {
                 SceneTexture {
                     data: &b.as_bytes()[start * 4..end * 4],
                     pixel_stride: stride as u16,
-                    format: PixelFormat::RgbaPremultiplied,
+                    format: TexturePixelFormat::RgbaPremultiplied,
                     extra: self.extra,
                 }
             }
             SharedBufferData::AlphaMap { data, width } => SceneTexture {
                 data: &data[start..end],
                 pixel_stride: *width,
-                format: PixelFormat::AlphaMap,
+                format: TexturePixelFormat::AlphaMap,
                 extra: self.extra,
             },
         }

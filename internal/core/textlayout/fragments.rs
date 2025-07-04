@@ -37,8 +37,8 @@ impl<'a, Length> TextFragmentIterator<'a, Length> {
     }
 }
 
-impl<'a, Length: Clone + Default + core::ops::AddAssign + Zero + Copy> Iterator
-    for TextFragmentIterator<'a, Length>
+impl<Length: Clone + Default + core::ops::AddAssign + Zero + Copy> Iterator
+    for TextFragmentIterator<'_, Length>
 {
     type Item = TextFragment<Length>;
 
@@ -119,6 +119,8 @@ impl<'a, Length: Clone + Default + core::ops::AddAssign + Zero + Copy> Iterator
 
 #[cfg(test)]
 use super::{FixedTestFont, TextLayout};
+#[cfg(test)]
+use std::{vec, vec::Vec};
 
 #[test]
 fn fragment_iterator_simple() {

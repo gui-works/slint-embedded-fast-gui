@@ -238,7 +238,6 @@ impl Color {
     /// let blue = Color::from_argb_u8(200, 0, 0, 255);
     /// assert_eq!(blue.transparentize(-0.1), Color::from_argb_u8(220, 0, 0, 255));
     /// ```
-
     #[must_use]
     pub fn transparentize(&self, factor: f32) -> Self {
         let mut color = *self;
@@ -332,7 +331,7 @@ impl core::fmt::Display for Color {
 /// HsvaColor stores the hue, saturation, value and alpha components of a color
 /// in the HSV color space as `f32 ` fields.
 /// This is merely a helper struct for use with [`Color`].
-#[derive(Copy, Clone, PartialEq, PartialOrd, Debug, Default)]
+#[derive(Copy, Clone, PartialOrd, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct HsvaColor {
     /// The hue component in degrees between 0 and 360.
@@ -343,6 +342,15 @@ pub struct HsvaColor {
     pub value: f32,
     /// The alpha component, between 0 and 1.
     pub alpha: f32,
+}
+
+impl PartialEq for HsvaColor {
+    fn eq(&self, other: &Self) -> bool {
+        (self.hue - other.hue).abs() < 0.00001
+            && (self.saturation - other.saturation).abs() < 0.00001
+            && (self.value - other.value).abs() < 0.00001
+            && (self.alpha - other.alpha).abs() < 0.00001
+    }
 }
 
 impl From<RgbaColor<f32>> for HsvaColor {
@@ -358,17 +366,19 @@ impl From<RgbaColor<f32>> for HsvaColor {
         let chroma = max - min;
 
         #[allow(clippy::float_cmp)] // `max` is either `red`, `green` or `blue`
-        let hue = 60.
-            * if chroma == 0. {
-                0.0
-            } else if max == red {
-                ((green - blue) / chroma) % 6.0
-            } else if max == green {
-                2. + (blue - red) / chroma
-            } else {
-                4. + (red - green) / chroma
-            };
-
+        let hue = num_traits::Euclid::rem_euclid(
+            &(60.
+                * if chroma == 0.0 {
+                    0.0
+                } else if max == red {
+                    ((green - blue) / chroma) % 6.0
+                } else if max == green {
+                    2. + (blue - red) / chroma
+                } else {
+                    4. + (red - green) / chroma
+                }),
+            &360.0,
+        );
         let saturation = if max == 0. { 0. } else { chroma / max };
 
         Self { hue, saturation, value: max, alpha: col.alpha }
@@ -381,9 +391,11 @@ impl From<HsvaColor> for RgbaColor<f32> {
 
         let chroma = col.saturation * col.value;
 
-        let x = chroma * (1. - ((col.hue / 60.) % 2. - 1.).abs());
+        let hue = num_traits::Euclid::rem_euclid(&col.hue, &360.0);
 
-        let (red, green, blue) = match (col.hue / 60.0) as usize {
+        let x = chroma * (1. - ((hue / 60.) % 2. - 1.).abs());
+
+        let (red, green, blue) = match (hue / 60.0) as usize {
             0 => (chroma, x, 0.),
             1 => (x, chroma, 0.),
             2 => (0., chroma, x),
@@ -423,6 +435,27 @@ fn test_rgb_to_hsv() {
         RgbaColor::<f32> { red: 1., green: 1., blue: 1., alpha: 0.3 }
     );
 
+    // #8a0c77ff ensure the hue ends up positive
+    assert_eq!(
+        HsvaColor::from(Color::from_argb_u8(0xff, 0x8a, 0xc, 0x77,).to_argb_f32()),
+        HsvaColor { hue: 309.0476, saturation: 0.9130435, value: 0.5411765, alpha: 1.0 }
+    );
+
+    let received = RgbaColor::<f32>::from(HsvaColor {
+        hue: 309.0476,
+        saturation: 0.9130435,
+        value: 0.5411765,
+        alpha: 1.0,
+    });
+    let expected = Color::from_argb_u8(0xff, 0x8a, 0xc, 0x77).to_argb_f32();
+
+    assert!(
+        (received.alpha - expected.alpha).abs() < 0.00001
+            && (received.red - expected.red).abs() < 0.00001
+            && (received.green - expected.green).abs() < 0.00001
+            && (received.blue - expected.blue).abs() < 0.00001
+    );
+
     // Bright greenish, verified via colorizer.org
     assert_eq!(
         HsvaColor::from(RgbaColor::<f32> { red: 0., green: 0.9, blue: 0., alpha: 1.0 }),
@@ -431,6 +464,16 @@ fn test_rgb_to_hsv() {
     assert_eq!(
         RgbaColor::<f32>::from(HsvaColor { hue: 120., saturation: 1., value: 0.9, alpha: 1.0 }),
         RgbaColor::<f32> { red: 0., green: 0.9, blue: 0., alpha: 1.0 }
+    );
+
+    // Hue should wrap around 360deg i.e. 480 == 120 && -240 == 240
+    assert_eq!(
+        RgbaColor::<f32> { red: 0., green: 0.9, blue: 0., alpha: 1.0 },
+        RgbaColor::<f32>::from(HsvaColor { hue: 480., saturation: 1., value: 0.9, alpha: 1.0 }),
+    );
+    assert_eq!(
+        RgbaColor::<f32> { red: 0., green: 0.9, blue: 0., alpha: 1.0 },
+        RgbaColor::<f32>::from(HsvaColor { hue: -240., saturation: 1., value: 0.9, alpha: 1.0 }),
     );
 }
 
@@ -457,22 +500,22 @@ pub(crate) mod ffi {
     #![allow(unsafe_code)]
     use super::*;
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn slint_color_brighter(col: &Color, factor: f32, out: *mut Color) {
         core::ptr::write(out, col.brighter(factor))
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn slint_color_darker(col: &Color, factor: f32, out: *mut Color) {
         core::ptr::write(out, col.darker(factor))
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn slint_color_transparentize(col: &Color, factor: f32, out: *mut Color) {
         core::ptr::write(out, col.transparentize(factor))
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn slint_color_mix(
         col1: &Color,
         col2: &Color,
@@ -482,12 +525,12 @@ pub(crate) mod ffi {
         core::ptr::write(out, col1.mix(col2, factor))
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub unsafe extern "C" fn slint_color_with_alpha(col: &Color, alpha: f32, out: *mut Color) {
         core::ptr::write(out, col.with_alpha(alpha))
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_color_to_hsva(
         col: &Color,
         h: &mut f32,
@@ -502,7 +545,7 @@ pub(crate) mod ffi {
         *a = hsv.alpha;
     }
 
-    #[no_mangle]
+    #[unsafe(no_mangle)]
     pub extern "C" fn slint_color_from_hsva(h: f32, s: f32, v: f32, a: f32) -> Color {
         Color::from_hsva(h, s, v, a)
     }

@@ -42,6 +42,11 @@ The color for drawing the outline of the path.
 The width of the outline.
 </SlintProperty>
 
+### stroke-line-cap
+<SlintProperty propName="stroke-line-cap" typeName="enum" enumName="LineCap" defaultValue='butt'>
+The appearance of the ends of the path's outline.
+</SlintProperty>
+
 ### width
 <SlintProperty propName="width" typeName="length">
 If non-zero, the path will be scaled to fit into the specified width.
@@ -76,6 +81,12 @@ ignored and instead the bounding rectangle of all path elements is used to defin
  By default, when a path has a view box defined and the elements render
 outside of it, they are still rendered. When this property is set to `true`, then rendering will be
 clipped at the boundaries of the view box.
+
+### anti-alias
+<SlintProperty propName="anti-alias" typeName="bool" defaultValue="true"/>
+ By default, the fill and stroke of a path is rendered with anti-aliasing, for best quality. Some GPUs
+ have performance issues when rendering with anti-aliasing and animation. Setting the value to `false`
+ might improve the frame-rate at the expense of a smoother looking path.
 
 ## Path Using SVG Commands
 

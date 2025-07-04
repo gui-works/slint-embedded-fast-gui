@@ -140,7 +140,7 @@ impl<'a> DropZoneIterator<'a> {
     }
 }
 
-impl<'a> Iterator for DropZoneIterator<'a> {
+impl Iterator for DropZoneIterator<'_> {
     type Item = (usize, Zone, Zone);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -327,7 +327,7 @@ fn insert_position_at_end(
             == SyntaxKind::Whitespace
             && before_closing.text().contains('\n')
         {
-            let bracket_indent = before_closing.text().split('\n').last().unwrap(); // must exist in this branch
+            let bracket_indent = before_closing.text().split('\n').next_back().unwrap(); // must exist in this branch
             (
                 "    ".to_string(),
                 format!("{bracket_indent}    "),
@@ -398,7 +398,7 @@ fn insert_position_before_child(
             let (pre_indent, indent) = if before_first_token.kind() == SyntaxKind::Whitespace
                 && before_first_token.text().contains('\n')
             {
-                let element_indent = before_first_token.text().split('\n').last().unwrap(); // must exist in this branch
+                let element_indent = before_first_token.text().split('\n').next_back().unwrap(); // must exist in this branch
                 ("".to_string(), element_indent.to_string())
             } else if before_first_token.kind() == SyntaxKind::Whitespace
                 && !before_first_token.text().contains('\n')
@@ -466,8 +466,7 @@ fn insert_position_before_first_component(
                 if token.prev_token().is_some() {
                     let nl_count = token.text().chars().filter(|c| c == &'\n').count();
                     let replacement_range =
-                        token.text().split('\n').last().map(|s| s.as_bytes().len()).unwrap_or(0)
-                            as u32;
+                        token.text().split('\n').next_back().map(|s| s.len()).unwrap_or(0) as u32;
 
                     if nl_count >= 2 {
                         (String::new(), replacement_range)
@@ -477,7 +476,7 @@ fn insert_position_before_first_component(
                         ("\n\n".to_string(), replacement_range)
                     }
                 } else {
-                    (String::new(), token.text().as_bytes().len() as u32) // Just WS before the component: Replace!
+                    (String::new(), token.text().len() as u32) // Just WS before the component: Replace!
                 }
             }
             _ => ("\n\n".to_string(), 0),
@@ -562,10 +561,8 @@ pub fn add_new_component(
     let source_file = document.source_file.clone();
     let path = source_file.path().to_path_buf();
 
-    let start_pos = util::text_size_to_lsp_position(
-        &source_file,
-        insert_position.insertion_position.offset().into(),
-    );
+    let start_pos =
+        util::text_size_to_lsp_position(&source_file, insert_position.insertion_position.offset());
     let end_pos = util::text_size_to_lsp_position(
         &source_file,
         insert_position.insertion_position.offset()
@@ -778,6 +775,7 @@ pub fn can_drop_at(
                     create_drop_element_workspace_edit(document_cache, component, dm)
                 {
                     workspace_edit_compiles(document_cache, &edit)
+                        == preview::CompilationResult::ChangeCompiles
                 } else {
                     false
                 };
@@ -801,10 +799,14 @@ pub fn can_drop_at(
 pub fn workspace_edit_compiles(
     document_cache: &common::DocumentCache,
     workspace_edit: &lsp_types::WorkspaceEdit,
-) -> bool {
+) -> preview::CompilationResult {
     let Ok(mut result) = text_edit::apply_workspace_edit(document_cache, workspace_edit) else {
-        return false;
+        return preview::CompilationResult::ChangeFails;
     };
+
+    if result.is_empty() {
+        return preview::CompilationResult::NoChange;
+    }
 
     let mut diag = BuildDiagnostics::default();
 
@@ -817,10 +819,14 @@ pub fn workspace_edit_compiles(
     }) {
         diag = BuildDiagnostics::default(); // reset errors that might be due to missing changes elsewhere
 
-        let _ = preview::poll_once(document_cache.load_url(&u, None, c, &mut diag));
+        let _ = common::poll_once(document_cache.load_url(&u, None, c, &mut diag));
     }
 
-    !diag.has_errors()
+    if diag.has_errors() {
+        preview::CompilationResult::ChangeFails
+    } else {
+        preview::CompilationResult::ChangeCompiles
+    }
 }
 
 /// Find the Element to insert into. None means we can not insert at this point.
@@ -870,6 +876,7 @@ pub fn can_move_to(
                     position,
                 ) {
                     workspace_edit_compiles(document_cache, &edit)
+                        == preview::CompilationResult::ChangeCompiles
                 } else {
                     false
                 };
@@ -906,7 +913,8 @@ fn pretty_node_removal_range(node: &SyntaxNode) -> Option<TextRange> {
     {
         before_et.text_range().end()
             - TextSize::from(
-                before_et.text().split('\n').last().map(|s| s.len()).unwrap_or_default() as u32,
+                before_et.text().split('\n').next_back().map(|s| s.len()).unwrap_or_default()
+                    as u32,
             )
     } else if before_et.kind() == SyntaxKind::Whitespace {
         before_et.text_range().start() // Cut away all WS!
@@ -961,7 +969,7 @@ pub fn drop_at(
 
     let drop_info = find_drop_location(&component_instance, position, &component.name)?;
 
-    create_drop_element_workspace_edit(&document_cache, component, &drop_info)
+    create_drop_element_workspace_edit(document_cache, component, &drop_info)
 }
 
 fn property_ranges(element: &common::ElementRcNode, remove_properties: &[&str]) -> Vec<TextRange> {
@@ -1073,7 +1081,7 @@ pub fn create_drop_element_workspace_edit(
     if let Some(edit) = completion::create_import_edit(doc, &component.name, &import_file) {
         if let Some(sf) = doc.node.as_ref().map(|n| &n.source_file) {
             selection_offset =
-                text_edit::TextOffsetAdjustment::new(&edit, sf).adjust(selection_offset.into());
+                text_edit::TextOffsetAdjustment::new(&edit, sf).adjust(selection_offset);
         }
         edits.push(edit);
     }
@@ -1082,14 +1090,14 @@ pub fn create_drop_element_workspace_edit(
         drop_ignored_elements_from_node(&drop_info.target_element_node, &source_file)
             .drain(..)
             .inspect(|te| {
-                selection_offset = text_edit::TextOffsetAdjustment::new(te, &source_file)
-                    .adjust(selection_offset.into());
+                selection_offset =
+                    text_edit::TextOffsetAdjustment::new(te, &source_file).adjust(selection_offset);
             }),
     );
 
     let start_pos = util::text_size_to_lsp_position(
         &source_file,
-        drop_info.insert_info.insertion_position.offset().into(),
+        drop_info.insert_info.insertion_position.offset(),
     );
     let end_pos = util::text_size_to_lsp_position(
         &source_file,
@@ -1099,7 +1107,7 @@ pub fn create_drop_element_workspace_edit(
     edits.push(lsp_types::TextEdit { range: lsp_types::Range::new(start_pos, end_pos), new_text });
 
     Some((
-        common::create_workspace_edit_from_path(&document_cache, source_file.path(), edits)?,
+        common::create_workspace_edit_from_path(document_cache, source_file.path(), edits)?,
         DropData { selection_offset, path },
     ))
 }
@@ -1128,18 +1136,13 @@ pub fn create_move_element_workspace_edit(
             let (path, selection_offset) = element.path_and_offset();
             return Some((edit, DropData { selection_offset, path }));
         } else {
-            let children = drop_info.target_element_node.children();
-            let child_index = {
-                let tmp =
-                    children.iter().position(|c| c == element).expect("We have the same parent");
-                if tmp == children.len() {
-                    usize::MAX
-                } else {
-                    tmp
-                }
+            let children = &drop_info.target_element_node.children();
+            let drop_index = if drop_info.child_index == usize::MAX {
+                children.len() - 1
+            } else {
+                drop_info.child_index
             };
-
-            if child_index == drop_info.child_index {
+            if children.get(drop_index).is_some_and(|c| c == element) {
                 // Dropped onto myself: Ignore the move
                 return None;
             }
@@ -1234,13 +1237,12 @@ pub fn create_move_element_workspace_edit(
 
     let start_pos = util::text_size_to_lsp_position(
         &source_file,
-        drop_info.insert_info.insertion_position.offset().into(),
+        drop_info.insert_info.insertion_position.offset(),
     );
     let end_pos = util::text_size_to_lsp_position(
         &source_file,
-        (drop_info.insert_info.insertion_position.offset()
-            + TextSize::new(drop_info.insert_info.replacement_range))
-        .into(),
+        drop_info.insert_info.insertion_position.offset()
+            + TextSize::new(drop_info.insert_info.replacement_range),
     );
     edits.push(common::SingleTextEdit::from_path(
         &document_cache,
@@ -1282,7 +1284,10 @@ pub fn move_element_to(
         instance_index,
         position,
     )
-    .and_then(|(e, d)| workspace_edit_compiles(document_cache, &e).then_some((e, d)))
+    .and_then(|(e, d)| {
+        (workspace_edit_compiles(document_cache, &e) == preview::CompilationResult::ChangeCompiles)
+            .then_some((e, d))
+    })
 }
 
 #[cfg(test)]
@@ -1364,14 +1369,20 @@ export component Entry inherits Main { /* @lsp:ignore-node */ } // 582
     fn test_workspace_edit_compiles_ok() {
         let (document_cache, workspace_edit) = workspace_edit_setup(vec![(194, 194, "foo := ")]);
 
-        assert_eq!(super::workspace_edit_compiles(&document_cache, &workspace_edit,), true);
+        assert_eq!(
+            super::workspace_edit_compiles(&document_cache, &workspace_edit),
+            super::preview::CompilationResult::ChangeCompiles
+        );
     }
 
     #[test]
     fn test_workspace_edit_compiles_parse_fails() {
         let (document_cache, workspace_edit) = workspace_edit_setup(vec![(194, 194, "FOOBAR ")]);
 
-        assert_eq!(super::workspace_edit_compiles(&document_cache, &workspace_edit,), false);
+        assert_eq!(
+            super::workspace_edit_compiles(&document_cache, &workspace_edit),
+            super::preview::CompilationResult::ChangeFails
+        );
     }
 
     #[test]
@@ -1382,7 +1393,10 @@ export component Entry inherits Main { /* @lsp:ignore-node */ } // 582
             "property <bool> foobar: root.foobar;\n        ",
         )]);
 
-        assert_eq!(super::workspace_edit_compiles(&document_cache, &workspace_edit,), false);
+        assert_eq!(
+            super::workspace_edit_compiles(&document_cache, &workspace_edit),
+            super::preview::CompilationResult::ChangeFails
+        );
     }
 
     #[test]
@@ -1398,7 +1412,10 @@ export component Entry inherits Main { /* @lsp:ignore-node */ } // 582
             "    Button { // 318\n                width: parent.button_width;\n                text: \"Press me\";\n            }\n        "
         )]);
 
-        assert_eq!(super::workspace_edit_compiles(&document_cache, &workspace_edit,), false);
+        assert_eq!(
+            super::workspace_edit_compiles(&document_cache, &workspace_edit),
+            super::preview::CompilationResult::ChangeFails
+        );
     }
 
     #[test]
@@ -1415,7 +1432,24 @@ export component Entry inherits Main { /* @lsp:ignore-node */ } // 582
             "Rectangle { // 470\n              background: Colors.blue;\n        }\n        "
         ),]);
 
-        assert_eq!(super::workspace_edit_compiles(&document_cache, &workspace_edit,), true);
+        assert_eq!(
+            super::workspace_edit_compiles(&document_cache, &workspace_edit),
+            super::preview::CompilationResult::ChangeCompiles
+        );
+    }
+
+    #[test]
+    fn test_workspace_edit_compiles_no_change() {
+        let (document_cache, workspace_edit) = workspace_edit_setup(vec![(
+            466,
+            540,
+            "Rectangle { // 470\n              background: Colors.blue;\n        }\n        ",
+        )]);
+
+        assert_eq!(
+            super::workspace_edit_compiles(&document_cache, &workspace_edit),
+            super::preview::CompilationResult::ChangeCompiles
+        );
     }
 
     #[test]
@@ -1432,14 +1466,20 @@ export component Entry inherits Main { /* @lsp:ignore-node */ } // 582
             "Button { // 318\n                    width: parent.button-width;\n                    text: \"Press me\";\n                }"
         ),]);
 
-        assert_eq!(super::workspace_edit_compiles(&document_cache, &workspace_edit,), true);
+        assert_eq!(
+            super::workspace_edit_compiles(&document_cache, &workspace_edit),
+            super::preview::CompilationResult::ChangeCompiles
+        );
     }
 
     #[test]
     fn test_workspace_edit_compiles_edit_button_text_ok() {
         let (document_cache, workspace_edit) = workspace_edit_setup(vec![(409, 417, "xxx")]);
 
-        assert_eq!(super::workspace_edit_compiles(&document_cache, &workspace_edit,), true);
+        assert_eq!(
+            super::workspace_edit_compiles(&document_cache, &workspace_edit),
+            super::preview::CompilationResult::ChangeCompiles
+        );
     }
 
     // #[track_caller]
@@ -1456,7 +1496,7 @@ export component Entry inherits Main { /* @lsp:ignore-node */ } // 582
         let doc_node = doc.node.as_ref().unwrap();
 
         let (workspace_edit, drop_data) =
-            super::add_new_component(&document_cache, "TestComponent", &doc_node).unwrap();
+            super::add_new_component(&document_cache, "TestComponent", doc_node).unwrap();
 
         let result = text_edit::apply_workspace_edit(&document_cache, &workspace_edit).unwrap();
         assert_eq!(result.len(), 1);
@@ -1466,7 +1506,10 @@ export component Entry inherits Main { /* @lsp:ignore-node */ } // 582
         assert_eq!(drop_data.path, test::main_test_file_name());
         assert_eq!(drop_data.selection_offset, selection_offset.into());
 
-        assert_eq!(super::workspace_edit_compiles(&document_cache, &workspace_edit), true);
+        assert_eq!(
+            super::workspace_edit_compiles(&document_cache, &workspace_edit),
+            super::preview::CompilationResult::ChangeCompiles
+        );
     }
 
     #[test]
